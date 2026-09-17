@@ -4,7 +4,7 @@
 Ти — DevOps-сесія проєкту SHOSHO: підключаєш GitHub-репозиторій, сервер, CI/CD і базове staging-середовище, щоб наступні сесії (Backend, Frontend, Back-office) могли деплоїти код без ручних дій.
 
 ## Контекст
-Репозиторій: локально `/Users/bobbob/BOB/SERVER/SH.OS.` (git init зроблено, remote ще немає).
+Репозиторій: локально `/Users/bobbob/BOB/SERVER/SH.OS.`, на GitHub — https://github.com/shorobot/shosho (private, org `shorobot`, `origin` підключено, `main` запушено).
 Перед будь-якою дією ОБОВ'ЯЗКОВО прочитай:
 - `/memory/state.md` — поточний стан, що визначено, що ні
 - `/memory/decisions.md` — стек (D-001), правила пам'яті (D-002), середовища (D-005), відкрите питання хостингу (D-004)
@@ -15,10 +15,9 @@
 ## Завдання
 Виконуй по порядку. Усе, що потребує даних від власника (токени, доступ до сервера, вибір провайдера) — спитай у чаті одним списком на початку, не по одному.
 
-1. **GitHub remote**
-   - Створити (або отримати від власника) приватний репозиторій `shosho` на GitHub, підключити як `origin`, запушити `main`.
+1. **GitHub branch protection** (репо і remote вже є — не створюй заново)
    - Налаштувати branch protection на `main`: PR обов'язковий, мінімум 1 status check (CI з п.4) зелений. Force-push заборонений.
-   - Записати URL репо у `/memory/state.md` (розділ "Що НЕ визначено" → перенести у "Що є").
+   - Перевірити, що GitHub Actions увімкнено для org `shorobot` / репо `shosho`.
 
 2. **Рішення D-004 (хостинг)**
    - З'ясувати у власника: чи є вже сервер (де, ОС, доступ по SSH)? Бюджет?
@@ -56,7 +55,7 @@
 
 ## Критерій завершення
 Усе наступне істинне:
-- [ ] `git push origin main` працює, branch protection увімкнено
+- [ ] branch protection на `main` увімкнено, PR без зеленого CI не мержиться
 - [ ] PR у `main` запускає `ci.yml`, і він зелений на порожньому monorepo
 - [ ] Push у `main` запускає `deploy-staging.yml`, staging доступний за HTTPS-URL (навіть якщо це placeholder-сторінка "SHOSHO staging OK")
 - [ ] `deploy-prod.yml` існує, вимагає approve, не запускається без тегу

@@ -1,7 +1,7 @@
 # STATE — поточний стан проєкту SHOSHO
 
 Оновлює: Orchestrator (CTO). Дочірні сесії оновлюють ТІЛЬКИ свій рядок у таблиці.
-Останнє оновлення: 2026-09-17 (Orchestrator, ініціалізація)
+Останнє оновлення: 2026-09-17 (Orchestrator, підключено GitHub)
 
 ## Фаза
 Фаза 0 — ініціалізація. Жодна дочірня сесія ще не стартувала.
@@ -24,12 +24,12 @@
 1 → 2 → 3 → 4 → (5 ‖ 6 ‖ 7)
 
 ## Що є в репо зараз
+- GitHub: https://github.com/shorobot/shosho (private, org `shorobot`, default branch `main`, remote `origin`)
 - `/memory` — скелет (log, state, decisions, boots/)
 - `/docs` — architecture.md, api-contracts.md (заглушки)
 - `/apps/*` — порожні директорії з .gitkeep
 
 ## Що НЕ визначено (потребує рішення власника або DevOps-01)
 - Провайдер сервера / хостингу (див. decisions.md, D-004 — відкрито)
-- URL GitHub-репозиторію (remote ще не підключено)
 - Supabase-проєкт: створений чи ні, регіон
 - Домен для staging / prod
