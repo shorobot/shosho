@@ -1,0 +1,59 @@
+# SHOSHO — staging stack on the shared server (/opt/shosho/staging).
+# All ports bind to 127.0.0.1; host nginx (apps/infra/nginx/shosho-staging.conf) fronts them.
+# Images are built by CI (.github/workflows/deploy-staging.yml) and pushed to GHCR.
+name: shosho-staging
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  web:
+    <<: *common
+    image: ${WEB_IMAGE:-ghcr.io/shorobot/shosho-web:staging}
+    ports:
+      - "127.0.0.1:3100:80"
+
+  api:
+    <<: *common
+    image: ${API_IMAGE:-ghcr.io/shorobot/shosho-api:staging}
+    ports:
+      - "127.0.0.1:8100:8000"
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    mem_limit: 256m
+
+  n8n:
+    <<: *common
+    image: docker.n8n.io/n8nio/n8n:1.113.3
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      N8N_HOST: ${N8N_HOST}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      GENERIC_TIMEZONE: Europe/Berlin
+      TZ: Europe/Berlin
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  n8n_data:

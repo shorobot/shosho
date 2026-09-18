@@ -1,0 +1,31 @@
+name: Deploy production
+
+# D-005: prod = git tag v*, manual approve via GitHub Environment "production" (required reviewer: owner).
+# Prod server is NOT provisioned yet (separate boot after security-01) — this workflow will fail at
+# the SSH step until PROD_* secrets exist, but it never runs without a tag + approval.
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  production:
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: production
+      image_tag: ${{ github.ref_name }}
+      remote_dir: /opt/shosho/prod
+    secrets:
+      SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+      SSH_USER: ${{ secrets.PROD_SSH_USER }}
+      SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+      N8N_ENCRYPTION_KEY: ${{ secrets.PROD_N8N_ENCRYPTION_KEY }}
+      N8N_BASIC_AUTH_USER: ${{ secrets.PROD_N8N_BASIC_AUTH_USER }}
+      N8N_BASIC_AUTH_PASSWORD: ${{ secrets.PROD_N8N_BASIC_AUTH_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SUPABASE_SERVICE_ROLE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
