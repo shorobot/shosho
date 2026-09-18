@@ -125,6 +125,25 @@ jobs:
           docker build -q apps/infra/placeholder-api
           docker build -q apps/infra/placeholder-web
 
+      - name: Compose smoke test (local stack: n8n + api)
+        working-directory: apps/infra
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 30); do
+            n8n=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5678/healthz || true)
+            api=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health || true)
+            echo "try $i: n8n=$n8n api=$api"
+            [ "$n8n" = 200 ] && [ "$api" = 200 ] && break
+            sleep 5
+          done
+          docker compose ps
+          [ "$n8n" = 200 ] && [ "$api" = 200 ]
+
+      - name: Compose down
+        if: always()
+        working-directory: apps/infra
+        run: docker compose down -v --remove-orphans
+
   # Single required status check for branch protection.
   ci:
     name: CI
