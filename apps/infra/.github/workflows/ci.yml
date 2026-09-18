@@ -125,7 +125,7 @@ jobs:
           docker build -q apps/infra/placeholder-api
           docker build -q apps/infra/placeholder-web
 
-      - name: Compose smoke test (local stack: n8n + api)
+      - name: Compose smoke test (n8n + api)
         working-directory: apps/infra
         run: |
           docker compose up -d --build
