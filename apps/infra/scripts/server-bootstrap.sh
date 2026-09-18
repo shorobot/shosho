@@ -13,7 +13,8 @@ CI_PUBKEY="${CI_PUBKEY:?set CI_PUBKEY (public key used by GitHub Actions)}"
 ADMIN_PUBKEY="${ADMIN_PUBKEY:-}"
 DEPLOY_USER="shosho"
 APP_DIR="/opt/shosho/${ENV_NAME}"
-REPO_RAW="https://raw.githubusercontent.com/shorobot/shosho/main/apps/infra"
+REPO_REF="${REPO_REF:-main}"
+REPO_RAW="https://raw.githubusercontent.com/shorobot/shosho/${REPO_REF}/apps/infra"
 
 log() { printf '\n==> %s\n' "$*"; }
 
