@@ -7,6 +7,7 @@
 **Будь-яка нова сесія починає з читання:**
 1. `/memory/state.md` — що зроблено, що в роботі
 2. `/memory/decisions.md` — чому так
-3. свій boot у `/memory/boots/<сесія>-<NN>.md`
+3. `/memory/sessions.md` — ростер сесій
+4. свій boot у `/memory/boots/S<N>-<NN>-<slug>.md`
 
 Структура: `/memory` — робоча пам'ять, `/docs` — архітектура і контракти, `/apps` — код.
