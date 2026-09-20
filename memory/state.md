@@ -10,7 +10,7 @@ Phase 2 — product. Backend v1 in `main` (PR #6). Running: S1-03 (migrations CI
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | in progress   | S1-03       | S1-02          | owner item B: Supabase `shosho-staging` + secrets (not created yet) |
+| S1 | DevOps       | in progress   | S1-03       | S1-02          | owner: `STAGING_SUPABASE_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN` (project + URL/anon/service_role/ref done 2026-09-20) |
 | S2 | Backend      | boot done     | —           | S2-01 (merged; staging push pending owner item B) | next: S2-02 (payments, timeline, storage, order edits) after S3-01/S4-01 start |
 | S3 | Frontend     | in progress   | S3-01       | —              | Supabase staging (item B) for the live deploy; can build locally / mock meanwhile |
 | S4 | Back-office  | not started   | —           | —              | api-contracts §6 ready; S0 issues S4-01 after S3-01 ships the design system |
@@ -34,7 +34,7 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/docs`: architecture.md, api-contracts.md (§1–4 implemented schema, §5 web contract by S2, §6 backoffice contract by S0), design/ (brandbook, canvas, README).
 
 ## Not yet done / open
-- **Owner item B**: Supabase `shosho-staging` (eu-central-1) + secrets `STAGING_SUPABASE_URL / _ANON_KEY / _SERVICE_ROLE_KEY / _DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`, variable `STAGING_SUPABASE_PROJECT_REF`. Blocks S2-01 task 8 and S1-03 task 1.
+- **Owner item B** (partly done 2026-09-20): Supabase `shosho-staging` exists (eu-central-1, ref `bvmitglwwqsvufetlkff`); secrets `STAGING_SUPABASE_URL / _ANON_KEY / _SERVICE_ROLE_KEY` + variable `STAGING_SUPABASE_PROJECT_REF` set. Still missing: `STAGING_SUPABASE_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN` — block S2-01 task 8 and S1-03 task 1.
 - CF SSL Full on `shos.hellfiresol.com` — owner / TETA+PI.
 - Prod target — separate decision after S7-01.
 - `docs/architecture.md` — refresh after S2-01 (S0).
