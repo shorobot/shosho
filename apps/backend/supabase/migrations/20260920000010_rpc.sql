@@ -330,8 +330,8 @@ begin
           v_promo_base := v_subtotal;
           -- checked only when a phone is known (place_order always passes it)
           if v_phone is not null and exists (
-               select 1 from public.customers c join public.orders o on o.customer_id = c.id
-               where c.phone = v_phone and o.status not in ('cancelled', 'refunded')) then
+               select 1 from public.customers cu join public.orders ord on ord.customer_id = cu.id
+               where cu.phone = v_phone and ord.status not in ('cancelled', 'refunded')) then
             v_promo_bad := 'not_first_order';
           end if;
         else
@@ -522,8 +522,8 @@ begin
   -- stock bookkeeping for limited items
   update public.menu_items i
      set stock_remaining = greatest(i.stock_remaining - s.qty, 0)
-    from (select (l->>'item_id')::uuid as item_id, sum((l->>'qty')::integer) as qty
-            from jsonb_array_elements(v_q->'lines') l group by 1) s
+    from (select (ln->>'item_id')::uuid as item_id, sum((ln->>'qty')::integer) as qty
+            from jsonb_array_elements(v_q->'lines') ln group by 1) s
    where i.id = s.item_id and i.stock_remaining is not null;
 
   insert into public.order_events (order_id, type, actor_type, actor_id, payload)
