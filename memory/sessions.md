@@ -1,24 +1,26 @@
-# SESSIONS — ростер сесій SHOSHO
+# SESSIONS — roster
 
-Кожна сесія має постійний номер. Boot = `S<N>-<NN>` (сесія-порядковий номер boot). Файл boot: `/memory/boots/S<N>-<NN>-<slug>.md`. Префікс коміту: `[S<N>-<NN>]`. Запис у log: `## <дата> — S<N> <Назва> — S<N>-<NN>`.
+Every session has a permanent number. Boot ID = `S<N>-<NN>` (session-sequence). Boot file: `/memory/boots/S<N>-<NN>-<slug>.md`. Commit prefix: `[S<N>-<NN>]`. Log heading: `## <date> — S<N> <Name> — S<N>-<NN>`.
 
-| ID   | Назва        | Відповідальність (одним рядком)                                        | Старт після |
-|------|--------------|-------------------------------------------------------------------------|-------------|
-| S0   | Orchestrator | CTO: пам'ять, декомпозиція, видача boot, контракти, decisions.md         | —           |
-| S1   | DevOps       | GitHub, сервер, CI/CD, staging/prod, секрети, локальне середовище        | —           |
-| S2   | Backend      | Supabase: схема, RLS, RPC, бізнес-логіка замовлень                       | S1-01       |
-| S3   | Frontend     | Гостьовий сайт + прийом замовлень (Next.js, apps/web)                    | S2-01       |
-| S4   | Back-office  | Адмін-панель: замовлення оператора, меню, базова CRM (apps/backoffice)   | S2-01, S3-01|
-| S5   | Automation   | Шар AI-агентів: n8n, FastAPI, Claude Agent SDK (apps/automation)         | S4-01       |
-| S5.1 | ↳ Sales      | DM lead-gen, замовлення з Instagram/Facebook                             | S5-01       |
-| S5.2 | ↳ Accounting | Облік, звітність для Steuerberater                                       | S5-01       |
-| S5.3 | ↳ Warehouse  | Склад, фуд-кост                                                          | S5-01       |
-| S5.4 | ↳ Quality    | Computer vision (пізня фаза)                                             | S5-01       |
-| S5.5 | ↳ Grow       | Аналітика, пропозиції зростання                                          | S5-01       |
-| S6   | QA           | Наскрізні сценарії, регресія після кожного boot                          | S4-01       |
-| S7   | Security     | Авторизація, захист API, аудит секретів, gate перед prod-деплоєм         | S4-01       |
+| ID   | Name         | Responsibility (one line)                                              | Starts after |
+|------|--------------|-------------------------------------------------------------------------|--------------|
+| S0   | Orchestrator | CTO: memory, decomposition, issuing boots, contracts, decisions.md      | —            |
+| S1   | DevOps       | GitHub, server, CI/CD, staging/prod, secrets, local env                 | —            |
+| S2   | Backend      | Supabase: schema, RLS, RPC, order business logic                        | S1-02        |
+| S3   | Frontend     | Guest site + ordering (Next.js, apps/web)                               | S2-01        |
+| S4   | Back-office  | Admin panel: operator orders, menu, basic CRM (apps/backoffice)         | S2-01, S3-01 |
+| S5   | Automation   | AI-agent layer: Claude Agent SDK + FastAPI (apps/automation)            | S4-01        |
+| S5.1 | ↳ Sales      | DM lead-gen, orders from Instagram/Facebook                             | S5-01        |
+| S5.2 | ↳ Accounting | Bookkeeping, reports for the Steuerberater                              | S5-01        |
+| S5.3 | ↳ Warehouse  | Stock, food cost                                                        | S5-01        |
+| S5.4 | ↳ Quality    | Computer vision (late phase)                                            | S5-01        |
+| S5.5 | ↳ Grow       | Analytics, growth proposals                                             | S5-01        |
+| S6   | QA           | End-to-end scenarios, regression after every boot                       | S4-01        |
+| S7   | Security     | Auth, API hardening, secrets audit, gate before every prod deploy       | S4-01        |
 
-Нові сесії поза списком — S8, S9, … Під-сесії — `S<N>.<M>`. Номери не перевикористовуються.
+External peer (not our session): **TETA+PI manager** — admin of the shared server, reachable via `send_message` → `teta-pi-e0`. See `/memory/infra-access.md`.
 
-## Лічильники boot (останній виданий)
-S0: — · S1: 01 · S2: — · S3: — · S4: — · S5: — · S6: — · S7: —
+New sessions beyond this list — S8, S9, … Sub-sessions — `S<N>.<M>`. Numbers are never reused.
+
+## Boot counters (last issued)
+S0: — · S1: 02 · S2: — · S3: — · S4: — · S5: — · S6: — · S7: —

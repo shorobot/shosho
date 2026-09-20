@@ -1,35 +1,40 @@
-# STATE — поточний стан проєкту SHOSHO
+# STATE — current project state
 
-Оновлює: S0 Orchestrator. Дочірні сесії оновлюють ТІЛЬКИ свій рядок у таблиці. Ростер і формат ID — `/memory/sessions.md`.
-Останнє оновлення: 2026-09-19 (S0 Orchestrator, нумерація сесій)
+Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
+Last update: 2026-09-20 (S0 — PR #1 merged, D-004/D-006/D-007 accepted, S1-02 issued)
 
-## Фаза
-Фаза 0 — ініціалізація. Жодна дочірня сесія ще не стартувала.
+## Phase
+Phase 1 — infrastructure. S1 finished its first pass (PR #1); S1-02 adapts it to the real server terms.
 
-## Напрямки
+## Sessions
 
-| ID | Сесія        | Статус         | Активний boot | Останній завершений | Блокери |
-|----|--------------|----------------|---------------|---------------------|---------|
-| S1 | DevOps       | не розпочато   | S1-01 (виданий, очікує старту) | — | — |
-| S2 | Backend      | не розпочато   | —             | —                   | чекає S1-01 |
-| S3 | Frontend     | не розпочато   | —             | —                   | чекає S2-01 |
-| S4 | Back-office  | не розпочато   | —             | —                   | чекає S2-01, S3-01 |
-| S5 | Automation   | не розпочато   | —             | —                   | чекає S4-01 |
-| S6 | QA           | не розпочато   | —             | —                   | чекає S4-01 |
-| S7 | Security     | не розпочато   | —             | —                   | чекає S4-01 |
+| ID | Session      | Status        | Active boot | Last completed | Blockers |
+|----|--------------|---------------|-------------|----------------|----------|
+| S1 | DevOps       | in progress   | S1-02       | S1-01 (partial: no staging URL, no Supabase, no report) | — |
+| S2 | Backend      | not started   | —           | —              | waits for S1-02 |
+| S3 | Frontend     | not started   | —           | —              | waits for S2-01 |
+| S4 | Back-office  | not started   | —           | —              | waits for S2-01, S3-01 |
+| S5 | Automation   | not started   | —           | —              | waits for S4-01 |
+| S6 | QA           | not started   | —           | —              | waits for S4-01 |
+| S7 | Security     | not started   | —           | —              | waits for S4-01 |
 
-Статуси: `не розпочато` → `в роботі` → `boot виконано` → `заблоковано`
+Statuses: `not started` → `in progress` → `boot done` → `blocked`
 
-## Порядок старту
+## Start order
 S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 
-## Що є в репо зараз
-- GitHub: https://github.com/shorobot/shosho (private, org `shorobot`, default branch `main`, remote `origin`)
-- `/memory` — log, state, decisions, sessions, boots/
-- `/docs` — architecture.md, api-contracts.md (заглушки)
-- `/apps/*` — порожні директорії з .gitkeep
+## What exists now
+- GitHub: https://github.com/shorobot/shosho — **public**, org `shorobot`, default branch `main`. Branch protection: PR + green `CI` required, no force-push. Environments `staging`, `production` (production = required reviewer).
+- Server access: shared DO droplet, user `shos`, 512M / ports 8200–8299 / no sudo — full terms in `/memory/infra-access.md`. ssh verified 2026-09-20.
+- Domain: `shos.hellfiresol.com` (Cloudflare → host nginx → 127.0.0.1:8200). Currently 502 / may serve the wrong site (CF SSL Full issue, raised with owner).
+- `/apps/infra` (from S1-01): pnpm monorepo wrapper, `.env.example` per app, `docker-compose.yml` (local: n8n + api placeholder — n8n to be removed), `docker-compose.staging.yml` (web + api), placeholder-web / placeholder-api images, nginx vhost files (obsolete — we no longer manage nginx), `scripts/server-bootstrap.sh` (obsolete — assumed root), workflows `ci.yml`, `deploy-staging.yml`, `deploy-prod.yml`, `_deploy.yml` (GHCR build → ssh → compose pull/up).
+- GitHub Secrets: `STAGING_SSH_HOST/USER/KEY` (USER is stale — was `shosho`), `STAGING_N8N_*` (obsolete).
+- `/memory`: log, state, decisions, sessions, infra-access, boots/.
+- `/docs`: architecture.md, api-contracts.md (skeleton).
 
-## Що НЕ визначено (потребує рішення власника або S1-01)
-- Провайдер сервера / хостингу (див. decisions.md, D-004 — відкрито)
-- Supabase-проєкт: створений чи ні, регіон
-- Домен для staging / prod
+## Not yet done / open
+- Staging service not running on :8200 (S1-02).
+- Supabase staging project not created (S1-02).
+- Rootless docker not installed on the server (S1-02).
+- CF SSL Full issue on `shos.hellfiresol.com` — owner / TETA+PI side.
+- Prod target — not decided; separate boot after S7-01.

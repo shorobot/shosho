@@ -1,14 +1,14 @@
 # API CONTRACTS — SHOSHO
 
-Єдине місце, де фіксуються контракти між шарами. Змінюється ТІЛЬКИ через Orchestrator.
-Дочірня сесія, якій потрібна зміна контракту → пише пропозицію в /memory/boots/proposed/.
+The single place where contracts between layers are fixed. Changed ONLY through S0.
+A child session that needs a contract change → writes a proposal to /memory/boots/proposed/.
 
-Статус: порожньо — заповнює S2-01 (схема БД, REST/RPC), Orchestrator затверджує.
+Status: empty — S2-01 fills the DB schema and REST/RPC; S0 approves.
 
-## Розділи (заповнити)
-1. Схема БД (Supabase) — таблиці, ключові колонки, RLS-політики
-2. Web → Supabase — які таблиці/RPC використовує гостьовий сайт
-3. Backoffice → Supabase — таблиці/RPC/Realtime-канали оператора
-4. Automation → Supabase — що читають/пишуть агенти, service-role vs anon
-5. FastAPI зовнішні вебхуки — маршрути, підписи, формати payload
-6. n8n ↔ агенти — тригери, формат повідомлень
+## Sections (to fill)
+1. DB schema (Supabase) — tables, key columns, RLS policies
+2. Web → Supabase — tables/RPC used by the guest site
+3. Backoffice → Supabase — tables/RPC/Realtime channels for the operator
+4. Automation → Supabase — what agents read/write, service-role vs anon
+5. FastAPI external webhooks — routes, signatures, payload formats
+6. Internal HTTP between apps and automation — routes, auth

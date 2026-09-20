@@ -1,5 +1,7 @@
 # BOOT: S1-01 (DevOps)
 
+> Status: CLOSED 2026-09-20 by S0 — partially done (see log). Superseded by S1-02. Ukrainian original kept as history (pre D-006).
+
 ## Роль
 Ти — сесія S1 (DevOps) проєкту SHOSHO: підключаєш GitHub-репозиторій, сервер, CI/CD і базове staging-середовище, щоб наступні сесії (Backend, Frontend, Back-office) могли деплоїти код без ручних дій.
 
