@@ -1,36 +1,40 @@
 # ARCHITECTURE — SHOSHO
 
-Оновлює Orchestrator раз на кілька boot-ів. Відображає РЕАЛЬНИЙ стан, не задум. Заплановане позначено `[план]`.
+Updated by S0 every few boots. Reflects the REAL state; planned parts are marked `[plan]`.
 
-Останнє оновлення: 2026-09-17 — фаза 0, нічого не реалізовано.
+Last update: 2026-09-20 — phase 1 (infra), no product code yet.
 
-## Шари
+## Layers
 
 ```
-[Гість] ──> apps/web (Next.js) ──┐
-                                  ├──> Supabase (Postgres + Auth + Realtime + Storage)
-[Оператор] ──> apps/backoffice ──┘         ▲
-                                            │
-apps/automation ────────────────────────────┘
-  ├─ n8n (оркестратор, вебхуки, розклади)          [план]
-  ├─ agents/ (Claude Agent SDK): Sales, Accounting, Warehouse, Quality, Grow  [план]
-  └─ FastAPI (Lieferando / Wolt / Instagram / Facebook webhooks)              [план]
+[Guest]    ──> apps/web (Next.js) ───────┐
+                                          ├──> Supabase (Postgres + Auth + Realtime + Storage)   [plan]
+[Operator] ──> apps/backoffice (Next.js) ─┘         ▲
+                                                     │
+apps/automation ─────────────────────────────────────┘                                          [plan]
+  ├─ agents/ (Claude Agent SDK): Sales, Accounting, Warehouse, Quality, Grow
+  ├─ api/ (FastAPI): Lieferando / Wolt / Instagram / Facebook webhooks, internal HTTP
+  └─ schedules: cron / systemd timers (no n8n — D-007)
 
-apps/infra — Docker Compose, GitHub Actions, env-шаблони                     [план]
+apps/infra — compose files, GitHub Actions, env templates, placeholder images                   [partial]
 ```
 
-## Середовища
-| Середовище | Тригер | Стан |
-|---|---|---|
-| local | `.env.local` | [план] |
-| staging | push у `main` | [план] |
-| prod | tag `v*` + ручний approve | [план] |
+## Environments
+| Env | Trigger | Where | State |
+|---|---|---|---|
+| local | `.env` + `docker compose up` in apps/infra | dev machine | placeholder api only |
+| staging | push to `main` | shared droplet, user `shos`, `127.0.0.1:8200` ← `shos.hellfiresol.com` | pipeline exists, target not yet live (S1-02) |
+| prod | tag `v*` + manual approve | TBD | workflow exists, no target |
 
-## Потоки даних (цільові)
-1. Гість → web → `orders` (Supabase) → Realtime → backoffice екран оператора
-2. Instagram/Facebook DM → FastAPI webhook → n8n → Sales-агент → `leads` / `orders`
-3. Lieferando/Wolt → FastAPI → `orders` (джерело = `channel`)
-4. Cron (n8n) → Accounting/Warehouse/Grow агенти → звіти в `reports`, Storage
+Server terms (co-tenant, 512M, ports 8200–8299): `/memory/infra-access.md`.
 
-## Реалізовано
-Нічого. Скелет репо.
+## Target data flows
+1. Guest → web → `orders` (Supabase) → Realtime → back-office operator screen
+2. Instagram/Facebook DM → FastAPI webhook → Sales agent → `leads` / `orders`
+3. Lieferando/Wolt → FastAPI → `orders` (source = `channel`)
+4. Timer → Accounting / Warehouse / Grow agents → `reports`, Storage
+
+## Implemented
+- CI (lint/typecheck/test per app, no-op while apps are empty; compose smoke test)
+- Deploy workflows (GHCR build → ssh → compose) — need adaptation to rootless/co-tenant (S1-02)
+- Placeholder images `shosho-web`, `shosho-api`
