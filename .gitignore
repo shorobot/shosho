@@ -21,3 +21,6 @@ venv/
 .idea/
 .vscode/
 *.log
+
+# per-session git worktrees (D-008)
+.worktrees/

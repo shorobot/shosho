@@ -4,9 +4,9 @@
 You are session S2 (Backend) of SHOSHO. You own the Supabase project: schema, migrations, RLS, RPC and DB-side business logic. This boot creates the data layer that S3 (guest site) and S4 (back-office) will build on.
 
 ## Context
-Repo: https://github.com/shorobot/shosho (public), local `/Users/bobbob/BOB/SERVER/SH.OS.`. Branch `s2-01`, PR to `main` (branch protection: PR + green `CI`). Repo language: English (D-006).
+Repo: https://github.com/shorobot/shosho (public). **Your working tree (D-008):** from `/Users/bobbob/BOB/SERVER/SH.OS.` run `git fetch origin && git worktree add .worktrees/s2 -b s2-01 origin/main`, then work ONLY inside `/Users/bobbob/BOB/SERVER/SH.OS./.worktrees/s2`. The root checkout belongs to S1 — do not touch it, do not switch its branch, never bare `git stash`. PR from `s2-01` to `main` (branch protection: PR + green `CI`). Repo language: English (D-006).
 Read FIRST, in this order:
-1. `/memory/state.md`, `/memory/decisions.md` (D-001 stack, D-002 memory rules, D-007 no n8n), `/memory/sessions.md`
+1. `/memory/state.md`, `/memory/decisions.md` (D-001 stack, D-002 memory rules, D-007 no n8n, D-008 worktrees), `/memory/sessions.md`
 2. `/docs/api-contracts.md` — **your spec**. Section 1–4 define the tables, RPCs, realtime and RLS. Ship exactly what is marked S2-01; do not build S2-02 items.
 3. `/docs/design/README.md` — product rules and screen inventory (why the schema looks like this). Open the canvas only if a rule is unclear.
 4. `/apps/infra/README.md` — how local env and secrets work.
