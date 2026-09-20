@@ -1,3 +1,8 @@
 packages:
   - "apps/web"
   - "apps/backoffice"
+  - "apps/backend"
+
+# pnpm 10 blocks lifecycle scripts by default; the supabase npm package downloads its binary in postinstall.
+onlyBuiltDependencies:
+  - supabase

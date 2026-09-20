@@ -11,7 +11,7 @@ Phase 1 — staging is live and auto-deploys from `main`. S1-03 (migrations CI +
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | in progress   | S1-03       | S1-02          | owner item B: Supabase `shosho-staging` + secrets (not created yet) |
-| S2 | Backend      | in progress   | S2-01       | —              | staging push needs owner item B (works locally meanwhile) |
+| S2 | Backend      | boot done     | —           | S2-01 (staging push pending: owner item B) | staging `db push` waits for `shosho-staging` ref + DB password |
 | S3 | Frontend     | not started   | —           | —              | waits for S2-01 (api-contracts §5) |
 | S4 | Back-office  | not started   | —           | —              | waits for S2-01, S3-01 |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |

@@ -74,6 +74,78 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 | `driver` | none | select own orders (`driver_id = auth.uid()`), set delivered | none |
 | `service_role` (automation, S5) | all | all | all |
 
-## 5. Web → Supabase (S3 reads this) — filled by S0 after S2-01 ships
+## 5. Web → Supabase (S3 reads this) — written by S2 in S2-01, reviewed by S0
+
+Client: `@supabase/supabase-js` with the **anon** key, no auth session (guest checkout). Types: `import type { Database } from "@shosho/backend/types/database"` (file `apps/backend/types/database.ts`). Money = integer cents. Times = ISO timestamptz; the DB reasons in `Europe/Berlin`. Additions to §1–4 that S3 relies on are listed in `/memory/boots/proposed/S2-contract-change.md`.
+
+### 5.1 Reads (tables / views, RLS-filtered for anon)
+| Call | Returns | Notes |
+|---|---|---|
+| `from('menu_categories').select('id, slug, name_de, name_en, name_ja, sort, schedule').order('sort')` | active categories | hide a category client-side when it has no on-sale item (product rule) |
+| `from('menu_items').select('*').order('sort')` or `from('menu_items_on_sale')` | **on-sale items only** (available, not stoplisted today, category active) | `photos` = storage paths (jsonb array), `tags` (`new`/`hit`/`spicy`/`vegetarian`), `allergens` A–N, `recommended_item_ids` for "Goes well with" |
+| `from('menu_item_option_groups').select('item_id, group_id, sort, option_groups(id, name_de, name_en, min_select, max_select, required, options(id, name_de, name_en, price_cents, sort))')` | option groups per item with active options | rules: any = (0,null), exactly one = (1,1,required), 0–3 = (0,3); `price_cents = 0` → show "free" |
+| `from('delivery_zones').select('code, name, areas, min_order_cents, fee_cents, free_delivery_over_cents, promised_minutes, postal_codes')` | active zones | for the address step / "free delivery over 35 €" hint; the authoritative resolution is inside `quote_order` |
+| `from('settings').select('key, value').in('key', ['business','opening_hours','site','payments.enabled','kitchen.status'])` | public settings | `business` (name, address, phone, email, impressum, ust_id) · `opening_hours` (`{mon..sun: [["11:00","23:00"]], holidays: []}`) · `site` (seo, cookie_banner, robots, maintenance) · `payments.enabled` (`{methods: payment_method[], tip_presets_cents: int[], capture}`) · `kitchen.status` (`{paused: bool, since}` → "sold out today") |
+
+Anything else (`orders`, `customers`, `staff`, `promo_codes`, private settings) returns **no rows** for anon by design.
+
+### 5.2 `rpc('quote_order', { payload })` — pure, call on every cart change
+```ts
+payload: {
+  type: 'delivery' | 'pickup',
+  items: [{ item_id: uuid, qty: number, option_ids?: uuid[] }],
+  postal_code?: string,          // delivery: resolves the zone
+  promo_code?: string,           // case-insensitive
+  scheduled_for?: string | null, // ISO; null/absent = ASAP
+  tip_cents?: number,
+  contact?: { phone?: string },  // optional; lets first_order promos be checked early
+}
+→ {
+  ok: boolean, type, scheduled_for,
+  lines: [{ item_id, sku, category_id, name, name_de, name_en, name_ja, qty, unit_price_cents,
+            options: [{ group_id, group, group_de, option_id, option, option_de, price_cents }],
+            options_cents, line_total_cents, prep_minutes, allergens }],
+  subtotal_cents, pickup_discount_cents, promo_discount_cents, discount_cents,
+  delivery_fee_cents, tip_cents, total_cents, vat_cents,
+  zone: { id, code, name, min_order_cents, fee_cents, free_delivery_over_cents, promised_minutes } | null,
+  promised_minutes: number | null,
+  promo: { code, kind: 'percent'|'fixed', value, discount_cents, scope } | null,
+  problems: [{ code, item_id?, option_id?, group_id?, reason?, ... }]
+}
+```
+Problem codes: `unavailable` (item; `reason` = `schedule` | `max_per_order` | `stock` when relevant) · `invalid_options` (option not offered for the item / inactive, or group `min`/`max`/`selected` violated) · `below_min_order` (`min_order_cents`, `subtotal_cents`) · `out_of_zone` (`postal_code` or `reason: postal_code_missing`) · `closed` (`reason` = `kitchen_paused` | `outside_hours` | `slot_too_soon` | `slot_too_far` | `slot_outside_hours`) · `promo_invalid` (`reason` = `unknown` | `expired` | `not_yet_valid` | `limit_reached` | `min_order` | `wrong_day` | `too_late` | `category_not_in_cart` | `not_first_order`) · `empty_cart` · `invalid_input` (`field`). A quote with problems still returns lines/totals for display; `place_order` will refuse it. `closed` with `outside_hours` = show "pre-orders only" and let the guest pick a slot.
+
+### 5.3 `rpc('place_order', { payload })` — checkout submit
+```ts
+payload: quote payload + {
+  contact: { name: string, phone: string, email?: string },   // phone: any German format, stored E.164
+  address?: { street, floor_apt?, postal_code, city? },        // required for delivery; postal_code drives the zone
+  courier_comment?: string,
+  comment_flags?: ('leave_at_door' | 'dont_ring' | 'call_on_arrival' | 'no_wasabi')[],
+  payment_method: 'card' | 'apple_pay' | 'google_pay' | 'paypal' | 'bitcoin' | 'cash',
+  payment_status?: 'pending' | 'authorized',   // v1: what the payment step reported; default 'pending'
+  payment_ref?: string,                        // e.g. "Visa ···4417"
+  tip_cents?: number,
+}
+→ { order_id: uuid, number: number, total_cents: number, tracking_token: string, status: 'new' | 'accepted' }
+```
+Failure: PostgREST error with `message = 'order_rejected'` and `details` = JSON string of the same `problems[]` as the quote (parse it). Nothing is written in that case. On success the customer is upserted by phone, the order is `new` (or `accepted` when auto-accept applied: authorized/paid, ASAP, total < 50 €, kitchen not paused). Store `tracking_token` in local storage and route to the tracking page with it.
+
+### 5.4 `rpc('get_order_by_token', { token })` — tracking page (poll every ~15 s; realtime for guests = S2-02)
+```ts
+→ null | {
+  order_id, number, status, type, payment_status, payment_method,
+  scheduled_for, promised_minutes, eta,            // eta: ISO or null when finished/cancelled
+  created_at, accepted_at, preparing_at, ready_at, out_at, completed_at, cancelled_at,
+  contact_name, address, courier_comment, comment_flags,
+  items: [{ name, qty, unit_price_cents, options, line_total_cents }],
+  subtotal_cents, discount_cents, delivery_fee_cents, tip_cents, total_cents, vat_cents, promo_code,
+  events: [{ at, type }]                             // created, accepted, preparing, ready, handed_to_driver, delivered / picked_up, cancelled, refunded
+}
+```
+No phone, no staff ids, no internal notes are returned.
+
+### 5.5 Not for the web
+`set_order_status`, `kitchen_pause` require a staff session (S4). Storage bucket for `photos` is not created in S2-01 — S3 renders `photos[]` paths against a public bucket `menu` once S4-01/S2-02 creates it; until then use placeholder art.
 ## 6. Backoffice → Supabase (S4) — filled after S2-01
 ## 7. Automation / FastAPI webhooks (S5) — later
