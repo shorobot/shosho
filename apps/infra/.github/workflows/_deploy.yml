@@ -72,6 +72,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # cache export is best-effort (ignore-error): a GHA cache "failed to reserve cache" must never block a deploy.
       - uses: docker/build-push-action@v7
         with:
           context: ${{ steps.ctx.outputs.web }}
@@ -79,7 +80,7 @@ jobs:
           tags: ${{ steps.meta.outputs.web }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=web
-          cache-to: type=gha,scope=web,mode=max
+          cache-to: type=gha,scope=web,mode=max,ignore-error=true
 
       - uses: docker/build-push-action@v7
         with:
@@ -88,7 +89,7 @@ jobs:
           tags: ${{ steps.meta.outputs.api }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=api
-          cache-to: type=gha,scope=api,mode=max
+          cache-to: type=gha,scope=api,mode=max,ignore-error=true
 
   deploy:
     name: deploy to ${{ inputs.environment }}
