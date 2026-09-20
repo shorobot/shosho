@@ -11,7 +11,7 @@ Phase 1 — infrastructure (S1-02 running) ‖ backend schema (S2-01 issued). De
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | in progress   | S1-02       | S1-01 (partial: no staging URL, no Supabase, no report) | — |
-| S2 | Backend      | in progress   | S2-01       | —              | needs Supabase project from S1-02 task 6 (can start locally) |
+| S2 | Backend      | boot done     | —           | S2-01 (staging push pending: no Supabase project/secrets yet) | staging `db push` waits for `shosho-staging` ref + DB password (S1-02 task 6 / owner) |
 | S3 | Frontend     | not started   | —           | —              | waits for S2-01 (api-contracts §5) |
 | S4 | Back-office  | not started   | —           | —              | waits for S2-01, S3-01 |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
