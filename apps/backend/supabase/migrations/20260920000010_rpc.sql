@@ -88,7 +88,6 @@ declare
   v_sched     timestamptz := nullif(payload->>'scheduled_for', '')::timestamptz;
   v_phone     text  := public.normalize_phone(payload->'contact'->>'phone');
   v_tip       integer := greatest(coalesce((payload->>'tip_cents')::integer, 0), 0);
-  v_when      timestamptz := coalesce(v_sched, now());
   v_loc       timestamp := coalesce(v_sched, now()) at time zone 'Europe/Berlin';
   v_ops       jsonb;
   v_kitchen   jsonb;
