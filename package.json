@@ -1,0 +1,13 @@
+{
+  "name": "shosho",
+  "private": true,
+  "packageManager": "pnpm@10.34.5",
+  "engines": { "node": ">=22" },
+  "workspaces": ["apps/web", "apps/backoffice"],
+  "scripts": {
+    "lint": "pnpm -r --if-present run lint",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --if-present run build"
+  }
+}

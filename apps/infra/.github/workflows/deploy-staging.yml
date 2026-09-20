@@ -1,0 +1,33 @@
+name: Deploy staging
+
+# Runs after CI succeeds on main (D-005: staging = main, auto-deploy).
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      image_tag: staging
+      remote_dir: /opt/shosho/staging
+    secrets:
+      SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+      SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+      SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+      N8N_ENCRYPTION_KEY: ${{ secrets.STAGING_N8N_ENCRYPTION_KEY }}
+      N8N_BASIC_AUTH_USER: ${{ secrets.STAGING_N8N_BASIC_AUTH_USER }}
+      N8N_BASIC_AUTH_PASSWORD: ${{ secrets.STAGING_N8N_BASIC_AUTH_PASSWORD }}
+      SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
