@@ -19,3 +19,6 @@ TETA+PI manager granted co-tenant access to the shared droplet (user `shos`, 512
 
 ## 2026-09-20 — S0 Orchestrator — design + S2-01
 Owner delivered the brandbook (PDF) and the full UI canvas (5 guest screens, 13 back-office screens, empty/error states, CRO notes) — stored in /docs/design/ with a README (tokens, screen inventory, product rules). S0 derived the domain model and wrote /docs/api-contracts.md §1–4 (schema, RPCs, realtime, RLS) with an explicit S2-01 subset. Issued S2-01 (Supabase schema v1 + order RPCs + RLS + seed + types). S1-02 runs in parallel; S2 can start on local Supabase until the staging project exists.
+
+## 2026-09-20 — S0 Orchestrator — worktree incident + D-008
+S0 and S1-02 shared one checkout; S1's commit `ec9daef` [S1-02] landed on S0's branch and was merged into main via PR #3 (content valid, CI green). Fixed: local `s1-02` repointed to main (S1 continues from there with its uncommitted workflow edits intact), S0 moved to `.worktrees/s0`. D-008: one worktree per session; root checkout = S1.

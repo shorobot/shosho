@@ -50,3 +50,9 @@ Status: accepted 2026-09-20 (owner)
 Decision: n8n is removed from D-001. Agent orchestration, schedules and webhooks are implemented in code: FastAPI (webhooks, HTTP), Claude Agent SDK (agents), plain cron / systemd timers (schedules).
 Why: n8n would be needed only at S5 (3–4 boots away), costs 300–500M RAM — most of the 512M budget — and adds a second runtime to operate. The same is done in code with what we already have.
 Consequences: remove n8n from `docker-compose.yml`, `.env.example`, infra README, GitHub Secrets (`STAGING_N8N_*`). Revisit only if S5 proves a concrete need (new decision).
+
+## D-008 — One git worktree per session
+Status: accepted 2026-09-20 (S0, after an incident)
+Decision: sessions never share a working tree. The main checkout `/Users/bobbob/BOB/SERVER/SH.OS.` belongs to **S1 DevOps** (it was there first). Every other session works in its own worktree: `git worktree add .worktrees/<session> -b <branch> origin/main` (e.g. `.worktrees/s2`, branch `s2-01`). S0 uses `.worktrees/s0`. `.worktrees/` is git-ignored. Never use bare `git stash` — the stash stack is shared across worktrees.
+Why: on 2026-09-20 S0 and S1-02 ran concurrently in one checkout; S0's `git checkout -b` moved HEAD away from `s1-02`, S1's first commit landed on S0's branch and got merged via S0's PR #3. Nothing was lost, but the attribution and branch history are muddled.
+Consequences: every boot states the worktree path. A session that finds HEAD on a branch that is not its own must stop and report instead of committing.
