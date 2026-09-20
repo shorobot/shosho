@@ -10,7 +10,7 @@ Phase 1 — infrastructure (S1-02 running) ‖ backend schema (S2-01 issued). De
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | boot done     | —           | S1-02          | owner: `STAGING_SSH_KEY` + Supabase `shosho-staging` secrets (see log 2026-09-20 S1-02) |
+| S1 | DevOps       | boot done     | —           | S1-02          | — |
 | S2 | Backend      | in progress   | S2-01       | —              | needs Supabase project from S1-02 task 6 (can start locally) |
 | S3 | Frontend     | not started   | —           | —              | waits for S2-01 (api-contracts §5) |
 | S4 | Back-office  | not started   | —           | —              | waits for S2-01, S3-01 |
@@ -33,7 +33,5 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/docs`: architecture.md, api-contracts.md (§1–4 = DB schema, RPC, realtime, RLS — target model + S2-01 scope), design/ (brandbook.pdf, shosho-site.dc.html canvas with 19 screens, README with screen inventory + product rules).
 
 ## Not yet done / open
-- `STAGING_SSH_KEY` must be replaced by the owner with `~/.ssh/shos_ed25519`; until then `Deploy staging` on `main` fails at ssh (S1-02, owner).
-- Supabase staging project `shosho-staging` (eu-central-1) — owner creates it and sets the 3 `STAGING_SUPABASE_*` secrets (S1-02, owner). No tables — S2.
 - CF SSL Full issue on `shos.hellfiresol.com` — `http://` serves SHOSHO staging, `https://` still serves hellfire. Owner / TETA+PI side.
 - Prod target — not decided; separate boot after S7-01.
