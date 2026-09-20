@@ -153,11 +153,75 @@ jobs:
         working-directory: apps/infra
         run: docker compose down -v --remove-orphans
 
+
+  backend:
+    name: backend (supabase)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Supabase CLI version
+        run: pnpm exec supabase --version
+
+      - name: Start local Supabase (applies migrations + seed)
+        run: pnpm exec supabase start
+
+      - name: db reset (migrations + seed from scratch, must be error-free)
+        run: pnpm exec supabase db reset
+
+      - name: db lint (plpgsql_check)
+        run: pnpm exec supabase db lint --level warning --fail-on warning
+
+      - name: Seed is idempotent (apply a second time)
+        run: |
+          eval "$(pnpm exec supabase status -o env | sed 's/^/export /')"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/seed.sql
+
+      - name: Typecheck tests
+        run: pnpm run typecheck
+
+      - name: Integration tests (vitest against local Supabase)
+        run: |
+          eval "$(pnpm exec supabase status -o env | sed 's/^/export /')"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          pnpm test
+
+      - name: Generated types are up to date
+        run: |
+          pnpm run --silent db:types
+          git diff --exit-code -- types/database.ts \
+            || { echo "::error::types/database.ts is stale — run 'pnpm --filter @shosho/backend db:types' and commit"; exit 1; }
+
+      - name: Upload generated types
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-types
+          path: apps/backend/types/database.ts
+
+      - name: Stop Supabase
+        if: always()
+        run: pnpm exec supabase stop --no-backup
+
   # Single required status check for branch protection.
   ci:
     name: CI
     if: always()
-    needs: [node, python, infra]
+    needs: [node, python, infra, backend]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
