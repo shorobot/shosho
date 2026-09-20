@@ -1,19 +1,19 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-09-20 (S0 — S1-02 closed, staging deploy green, S1-03 issued)
+Last update: 2026-09-20 (S0 — S2-01 merged, contracts reconciled + §6, S3-01 issued)
 
 ## Phase
-Phase 1 — staging is live and auto-deploys from `main`. S1-03 (migrations CI + secrets hardening) ‖ S2-01 (schema). Design is in `/docs/design/`.
+Phase 2 — product. Backend v1 in `main` (PR #6). Running: S1-03 (migrations CI + secrets) ‖ S3-01 (guest site). S4-01 next once S3 has the design system in place.
 
 ## Sessions
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | in progress   | S1-03       | S1-02          | owner item B: Supabase `shosho-staging` + secrets (not created yet) |
-| S2 | Backend      | boot done     | —           | S2-01 (staging push pending: owner item B) | staging `db push` waits for `shosho-staging` ref + DB password |
-| S3 | Frontend     | not started   | —           | —              | waits for S2-01 (api-contracts §5) |
-| S4 | Back-office  | not started   | —           | —              | waits for S2-01, S3-01 |
+| S2 | Backend      | boot done     | —           | S2-01 (merged; staging push pending owner item B) | next: S2-02 (payments, timeline, storage, order edits) after S3-01/S4-01 start |
+| S3 | Frontend     | in progress   | S3-01       | —              | Supabase staging (item B) for the live deploy; can build locally / mock meanwhile |
+| S4 | Back-office  | not started   | —           | —              | api-contracts §6 ready; S0 issues S4-01 after S3-01 ships the design system |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
 | S6 | QA           | not started   | —           | —              | waits for S4-01 |
 | S7 | Security     | not started   | —           | —              | waits for S4-01 |
@@ -30,7 +30,8 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/apps/infra`: pnpm monorepo wrapper, `.env.example` per app, `docker-compose.yml` (local: api placeholder), `docker-compose.staging.yml` (web + api, loopback ports), placeholder images, `scripts/shos-user-setup.sh`, `scripts/sync-workflows.sh`, workflows `ci.yml` (per-app no-op jobs + compose smoke + loopback-port guard), `deploy-staging.yml`, `deploy-prod.yml`, `_deploy.yml`. No n8n, no nginx, no root scripts.
 - GitHub Secrets (repo-level, to be moved to env `staging` in S1-03): `STAGING_SSH_HOST/USER/KEY` (KEY replaced 2026-09-20, working).
 - `/memory`: log, state, decisions (D-001…D-008), sessions, infra-access, boots/ (S1-01 closed, S1-02 done, S1-03 + S2-01 issued).
-- `/docs`: architecture.md, api-contracts.md (§1–4 schema/RPC/realtime/RLS), design/ (brandbook, canvas, README).
+- `/apps/backend` (S2-01): Supabase CLI project — 10 migrations, RPCs `quote_order`/`place_order`/`set_order_status`/`get_order_by_token`/`kitchen_pause`, RLS, seed (menu, zones, promos, 4 staff logins), `types/database.ts`, 21 vitest tests, `backend` CI job (supabase start → reset → lint → seed ×2 → tests → types diff). Not yet pushed to any Supabase cloud project.
+- `/docs`: architecture.md, api-contracts.md (§1–4 implemented schema, §5 web contract by S2, §6 backoffice contract by S0), design/ (brandbook, canvas, README).
 
 ## Not yet done / open
 - **Owner item B**: Supabase `shosho-staging` (eu-central-1) + secrets `STAGING_SUPABASE_URL / _ANON_KEY / _SERVICE_ROLE_KEY / _DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`, variable `STAGING_SUPABASE_PROJECT_REF`. Blocks S2-01 task 8 and S1-03 task 1.

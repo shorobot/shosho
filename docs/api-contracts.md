@@ -3,7 +3,7 @@
 The single place where contracts between layers are fixed. Changed ONLY through S0.
 A child session that needs a contract change → writes a proposal to /memory/boots/proposed/.
 
-Derived from `/docs/design/` (screens + product rules) by S0 on 2026-09-20. Section 1 is the **target** domain model; the column marked "S2-01" says what the first backend boot must ship. Everything else is later boots.
+Derived from `/docs/design/` by S0 on 2026-09-20; reconciled with what S2-01 actually shipped (PR #6) on 2026-09-20 — §1–4 now describe the **implemented** schema; items marked S2-02 are not built yet. Source of truth for column names: `apps/backend/supabase/migrations/` + `apps/backend/types/database.ts`.
 
 ## 1. DB schema (Supabase / Postgres, schema `public`)
 
@@ -12,9 +12,9 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ### 1.1 Settings & team — S2-01
 | Table | Key columns | Notes |
 |---|---|---|
-| `settings` | `key text pk`, `value jsonb` | single-tenant key/value: `business` (name, address, phone, email, impressum, ust_id), `opening_hours` (per weekday + holidays), `ops` (prep_default_min=22, rush_extra_min=15, preorder_max_days=7, auto_accept_paid_under_cents=5000, pause_allowed), `payments` (enabled methods, tip presets), `kitchen` (paused bool, paused_by, paused_at), `site` (seo title/desc, cookie_banner, robots, maintenance) |
+| `settings` | `key text pk`, `value jsonb` | single-tenant key/value: `business` (name, address, phone, email, impressum, ust_id), `opening_hours` (per weekday + holidays), `ops` (prep_default_min=22, rush_extra_min=15, preorder_max_days=7, auto_accept_paid_under_cents=5000, pause_allowed, pickup_discount_pct=10), `payments` (private: provider, payout) and **`payments.enabled`** (public: methods, tip_presets_cents, capture), `kitchen` (private: paused_by, paused_at, rush bool) and **`kitchen.status`** (public: paused, since — written by `kitchen_pause()`), `site` (seo title/desc, cookie_banner, robots, maintenance). Public allow-list = `settings_public_keys()`: business, opening_hours, site, payments.enabled, kitchen.status |
 | `staff` | `id uuid pk = auth.users.id`, `name`, `role staff_role`, `phone`, `active` | `staff_role`: `owner`, `operator`, `kitchen`, `driver` |
-| `delivery_zones` | `code text` (A/B/C), `name`, `areas text`, `min_order_cents`, `fee_cents`, `promised_minutes`, `active`, `postal_codes text[]` | zone resolution v1 = by postal code list; polygon later |
+| `delivery_zones` | `code text` (A/B/C), `name`, `areas text`, `min_order_cents`, `fee_cents`, `free_delivery_over_cents int null` (null = never free), `promised_minutes`, `active`, `postal_codes text[]` | zone resolution v1 = by postal code list; polygon later |
 
 ### 1.2 Menu — S2-01
 | Table | Key columns | Notes |
@@ -36,9 +36,9 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ### 1.4 Orders — S2-01
 | Table | Key columns | Notes |
 |---|---|---|
-| `orders` | `number int unique` (sequence, #2418), `channel order_channel`, `type order_type`, `status order_status`, `payment_status payment_status`, `payment_method payment_method`, `payment_ref text` ("Visa ···4417"), `customer_id null`, `contact_name`, `contact_phone`, `address jsonb null` (snapshot: street, floor_apt, postal_code, city), `zone_id null`, `distance_km null`, `courier_comment`, `comment_flags text[]` (leave_at_door/dont_ring/call_on_arrival/no_wasabi), `allergy_note` (snapshot of customer.kitchen_note), `scheduled_for timestamptz null` (null = ASAP), `promised_minutes`, `accepted_at/by`, `preparing_at`, `ready_at`, `driver_id null`, `out_at`, `completed_at`, `cancelled_at`, `cancel_reason`, `subtotal_cents`, `discount_cents`, `delivery_fee_cents`, `tip_cents`, `total_cents`, `vat_cents`, `promo_code text null` | enums: `order_channel` website/phone/instagram/facebook/lieferando/wolt · `order_type` delivery/pickup · `order_status` new/accepted/preparing/ready/out_for_delivery/delivered/picked_up/cancelled/refunded · `payment_status` pending/authorized/paid/failed/refunded · `payment_method` card/apple_pay/google_pay/paypal/bitcoin/cash |
+| `orders` | `number int unique` (sequence, #2418), `channel order_channel`, `type order_type`, `status order_status`, `payment_status payment_status`, `payment_method payment_method`, `payment_ref text` ("Visa ···4417"), `customer_id null`, `contact_name`, `contact_phone`, `address jsonb null` (snapshot: street, floor_apt, postal_code, city), `zone_id null`, `distance_km null`, `courier_comment`, `comment_flags text[]` (leave_at_door/dont_ring/call_on_arrival/no_wasabi), `allergy_note` (snapshot of customer.kitchen_note), `scheduled_for timestamptz null` (null = ASAP), `promised_minutes`, `accepted_at/by`, `preparing_at`, `ready_at`, `driver_id null`, `out_at`, `completed_at`, `cancelled_at`, `cancel_reason`, `subtotal_cents`, `discount_cents`, `delivery_fee_cents`, `tip_cents`, `total_cents`, `vat_cents`, `promo_code text null`, `tracking_token text unique` (16 random bytes hex; guest tracking) | enums: `order_channel` website/phone/instagram/facebook/lieferando/wolt · `order_type` delivery/pickup · `order_status` new/accepted/preparing/ready/out_for_delivery/delivered/picked_up/cancelled/refunded · `payment_status` pending/authorized/paid/failed/refunded · `payment_method` card/apple_pay/google_pay/paypal/bitcoin/cash |
 | `order_items` | `order_id`, `item_id null`, `name snapshot`, `qty`, `unit_price_cents`, `options jsonb` (snapshot `[{group, option, price_cents}]`), `line_total_cents`, `modified_by_operator bool` | |
-| `order_events` | `order_id`, `at`, `type text` (created/payment_authorized/accepted/preparing/item_changed/ready/handed_to_driver/delivered/cancelled/refunded/note), `actor_type` (customer/staff/system), `actor_id null`, `payload jsonb` | the "Verlauf" timeline; written by triggers on status change and by RPC |
+| `order_events` | `order_id`, `at`, `type text` (created/payment_authorized/accepted/preparing/item_changed/ready/handed_to_driver/delivered/picked_up/cancelled/refunded/note), `actor_type` (customer/staff/system), `actor_id null`, `payload jsonb` | the "Verlauf" timeline; written by triggers on status change and by RPC |
 
 ### 1.5 Promotions — S2-01 (promo codes only)
 | Table | Key columns | Notes |
@@ -55,9 +55,9 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ## 2. RPC (Postgres functions, `security definer`, exposed via PostgREST) — S2-01
 | Function | Caller | Contract |
 |---|---|---|
-| `quote_order(payload)` | anon (web) | input: items `[{item_id, qty, option_ids[]}]`, `type`, `postal_code?`, `promo_code?`, `scheduled_for?` → returns lines with snapshots, subtotal, discount, fee, total, zone, promised_minutes, problems `[{code, item_id?}]` (unavailable, below_min_order, out_of_zone, closed, promo_invalid). Pure, no writes. |
-| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token}`. Payment authorization itself = S2-02 (Stripe). |
-| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions; writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush. |
+| `quote_order(payload)` | anon (web) | input: items `[{item_id, qty, option_ids[]}]`, `type`, `postal_code?`, `promo_code?`, `scheduled_for?` → returns lines with snapshots, subtotal, discount, fee, total, zone, promised_minutes, problems `[{code, item_id?, reason?}]` (unavailable, invalid_options, below_min_order, out_of_zone, closed, promo_invalid, empty_cart, invalid_input). Pure, no writes. Full shape in §5.2. |
+| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token, status}` (status `accepted` when auto-accept applied). Accepts `payment_status` pending/authorized + `payment_ref` as reported by the client in v1; staff callers may set `channel` (phone). Payment authorization itself = S2-02 (Stripe). |
+| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions and role gates (kitchen: preparing/ready only; driver: delivered on own orders); writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush. Returns the full updated `orders` row. v1 payment stub: delivered/picked_up → `paid`; cancelled resets authorized → pending (replaced in S2-02). |
 | `get_order_by_token(token)` | anon | guest order tracking (status + ETA), no PII beyond what the guest entered. |
 | `kitchen_pause(paused bool)` | operator/owner | flips `settings.kitchen.paused`, event. |
 
@@ -68,10 +68,10 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ## 4. RLS — S2-01
 | Role | menu_* / delivery_zones / settings public keys | orders / customers | staff / settings private |
 |---|---|---|---|
-| `anon` | select (only on-sale items, active categories) | none directly — only via RPC | none |
-| `authenticated` staff `operator`/`owner` | all | all | owner: all; operator: read |
-| `kitchen` | select | select orders + set_order_status (preparing/ready only) | none |
-| `driver` | none | select own orders (`driver_id = auth.uid()`), set delivered | none |
+| `anon` | select (only on-sale items, active categories, active zones, public settings keys) | none directly — only via RPC | none |
+| `authenticated` staff `operator`/`owner` | all | all; `promo_codes` all | owner: all; operator: read |
+| `kitchen` | select (same as anon) | select orders; `preparing`/`ready` only via `set_order_status` (no direct UPDATE) | own `staff` row only |
+| `driver` | select (same as anon) | select own orders (`driver_id = auth.uid()`); `delivered` via `set_order_status` | own `staff` row only |
 | `service_role` (automation, S5) | all | all | all |
 
 ## 5. Web → Supabase (S3 reads this) — written by S2 in S2-01, reviewed by S0
@@ -147,5 +147,28 @@ No phone, no staff ids, no internal notes are returned.
 
 ### 5.5 Not for the web
 `set_order_status`, `kitchen_pause` require a staff session (S4). Storage bucket for `photos` is not created in S2-01 — S3 renders `photos[]` paths against a public bucket `menu` once S4-01/S2-02 creates it; until then use placeholder art.
-## 6. Backoffice → Supabase (S4) — filled after S2-01
+## 6. Backoffice → Supabase (S4) — written by S0 after S2-01
+
+Client: `@supabase/supabase-js` with the anon key + a **staff auth session** (Supabase Auth email/password; seed logins in `apps/backend/README.md`). Role comes from `staff.role` via `auth_role()`; the UI reads its own `staff` row for "who am I". Types from `apps/backend/types/database.ts`.
+
+### 6.1 Orders board (Bestellungen) — operator / owner
+- Initial load: `from('orders').select('*, order_items(*), order_events(*)')` filtered by day (`created_at >= today`) or `status in (...)`; pre-orders = `scheduled_for is not null and status in ('new','accepted')`.
+- Live: `channel('orders').on('postgres_changes', {schema:'public', table:'orders'|'order_items'|'order_events'})` — the publication exists. Re-fetch the row on every event; do not diff locally.
+- Actions → `rpc('set_order_status', {order_id, new_status, payload})`. Transitions: `new→accepted|cancelled`, `accepted→preparing|cancelled`, `preparing→ready|cancelled`, `ready→out_for_delivery|picked_up|cancelled`, `out_for_delivery→delivered|cancelled`, completed+paid → `refunded` (owner/operator). Payload: `{driver_id}` for out_for_delivery, `{reason}` for cancelled, `{note}` free text, `{cash_received: true}` for cash on delivered (v1 ignores). Returns the updated row.
+- Pause intake: `rpc('kitchen_pause', {paused: bool})`. Rush toggle / prep time: `from('settings').update({value})` on keys `kitchen` / `ops` (owner) — operator reads only in v1; S0 may relax in S4-01.
+- Phone order: `rpc('place_order', {...payload, channel: 'phone'})` from a staff session.
+- Kitchen board (role `kitchen`): same reads, only `preparing` / `ready` actions.
+- Driver view (role `driver`): `from('orders')` returns own deliveries only; action `delivered`.
+
+### 6.2 Order detail (Detail) — `orders` + `order_items` + `order_events` + `customers` (by `customer_id`). Editing positions = S2-02 (`update_order_items`); until then read-only positions. Refund/cancel via `set_order_status`.
+
+### 6.3 History (Historie) — `from('orders')` with range/status/payment/type/driver filters + `order_items(count)`; export = client-side CSV/XLSX from the same query.
+
+### 6.4 Customers (Kunden / Profil) — `from('customers').select('*, customer_addresses(*)')` + view `customer_stats` (orders_count, spent_cents, avg_cents, last_order_at, days_silent) for segments and sorting. Tags / kitchen_note / consents: direct `update` (operator, owner). Timeline (`customer_events`) = S2-02; v1 shows the customer's orders only.
+
+### 6.5 Menu (Speisekarte / Artikel) — direct CRUD on `menu_categories`, `menu_items`, `option_groups`, `options`, `menu_item_option_groups` (operator, owner). Stoplist = `menu_items.stoplist_until = today`. Photos: bucket `menu` does not exist yet (S2-02) — upload UI disabled until then.
+
+### 6.6 Settings (Einstellungen) — `settings` rows by key (owner write). Team = `staff` rows (owner write); inviting a user = Supabase Auth admin — S4-01 documents the manual path, automation later.
+
+### 6.7 Not in v1 (needs S2-02 / later boots): campaigns, automations, banners/site publish, reports views, devices, payment provider settings.
 ## 7. Automation / FastAPI webhooks (S5) — later
