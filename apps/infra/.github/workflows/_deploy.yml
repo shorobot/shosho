@@ -1,5 +1,7 @@
 # Reusable deploy: build images → push to GHCR → ssh to server → docker compose pull/up → health.
 # Called by deploy-staging.yml (env=staging) and deploy-prod.yml (env=production).
+# Server side runs as an unprivileged co-tenant user with ROOTLESS docker (memory/infra-access.md):
+# no sudo, DOCKER_HOST points at the user's socket, everything lives under $HOME.
 name: _deploy
 
 on:
@@ -14,16 +16,23 @@ on:
         required: true
         type: string
       remote_dir:
-        description: Directory on the server
+        description: Directory on the server (must be inside the deploy user's home)
         required: true
         type: string
+      web_port:
+        description: Host port (127.0.0.1) the web container publishes — used by the health check
+        required: false
+        type: string
+        default: "8200"
+      api_port:
+        description: Host port (127.0.0.1) the api container publishes — used by the health check
+        required: false
+        type: string
+        default: "8201"
     secrets:
       SSH_HOST: { required: true }
       SSH_USER: { required: true }
       SSH_KEY: { required: true }
-      N8N_ENCRYPTION_KEY: { required: true }
-      N8N_BASIC_AUTH_USER: { required: true }
-      N8N_BASIC_AUTH_PASSWORD: { required: true }
       SUPABASE_URL: { required: false }
       SUPABASE_ANON_KEY: { required: false }
       SUPABASE_SERVICE_ROLE_KEY: { required: false }
@@ -89,6 +98,10 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       url: ${{ vars.PUBLIC_URL }}
+    env:
+      REMOTE_DIR: ${{ inputs.remote_dir }}
+      WEB_PORT: ${{ inputs.web_port }}
+      API_PORT: ${{ inputs.api_port }}
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +110,15 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/config <<EOT
+          Host target
+            HostName ${{ secrets.SSH_HOST }}
+            User ${{ secrets.SSH_USER }}
+            IdentityFile ~/.ssh/deploy
+            IdentitiesOnly yes
+            BatchMode yes
+            ConnectTimeout 20
+          EOT
 
       - name: Render .env from secrets
         # The server never holds secrets outside this file; GitHub Secrets is the source of truth.
@@ -104,11 +126,6 @@ jobs:
           cat > env.rendered <<EOT
           WEB_IMAGE=${{ needs.build.outputs.web_image }}
           API_IMAGE=${{ needs.build.outputs.api_image }}
-          N8N_HOST=${{ vars.PUBLIC_HOST }}
-          N8N_WEBHOOK_URL=https://${{ vars.PUBLIC_HOST }}/n8n/
-          N8N_ENCRYPTION_KEY=${{ secrets.N8N_ENCRYPTION_KEY }}
-          N8N_BASIC_AUTH_USER=${{ secrets.N8N_BASIC_AUTH_USER }}
-          N8N_BASIC_AUTH_PASSWORD=${{ secrets.N8N_BASIC_AUTH_PASSWORD }}
           SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -117,38 +134,56 @@ jobs:
 
       - name: Upload compose + env
         run: |
-          S="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh -i ~/.ssh/deploy "$S" "mkdir -p '${{ inputs.remote_dir }}'"
-          scp -i ~/.ssh/deploy apps/infra/docker-compose.staging.yml "$S:${{ inputs.remote_dir }}/docker-compose.yml"
-          scp -i ~/.ssh/deploy env.rendered "$S:${{ inputs.remote_dir }}/.env"
-          ssh -i ~/.ssh/deploy "$S" "chmod 600 '${{ inputs.remote_dir }}/.env'"
+          ssh target "mkdir -p '$REMOTE_DIR'"
+          scp -q apps/infra/docker-compose.staging.yml "target:$REMOTE_DIR/docker-compose.yml"
+          scp -q env.rendered "target:$REMOTE_DIR/.env"
+          ssh target "chmod 600 '$REMOTE_DIR/.env'"
 
-      - name: Pull & up
+      - name: Pull & up (rootless docker)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
-          S="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh -i ~/.ssh/deploy "$S" bash -s <<'EOT'
+          # Token goes over stdin only — never on the remote command line (shared host, /proc is readable).
+          printf '%s' "$GHCR_TOKEN" | ssh target "export DOCKER_HOST=unix:///run/user/\$(id -u)/docker.sock; docker login ghcr.io -u '$GHCR_USER' --password-stdin >/dev/null"
+          ssh target "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'EOT'
           set -euo pipefail
-          cd "${{ inputs.remote_dir }}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          # Non-login ssh shells do not read ~/.profile → point at the rootless daemon explicitly.
+          export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
+          docker info --format 'daemon {{.ServerVersion}} rootless={{range .SecurityOptions}}{{if eq . "name=rootless"}}yes{{end}}{{end}}'
+          cd "$REMOTE_DIR"
           docker compose pull -q
           docker compose up -d --remove-orphans
           docker logout ghcr.io >/dev/null
           docker image prune -f >/dev/null
           EOT
 
-      - name: Health
+      - name: Health (on the server, 127.0.0.1 only)
         run: |
-          S="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh -i ~/.ssh/deploy "$S" bash -s <<'EOT'
+          ssh target "REMOTE_DIR='$REMOTE_DIR' WEB_PORT='$WEB_PORT' API_PORT='$API_PORT' bash -s" <<'EOT'
           set -e
+          export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
           for i in $(seq 1 20); do
-            web=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/ || true)
-            api=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/health || true)
+            web=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/" || true)
+            api=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${API_PORT}/health" || true)
             echo "try $i: web=$web api=$api"
-            [ "$web" = 200 ] && [ "$api" = 200 ] && exit 0
+            if [ "$web" = 200 ] && [ "$api" = 200 ]; then
+              curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -o 'SHOSHO staging OK' || true
+              curl -fsS "http://127.0.0.1:${API_PORT}/health"; echo
+              echo "--- memory (cgroup slice of user $(id -u), limit 512M) ---"
+              m=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/memory.current" 2>/dev/null || echo 0)
+              echo "memory.current=$((m/1024/1024))M"
+              docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' || true
+              exit 0
+            fi
             sleep 5
           done
-          cd "${{ inputs.remote_dir }}" && docker compose ps
+          cd "$REMOTE_DIR" && docker compose ps && docker compose logs --tail 50
           exit 1
           EOT
-          curl -fsS -o /dev/null -w 'public: %{http_code} %{url_effective}\n' "${{ vars.PUBLIC_URL }}"
+
+      - name: Public URL (informational — edge/TLS is owned by TETA+PI / Cloudflare, not by us)
+        if: vars.PUBLIC_URL != ''
+        run: |
+          curl -sS -o /dev/null -m 20 -w 'public: %{http_code} %{url_effective}\n' "${{ vars.PUBLIC_URL }}" \
+            || echo "::warning::public URL ${{ vars.PUBLIC_URL }} not reachable (see memory/infra-access.md — CF SSL / vhost issue)"
