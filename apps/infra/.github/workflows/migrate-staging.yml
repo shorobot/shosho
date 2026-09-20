@@ -122,8 +122,9 @@ jobs:
           pnpm exec supabase db push --dry-run 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Push migrations + seed
-        # = package.json db:push = `supabase db push --include-seed` (seed is idempotent, CI proves it).
-        run: pnpm run db:push -- --yes
+        # Mirrors package.json `db:push` (= `supabase db push --include-seed`; seed is idempotent, CI proves it).
+        # Called directly: `pnpm run … -- --yes` forwards the literal `--` and the CLI rejects it.
+        run: pnpm exec supabase db push --include-seed --yes
 
       - name: Remote migration list
         run: |
