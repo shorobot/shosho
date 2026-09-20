@@ -56,3 +56,15 @@ Status: accepted 2026-09-20 (S0, after an incident)
 Decision: sessions never share a working tree. The main checkout `/Users/bobbob/BOB/SERVER/SH.OS.` belongs to **S1 DevOps** (it was there first). Every other session works in its own worktree: `git worktree add .worktrees/<session> -b <branch> origin/main` (e.g. `.worktrees/s2`, branch `s2-01`). S0 uses `.worktrees/s0`. `.worktrees/` is git-ignored. Never use bare `git stash` — the stash stack is shared across worktrees.
 Why: on 2026-09-20 S0 and S1-02 ran concurrently in one checkout; S0's `git checkout -b` moved HEAD away from `s1-02`, S1's first commit landed on S0's branch and got merged via S0's PR #3. Nothing was lost, but the attribution and branch history are muddled.
 Consequences: every boot states the worktree path. A session that finds HEAD on a branch that is not its own must stop and report instead of committing.
+
+## D-009 — Report PRs merge `origin/main` first; `memory/` is append-only for child sessions
+Status: accepted 2026-09-20 (S0, after three consecutive conflicts in `memory/log.md` / `state.md`)
+Decision: before opening or updating a PR that touches `/memory`, a session runs `git merge origin/main` into its branch and resolves conflicts in `memory/` by **keeping both sides** (log entries are appended in time order; in `state.md` each session keeps only its own row's change). Child sessions never rewrite lines they do not own. S0 merges child PRs that touch only `memory/` without waiting for the child.
+Why: S0, S1 and S2 all write to the same two files; PRs opened minutes apart conflict every time.
+Consequences: a report PR that conflicts is rebased by its author, not by S0 — unless the author has already stopped, in which case S0 resolves and merges.
+
+## D-010 — Back-office shares brand tokens, not components, with the guest site (v1)
+Status: accepted 2026-09-20 (S0)
+Decision: `apps/backoffice` starts in parallel with `apps/web` and owns its own component set. Shared surface = the 7 brand colours, the two typefaces, motion tokens and the pill CTA — copied from `/docs/design/README.md` as CSS variables in each app. Extraction into a `packages/brand` (or `packages/ui`) workspace package is a later boot once both apps exist.
+Why: the two UIs differ (EN guest storefront vs DE dense admin), the design canvas shares no components between them, and waiting for S3 to finish first costs a full boot of wall-clock time.
+Consequences: small duplication (one CSS file, one font config) accepted for v1. Neither session edits the other's app.
