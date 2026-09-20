@@ -1,0 +1,131 @@
+name: Migrate staging
+
+# Applies apps/backend/supabase migrations (+ idempotent seed) to the Supabase project `shosho-staging`.
+# Chain on main:  CI ──▶ Migrate staging ──▶ Deploy staging  (deploy-staging.yml listens to this one).
+#
+#   pull_request (touches the backend SQL) → job `plan`: NO secrets, no remote access. Shows which
+#     migration files are new vs main and fails if an already-applied migration was edited/deleted or
+#     is not timestamp-ordered after the latest on main. SQL itself is validated by CI's `backend` job
+#     (supabase start → db reset → db lint → tests). Environment `staging` is restricted to `main`,
+#     so a PR job could not read its secrets even if it tried.
+#   workflow_run (CI green on main) / workflow_dispatch → job `push`: environment `staging`;
+#     supabase link → db push --dry-run (plan against the real remote) → db push --include-seed → list.
+#
+# Secrets (environment `staging`, owner-entered, never printed): SUPABASE_ACCESS_TOKEN,
+# STAGING_SUPABASE_DB_PASSWORD. Variable: STAGING_SUPABASE_PROJECT_REF.
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  pull_request:
+    paths:
+      - apps/backend/supabase/**
+      - apps/infra/.github/workflows/migrate-staging.yml
+      - .github/workflows/migrate-staging.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-staging-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
+  cancel-in-progress: false
+
+env:
+  MIGRATIONS_DIR: apps/backend/supabase/migrations
+
+jobs:
+  plan:
+    name: plan (PR, no secrets)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Migration plan vs ${{ github.base_ref }}
+        run: |
+          base="origin/${{ github.base_ref }}"
+          {
+            echo "## Migration plan → staging (vs \`$base\`)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          changed=$(git diff --name-status "$base...HEAD" -- "$MIGRATIONS_DIR")
+          if [ -z "$changed" ]; then
+            echo "no migration changes" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          bad=$(echo "$changed" | awk '$1 != "A"')
+          if [ -n "$bad" ]; then
+            echo "::error::applied migrations were modified/renamed/deleted — never edit a migration that is on main; add a new one"
+            echo "$bad"; exit 1
+          fi
+          last=$(git ls-tree --name-only "$base" -- "$MIGRATIONS_DIR/" | sed 's|.*/||' | sort | tail -1 | cut -d_ -f1)
+          echo "latest on $base: ${last:-none}"
+          echo '| new migration | ok |' >> "$GITHUB_STEP_SUMMARY"; echo '|---|---|' >> "$GITHUB_STEP_SUMMARY"
+          rc=0
+          for f in $(echo "$changed" | awk '$1 == "A" {print $2}' | sort); do
+            ts=$(basename "$f" | cut -d_ -f1)
+            if [[ "$ts" =~ ^[0-9]{14}$ ]] && [ "$ts" \> "${last:-0}" ]; then
+              echo "| \`$(basename "$f")\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$(basename "$f")\` | ❌ timestamp must be 14 digits and newer than $last |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::error file=$f::migration timestamp must be newer than the latest on $base ($last)"; rc=1
+            fi
+          done
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo "These files will be applied to \`shosho-staging\` by **Migrate staging → push** after this PR merges (seed re-applied, idempotent)." >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+  push:
+    name: push (main → shosho-staging)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    environment:
+      name: staging
+      url: https://supabase.com/dashboard/project/${{ vars.STAGING_SUPABASE_PROJECT_REF }}
+    defaults:
+      run:
+        working-directory: apps/backend
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+      PROJECT_REF: ${{ vars.STAGING_SUPABASE_PROJECT_REF }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Preconditions
+        run: |
+          [ -n "$PROJECT_REF" ] || { echo "::error::variable STAGING_SUPABASE_PROJECT_REF is not set on environment staging"; exit 1; }
+          [ -n "$SUPABASE_ACCESS_TOKEN" ] || { echo "::error::secret SUPABASE_ACCESS_TOKEN missing in environment staging"; exit 1; }
+          [ -n "$SUPABASE_DB_PASSWORD" ] || { echo "::error::secret STAGING_SUPABASE_DB_PASSWORD missing in environment staging"; exit 1; }
+          ls supabase/migrations
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install (backend only — pins the same supabase CLI as S2 uses locally)
+        working-directory: .
+        run: pnpm install --frozen-lockfile --filter @shosho/backend
+
+      - name: Link project
+        # Non-interactive: SUPABASE_ACCESS_TOKEN + SUPABASE_DB_PASSWORD are read from env by the CLI.
+        run: pnpm exec supabase link --project-ref "$PROJECT_REF" --yes
+
+      - name: Plan (dry run against the remote)
+        run: |
+          echo "## Migrate staging — plan" >> "$GITHUB_STEP_SUMMARY"
+          pnpm exec supabase db push --dry-run 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Push migrations + seed
+        # = package.json db:push = `supabase db push --include-seed` (seed is idempotent, CI proves it).
+        run: pnpm run db:push -- --yes
+
+      - name: Remote migration list
+        run: |
+          echo "## Migrate staging — remote state" >> "$GITHUB_STEP_SUMMARY"
+          pnpm exec supabase migration list 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"

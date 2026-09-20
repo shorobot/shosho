@@ -27,11 +27,5 @@ jobs:
       remote_dir: /home/shosho/shosho/prod
       web_port: "8200"
       api_port: "8201"
-    secrets:
-      SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
-      SSH_USER: ${{ secrets.PROD_SSH_USER }}
-      SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
-      SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SUPABASE_SERVICE_ROLE_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      secret_prefix: PROD
+    secrets: inherit   # resolved inside _deploy.yml from environment `production`

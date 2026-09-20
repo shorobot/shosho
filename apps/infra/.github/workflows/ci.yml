@@ -15,13 +15,13 @@ permissions:
 jobs:
   node:
     name: node (${{ matrix.app }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         app: [web, backoffice]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Detect package.json
         id: detect
@@ -33,10 +33,10 @@ jobs:
             echo "::notice::apps/${{ matrix.app }} has no package.json yet — no-op"
           fi
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         if: steps.detect.outputs.present == 'true'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.present == 'true'
         with:
           node-version-file: .nvmrc
@@ -61,9 +61,9 @@ jobs:
 
   python:
     name: python (automation)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Detect python project
         id: detect
@@ -75,7 +75,7 @@ jobs:
             echo "::notice::apps/automation has no pyproject/requirements yet — no-op"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.detect.outputs.present == 'true'
         with:
           python-version: "3.12"
@@ -102,11 +102,12 @@ jobs:
 
   infra:
     name: infra
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Workflows in sync (apps/infra/.github ↔ .github)
+        # Covers every file incl. migrate-staging.yml; a workflow added on one side only fails here.
         run: diff -r apps/infra/.github/workflows .github/workflows
 
       - name: Compose files valid
@@ -156,16 +157,16 @@ jobs:
 
   backend:
     name: backend (supabase)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: apps/backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -208,7 +209,7 @@ jobs:
 
       - name: Upload generated types
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-types
           path: apps/backend/types/database.ts
@@ -222,7 +223,7 @@ jobs:
     name: CI
     if: always()
     needs: [node, python, infra, backend]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check results
         run: |

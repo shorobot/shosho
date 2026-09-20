@@ -56,6 +56,10 @@ Never edit an applied migration file once it is on `main`; add a new one.
 
 ## Apply to staging
 
+Automatic: merge to `main` → CI → **Migrate staging** (`.github/workflows/migrate-staging.yml`) runs
+`link` + `db push --include-seed` against `shosho-staging`, then Deploy staging ships the containers.
+PRs touching `supabase/` get a secret-free plan job. Details: `apps/infra/README.md` → *Migrations*.
+Manual (owner only, needs the DB password):
 ```bash
 pnpm exec supabase link --project-ref <ref>      # once; asks for the DB password (owner has it)
 pnpm db:push                                     # = supabase db push --include-seed

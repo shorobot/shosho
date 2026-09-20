@@ -1,10 +1,11 @@
 name: Deploy staging
 
-# Runs after CI succeeds on main (D-005: staging = main, auto-deploy).
+# Chain on main (D-005: staging = main, auto-deploy):  CI ──▶ Migrate staging ──▶ Deploy staging.
+# Runs only after the schema push succeeded, so code never ships against a failed migration.
 # Target: shared droplet, user `shos`, rootless docker, 127.0.0.1:8200 (web) / :8201 (api) — D-004.
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Migrate staging]
     branches: [main]
     types: [completed]
   workflow_dispatch:
@@ -21,7 +22,7 @@ concurrency:
 
 jobs:
   staging:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     uses: ./.github/workflows/_deploy.yml
     with:
       environment: staging
@@ -29,11 +30,5 @@ jobs:
       remote_dir: /home/shos/shosho/staging
       web_port: "8200"
       api_port: "8201"
-    secrets:
-      SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
-      SSH_USER: ${{ secrets.STAGING_SSH_USER }}
-      SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-      SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      secret_prefix: STAGING
+    secrets: inherit   # resolved inside _deploy.yml from environment `staging`
