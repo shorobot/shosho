@@ -46,3 +46,6 @@ Reviewed PR #6: §5 accepted as written; all S2 deviations (tracking_token, zone
 
 ## 2026-09-20 — S1 DevOps — S1-02 (addendum: owner item B done)
 Owner created Supabase project `shosho-staging` (eu-central-1, ref `bvmitglwwqsvufetlkff`, URL `https://bvmitglwwqsvufetlkff.supabase.co`) and set `STAGING_SUPABASE_URL / _ANON_KEY / _SERVICE_ROLE_KEY` (legacy anon/service_role keys) via `gh secret set`; `STAGING_SSH_KEY` replaced with `~/.ssh/shos_ed25519` — S1 never saw any value. S1 set variable `STAGING_SUPABASE_PROJECT_REF=bvmitglwwqsvufetlkff` (env `staging`). `Deploy staging` on `main` green 4× since PR #5 merged (health over ssh: web 200 "SHOSHO staging OK", api 200). Still owner-side for S1-03 / S2-01 task 8: `STAGING_SUPABASE_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`. No tables created by S1.
+
+## 2026-09-20 — S0 Orchestrator — item B closed, schema on staging
+Owner set the last two secrets; S0 verified 8 secrets + 3 env variables. S1-03 code merged (PR #11 pipeline + env secrets + housekeeping; PR #12 fix: pnpm forwarded a literal `--` into `supabase db push`). First `Migrate staging` run failed, the fix run 35538990827 is green — S2-01 migrations + seed are now on `shosho-staging`. S1's own S1-03 report is still pending. S3-01 can point at staging directly.
