@@ -114,8 +114,18 @@ jobs:
         run: |
           cp .env.example .env
           docker compose -f docker-compose.yml config -q
-          N8N_HOST=x N8N_WEBHOOK_URL=x N8N_ENCRYPTION_KEY=x N8N_BASIC_AUTH_USER=x N8N_BASIC_AUTH_PASSWORD=x \
-            docker compose -f docker-compose.staging.yml config -q
+          docker compose -f docker-compose.staging.yml config -q
+
+      - name: Staging compose respects co-tenant terms (127.0.0.1:8200-8299 only, no 0.0.0.0)
+        working-directory: apps/infra
+        run: |
+          cfg=$(docker compose -f docker-compose.staging.yml config)
+          echo "$cfg" | grep -E 'host_ip|published' || true
+          ! echo "$cfg" | grep -E 'host_ip: *"?0\.0\.0\.0' || { echo "::error::0.0.0.0 bind in staging compose"; exit 1; }
+          echo "$cfg" | grep -E 'published:' | grep -oE '[0-9]+' | while read -r p; do
+            [ "$p" -ge 8200 ] && [ "$p" -le 8299 ] || { echo "::error::published port $p outside 8200-8299"; exit 1; }
+          done
+          echo "$cfg" | grep -E 'published:' | grep -qE '"?8200"?$' || { echo "::error::web must publish 8200"; exit 1; }
 
       - name: Ruff (placeholder-api)
         run: pipx run ruff check apps/infra/placeholder-api
@@ -125,19 +135,18 @@ jobs:
           docker build -q apps/infra/placeholder-api
           docker build -q apps/infra/placeholder-web
 
-      - name: Compose smoke test (n8n + api)
+      - name: Compose smoke test (api)
         working-directory: apps/infra
         run: |
           docker compose up -d --build
           for i in $(seq 1 30); do
-            n8n=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5678/healthz || true)
             api=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health || true)
-            echo "try $i: n8n=$n8n api=$api"
-            [ "$n8n" = 200 ] && [ "$api" = 200 ] && break
+            echo "try $i: api=$api"
+            [ "$api" = 200 ] && break
             sleep 5
           done
           docker compose ps
-          [ "$n8n" = 200 ] && [ "$api" = 200 ]
+          [ "$api" = 200 ]
 
       - name: Compose down
         if: always()

@@ -1,6 +1,7 @@
 name: Deploy staging
 
 # Runs after CI succeeds on main (D-005: staging = main, auto-deploy).
+# Target: shared droplet, user `shos`, rootless docker, 127.0.0.1:8200 (web) / :8201 (api) — D-004.
 on:
   workflow_run:
     workflows: [CI]
@@ -19,14 +20,13 @@ jobs:
     with:
       environment: staging
       image_tag: staging
-      remote_dir: /opt/shosho/staging
+      remote_dir: /home/shos/shosho/staging
+      web_port: "8200"
+      api_port: "8201"
     secrets:
       SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
       SSH_USER: ${{ secrets.STAGING_SSH_USER }}
       SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-      N8N_ENCRYPTION_KEY: ${{ secrets.STAGING_N8N_ENCRYPTION_KEY }}
-      N8N_BASIC_AUTH_USER: ${{ secrets.STAGING_N8N_BASIC_AUTH_USER }}
-      N8N_BASIC_AUTH_PASSWORD: ${{ secrets.STAGING_N8N_BASIC_AUTH_PASSWORD }}
       SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
