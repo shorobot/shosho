@@ -8,6 +8,12 @@ on:
   push:
     tags: ["v*"]
 
+# Caller must grant what _deploy.yml needs (packages: write for GHCR); the repo default token is read-only
+# and a called workflow cannot exceed its caller → otherwise "startup_failure" (seen in S1-01 runs).
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: deploy-production
   cancel-in-progress: false
