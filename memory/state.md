@@ -10,7 +10,7 @@ Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (fin
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | in progress   | S1-03       | S1-02          | code merged (PR #11, #12), `Migrate staging` green — report to log/state pending |
+| S1 | DevOps       | boot done     | —           | S1-03          | owner: re-enter 5 secrets with `--env staging` (see log 2026-09-21), then S1 deletes repo-level copies |
 | S2 | Backend      | boot done     | —           | S2-01 (merged, on staging) | next: S2-02 after S3-01/S4-01 start |
 | S3 | Frontend     | in progress   | S3-01       | —              | — (staging Supabase has schema + seed) |
 | S4 | Back-office  | in progress   | S4-01       | —              | public host for the back-office undecided (proposal → S1-04); reachable via ssh port-forward meanwhile |
