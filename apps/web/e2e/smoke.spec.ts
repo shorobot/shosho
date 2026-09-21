@@ -2,7 +2,8 @@
 // desktop and 375 px. Run: pnpm --filter @shosho/web exec playwright install chromium && pnpm --filter @shosho/web test:e2e
 import { expect, test } from "@playwright/test";
 
-test("guest can order from the menu to the tracking page", async ({ page, isMobile }) => {
+test("guest can order from the menu to the tracking page", async ({ page }, testInfo) => {
+  const isMobile = testInfo.project.name === "mobile";
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Popular right now" })).toBeVisible();
   await page.getByRole("button", { name: "OK" }).click(); // cookie bar

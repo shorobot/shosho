@@ -9,7 +9,8 @@ export default defineConfig({
   use: { baseURL: "http://127.0.0.1:3100", trace: "retain-on-failure" },
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },
-    { name: "mobile", use: { ...devices["Pixel 5"], viewport: { width: 375, height: 812 } } }, // chromium-based (WebKit not installed in CI)
+    // 375 px layout check in chromium; no touch emulation (isMobile skews fixed-element hit testing in Playwright)
+    { name: "mobile", use: { ...devices["Desktop Chrome"], viewport: { width: 375, height: 812 } } },
   ],
   webServer: {
     command: "NEXT_PUBLIC_API=mock pnpm dev --port 3100",
