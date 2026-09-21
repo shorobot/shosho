@@ -15,7 +15,12 @@ services:
     <<: *common
     image: ${WEB_IMAGE:-ghcr.io/shorobot/shosho-web:staging}
     ports:
-      - "127.0.0.1:8200:80"
+      - "127.0.0.1:8200:3000"
+    environment:
+      # read at request time by apps/web (lib/env.ts) — the image is built without Supabase values
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://shos.hellfiresol.com}
     mem_limit: 96m
     memswap_limit: 96m
 

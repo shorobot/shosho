@@ -54,9 +54,9 @@ jobs:
 
       - name: Resolve build contexts
         id: ctx
-        # Placeholders until real Dockerfiles land in apps/web and apps/automation.
+        # web: apps/web/Dockerfile builds from the repo root (pnpm workspace). api: placeholder until apps/automation has a Dockerfile.
         run: |
-          if [ -f apps/web/Dockerfile ]; then echo "web=apps/web" >> "$GITHUB_OUTPUT"; else echo "web=apps/infra/placeholder-web" >> "$GITHUB_OUTPUT"; fi
+          if [ -f apps/web/Dockerfile ]; then echo "web=." >> "$GITHUB_OUTPUT"; echo "web_file=apps/web/Dockerfile" >> "$GITHUB_OUTPUT"; else echo "web=apps/infra/placeholder-web" >> "$GITHUB_OUTPUT"; echo "web_file=apps/infra/placeholder-web/Dockerfile" >> "$GITHUB_OUTPUT"; fi
           if [ -f apps/automation/Dockerfile ]; then echo "api=apps/automation" >> "$GITHUB_OUTPUT"; else echo "api=apps/infra/placeholder-api" >> "$GITHUB_OUTPUT"; fi
 
       - name: Image names
@@ -76,6 +76,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ steps.ctx.outputs.web }}
+          file: ${{ steps.ctx.outputs.web_file }}
           push: true
           tags: ${{ steps.meta.outputs.web }}
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -130,6 +131,9 @@ jobs:
           SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL=${{ vars.PUBLIC_URL }}
           EOT
 
       - name: Upload compose + env
@@ -168,7 +172,7 @@ jobs:
             api=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${API_PORT}/health" || true)
             echo "try $i: web=$web api=$api"
             if [ "$web" = 200 ] && [ "$api" = 200 ]; then
-              curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -o 'SHOSHO staging OK' || true
+              curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -oE '<title>[^<]*' || true
               curl -fsS "http://127.0.0.1:${API_PORT}/health"; echo
               echo "--- memory (cgroup slice of user $(id -u), limit 512M) ---"
               m=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/memory.current" 2>/dev/null || echo 0)
