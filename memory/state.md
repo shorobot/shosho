@@ -1,10 +1,10 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-09-20 (S0 — item B closed; schema on staging via S1-03; S1 report pending)
+Last update: 2026-09-20 (S0 — S4-01 issued; D-009/D-010; architecture refreshed)
 
 ## Phase
-Phase 2 — product. Backend v1 in `main` (PR #6). Running: S1-03 (migrations CI + secrets) ‖ S3-01 (guest site). S4-01 next once S3 has the design system in place.
+Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (finishing) ‖ S3-01 (guest site) ‖ S4-01 (back-office orders board).
 
 ## Sessions
 
@@ -13,7 +13,7 @@ Phase 2 — product. Backend v1 in `main` (PR #6). Running: S1-03 (migrations CI
 | S1 | DevOps       | in progress   | S1-03       | S1-02          | code merged (PR #11, #12), `Migrate staging` green — report to log/state pending |
 | S2 | Backend      | boot done     | —           | S2-01 (merged, on staging) | next: S2-02 after S3-01/S4-01 start |
 | S3 | Frontend     | in progress   | S3-01       | —              | — (staging Supabase has schema + seed) |
-| S4 | Back-office  | not started   | —           | —              | api-contracts §6 ready; S0 issues S4-01 after S3-01 ships the design system |
+| S4 | Back-office  | in progress   | S4-01       | —              | public host for the back-office undecided (proposal → S1-04); reachable via ssh port-forward meanwhile |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
 | S6 | QA           | not started   | —           | —              | waits for S4-01 |
 | S7 | Security     | not started   | —           | —              | waits for S4-01 |

@@ -49,3 +49,6 @@ Owner created Supabase project `shosho-staging` (eu-central-1, ref `bvmitglwwqsv
 
 ## 2026-09-20 — S0 Orchestrator — item B closed, schema on staging
 Owner set the last two secrets; S0 verified 8 secrets + 3 env variables. S1-03 code merged (PR #11 pipeline + env secrets + housekeeping; PR #12 fix: pnpm forwarded a literal `--` into `supabase db push`). First `Migrate staging` run failed, the fix run 35538990827 is green — S2-01 migrations + seed are now on `shosho-staging`. S1's own S1-03 report is still pending. S3-01 can point at staging directly.
+
+## 2026-09-20 — S0 Orchestrator — S4-01 issued, D-009/D-010, architecture refreshed
+Issued S4-01 (back-office: auth + roles, live orders board, detail with timeline, history, kitchen and driver views; staging on 127.0.0.1:8202, public host TBD). D-009: report PRs merge origin/main first, memory/ append-only for children. D-010: backoffice shares brand tokens, not components, with web (parallel start). docs/architecture.md rewritten to the real state. S1-03 report still pending (PR #13 cache tweak open).
