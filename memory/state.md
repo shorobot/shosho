@@ -12,7 +12,7 @@ Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (fin
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | boot done     | —           | S1-03          | owner: re-enter 5 secrets with `--env staging` (see log 2026-09-21), then S1 deletes repo-level copies |
 | S2 | Backend      | in progress   | S2-02       | S2-01          | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets — S2 uses own test keys meanwhile |
-| S3 | Frontend     | boot done     | —           | S3-01 (PR #15) | staging serves the real menu once Deploy staging runs after the merge; next: S3-02 (payments UI) after S2-02 |
+| S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
 | S4 | Back-office  | in progress   | S4-01       | —              | public host for the back-office undecided (proposal → S1-04); reachable via ssh port-forward meanwhile |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
 | S6 | QA           | not started   | —           | —              | waits for S4-01 |
