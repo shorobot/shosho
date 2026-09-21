@@ -12,7 +12,7 @@ Phase 2 — product. Backend v1 in `main` (PR #6). Running: S1-03 (migrations CI
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | in progress   | S1-03       | S1-02          | owner item B: Supabase `shosho-staging` + secrets (not created yet) |
 | S2 | Backend      | boot done     | —           | S2-01 (merged; staging push pending owner item B) | next: S2-02 (payments, timeline, storage, order edits) after S3-01/S4-01 start |
-| S3 | Frontend     | in progress   | S3-01       | —              | Supabase staging (item B) for the live deploy; can build locally / mock meanwhile |
+| S3 | Frontend     | boot done     | —           | S3-01 (PR #15) | staging menu is empty until item B (DB password) + S2 `db:push`; next: S3-02 (payments UI) after S2-02 |
 | S4 | Back-office  | not started   | —           | —              | api-contracts §6 ready; S0 issues S4-01 after S3-01 ships the design system |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
 | S6 | QA           | not started   | —           | —              | waits for S4-01 |
