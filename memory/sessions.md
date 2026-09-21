@@ -23,4 +23,4 @@ External peer (not our session): **TETA+PI manager** — admin of the shared ser
 New sessions beyond this list — S8, S9, … Sub-sessions — `S<N>.<M>`. Numbers are never reused.
 
 ## Boot counters (last issued)
-S0: — · S1: 03 · S2: 01 · S3: 01 · S4: 01 · S5: — · S6: — · S7: —
+S0: — · S1: 03 · S2: 02 · S3: 01 · S4: 01 · S5: — · S6: — · S7: —

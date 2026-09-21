@@ -1,17 +1,17 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-09-20 (S0 — S4-01 issued; D-009/D-010; architecture refreshed)
+Last update: 2026-09-21 (S0 — D-011 payments; S2-02 issued)
 
 ## Phase
-Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (finishing) ‖ S3-01 (guest site) ‖ S4-01 (back-office orders board).
+Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (finishing) ‖ S2-02 (payments, storage, timeline) ‖ S3-01 (guest site) ‖ S4-01 (back-office orders board).
 
 ## Sessions
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | boot done     | —           | S1-03          | owner: re-enter 5 secrets with `--env staging` (see log 2026-09-21), then S1 deletes repo-level copies |
-| S2 | Backend      | boot done     | —           | S2-01 (merged, on staging) | next: S2-02 after S3-01/S4-01 start |
+| S2 | Backend      | in progress   | S2-02       | S2-01          | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets — S2 uses own test keys meanwhile |
 | S3 | Frontend     | in progress   | S3-01       | —              | — (staging Supabase has schema + seed) |
 | S4 | Back-office  | in progress   | S4-01       | —              | public host for the back-office undecided (proposal → S1-04); reachable via ssh port-forward meanwhile |
 | S5 | Automation   | not started   | —           | —              | waits for S4-01 |
