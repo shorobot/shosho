@@ -1,0 +1,10 @@
+# root context is used by apps/web/Dockerfile (pnpm workspace) — see apps/web/Dockerfile.dockerignore
+**/node_modules
+**/.next
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.worktrees
+docs
+memory
