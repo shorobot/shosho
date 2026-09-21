@@ -14,7 +14,9 @@ import "./globals.css";
 
 // Brand type (brandbook 05): Archivo 400/500/800 only — no weights between 500 and 800.
 const archivo = Archivo({ subsets: ["latin", "latin-ext"], weight: ["400", "500", "800"], variable: "--font-archivo", display: "swap" });
-const zen = Zen_Kaku_Gothic_New({ subsets: ["latin"], weight: ["400", "500", "700"], variable: "--font-zen", display: "swap" });
+// preload: false — the Japanese face ships ~100 unicode-range subsets; preloading them all produced a `link` header
+// too large for the host nginx proxy buffer (502 on staging). Latin Archivo stays preloaded.
+const zen = Zen_Kaku_Gothic_New({ subsets: ["latin"], weight: ["400", "500", "700"], variable: "--font-zen", display: "swap", preload: false });
 
 export async function generateMetadata(): Promise<Metadata> {
   const { settings } = await getCatalog();
