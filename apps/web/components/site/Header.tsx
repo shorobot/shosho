@@ -63,7 +63,7 @@ export function Header() {
             />
           </form>
           <OrderTypeToggle />
-          <AddressButton className="hidden sm:block" />
+          <AddressButton />
         </div>
       </div>
     </header>

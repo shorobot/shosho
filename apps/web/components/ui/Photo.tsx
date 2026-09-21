@@ -16,8 +16,8 @@ export function Photo({ item, index = 0, className = "" }: { item: Pick<MenuItem
     return <img src={url} alt={item.name_en} className={`h-full w-full object-cover ${className}`} loading="lazy" />;
   }
   return (
-    <div className={`flex h-full w-full items-center justify-center ${TINTS[index % TINTS.length]} ${className}`} aria-hidden>
-      <span className="kana text-[22px] font-bold text-ink/25">{item.name_ja ?? ""}</span>
+    <div className={`flex h-full w-full items-center justify-center overflow-hidden ${TINTS[index % TINTS.length]} ${className}`} aria-hidden>
+      <span className="kana max-w-full truncate px-2 text-[18px] font-bold text-ink/20">{item.name_ja ?? ""}</span>
     </div>
   );
 }
