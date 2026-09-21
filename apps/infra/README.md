@@ -7,16 +7,17 @@ rendered `.env` (chmod 600) from them on every deploy. The host (nginx, TLS, fir
 TETA+PI manager — we never touch it. Binding terms: [`/memory/infra-access.md`](../../memory/infra-access.md).
 
 ```
-GitHub main ──push──▶ CI (ci.yml) ──green──▶ deploy-staging.yml ──▶ ssh shos@server (rootless docker)
-                                                 │                        └─ /home/shos/shosho/staging: compose pull/up
-                                                 └─ images → ghcr.io/shorobot/shosho-{web,api}:staging
+GitHub main ──push──▶ CI (ci.yml) ──green──▶ migrate-staging.yml ──green──▶ deploy-staging.yml ──▶ ssh shos@server
+                                              │ supabase db push → shosho-staging   │                  └─ /home/shos/shosho/staging: compose pull/up
+                                              │ (Supabase cloud, eu-central-1)      └─ images → ghcr.io/shorobot/shosho-{web,api}:staging
 Cloudflare (TLS) ──▶ host nginx vhost shos.hellfiresol.com (TETA+PI) ──▶ 127.0.0.1:8200 (web)
                                                                           127.0.0.1:8201 (api, internal)
 git tag vX.Y.Z ──▶ deploy-prod.yml ──approve (owner)──▶ same flow — prod target NOT decided yet (D-004)
 ```
 
 ## Deploy to staging
-Merge a PR into `main`. After CI is green, `Deploy staging` runs automatically: it builds the `web`
+Merge a PR into `main`. After CI is green, **Migrate staging** pushes the schema (see *Migrations*),
+and only when that succeeded `Deploy staging` runs: it builds the `web`
 image (`apps/web/Dockerfile`, or the placeholder) and the `api` image (`apps/automation/Dockerfile`, or
 the placeholder), pushes them to GHCR, renders `.env` from secrets, copies `docker-compose.staging.yml`
 to the server and runs `docker compose pull && up -d` against the rootless daemon
@@ -26,16 +27,19 @@ cgroup memory usage. The public URL check is informational only (edge/TLS is not
 Manual run: Actions → Deploy staging → Run workflow. Status: `gh run list --workflow "Deploy staging"`.
 
 ## Add a new secret
+The repo is **public** → secrets live only as **environment secrets** (`staging`, later `production`),
+never at repo level. Environment `staging` can be used only by jobs running on `main`.
 ```bash
-gh secret set STAGING_MY_KEY --repo shorobot/shosho          # prompts for the value
-gh secret set STAGING_MY_KEY --repo shorobot/shosho < file   # or from a file
+gh secret set STAGING_MY_KEY --env staging --repo shorobot/shosho          # prompts for the value
+gh secret set STAGING_MY_KEY --env staging --repo shorobot/shosho < file   # or from a file
 ```
-Then: (1) pass it through in `apps/infra/.github/workflows/deploy-staging.yml` (`secrets:` block) and,
-if a container needs it, in `_deploy.yml` (workflow_call `secrets:` + the "Render .env" step);
+Then: (1) the callers use `secrets: inherit`, so nothing to add in `deploy-staging.yml`; if a container
+needs it, read it in `_deploy.yml` as `secrets[format('{0}_MY_KEY', inputs.secret_prefix)]` in the
+"Render .env" step (prefix `STAGING` / `PROD` selects the environment's set);
 (2) add the key without a value to `apps/infra/.env.example` and `apps/<app>/.env.example`;
-(3) run `apps/infra/scripts/sync-workflows.sh`. Prod counterpart uses the `PROD_` prefix.
-Non-public URLs/hosts are secrets too; the public host is an environment-level variable
-`PUBLIC_HOST` / `PUBLIC_URL` (`gh variable set PUBLIC_HOST --env staging`).
+(3) run `apps/infra/scripts/sync-workflows.sh`.
+Non-public URLs/hosts are secrets too; public values are environment variables
+(`gh variable set NAME --env staging`): `PUBLIC_HOST`, `PUBLIC_URL`, `STAGING_SUPABASE_PROJECT_REF`.
 
 ## Production release (tag → approve)
 ```bash
@@ -70,13 +74,44 @@ enable it optionally once S2 adds `supabase/` with migrations: `supabase start &
 | `placeholder-web/`, `placeholder-api/` | stand-in images until apps/web and apps/automation exist |
 | `scripts/shos-user-setup.sh` | one-time **user-level** server setup as `shos` (rootless docker, autostart, `~/shosho/staging`); no sudo |
 | `scripts/sync-workflows.sh` | copies workflows to `/.github/workflows` (CI verifies they are in sync) |
-| `.github/workflows/` | `ci.yml`, `_deploy.yml` (reusable), `deploy-staging.yml`, `deploy-prod.yml` |
+| `.github/workflows/` | `ci.yml`, `migrate-staging.yml`, `_deploy.yml` (reusable), `deploy-staging.yml`, `deploy-prod.yml` |
 
-## Secrets / variables (staging)
+## Secrets / variables (environment `staging`)
 Secrets: `STAGING_SSH_HOST`, `STAGING_SSH_USER` (= `shos`), `STAGING_SSH_KEY` (private half of
-`~/.ssh/shos_ed25519` on the owner's Mac — pasted by the owner, never printed), `STAGING_SUPABASE_URL`,
-`STAGING_SUPABASE_ANON_KEY`, `STAGING_SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`.
-Variables (environment `staging`): `PUBLIC_HOST=shos.hellfiresol.com`, `PUBLIC_URL=https://shos.hellfiresol.com`.
+`~/.ssh/shos_ed25519` on the owner's Mac — entered by the owner, never printed), `STAGING_SUPABASE_URL`,
+`STAGING_SUPABASE_ANON_KEY`, `STAGING_SUPABASE_SERVICE_ROLE_KEY`, `STAGING_SUPABASE_DB_PASSWORD`,
+`SUPABASE_ACCESS_TOKEN` (owner's personal access token `shosho-ci`, full access — revoke in
+Supabase → Account → Access Tokens), `ANTHROPIC_API_KEY` (when S5 needs it).
+Variables: `PUBLIC_HOST=shos.hellfiresol.com`, `PUBLIC_URL=https://shos.hellfiresol.com`,
+`STAGING_SUPABASE_PROJECT_REF=bvmitglwwqsvufetlkff`.
+Who can reach them: org `shorobot` and the repo have a single member/collaborator (the owner, admin);
+environment `staging` deploys only from `main`, so a PR branch never sees them.
+
+## Migrations (Supabase schema → staging)
+Source of truth: `apps/backend/supabase/migrations/*.sql` + `seed.sql` (owned by S2, see
+`apps/backend/README.md`). Project: `shosho-staging` (eu-central-1, ref `bvmitglwwqsvufetlkff`).
+
+**Add one** (S2): `cd apps/backend && pnpm exec supabase migration new <slug>` → edit the SQL →
+`pnpm db:reset` → `pnpm db:types` → `pnpm test` → commit. Never edit a migration that is already on
+`main` — add a new one. Filenames are `YYYYMMDDHHMMSS_<slug>.sql`; the timestamp must be newer than
+the latest on `main`.
+
+**On a PR** touching `apps/backend/supabase/**`, workflow `Migrate staging → plan` runs without any
+secret: it lists the new migration files in the job summary and fails if an applied migration was
+modified/deleted or is out of order. CI's `backend` job validates the SQL itself (`supabase start`,
+`db reset`, `db lint`, seed twice, vitest).
+
+**How it reaches staging:** merge → `CI` green → `Migrate staging → push` (environment `staging`):
+`supabase link` → `db push --dry-run` (plan against the real remote, in the job summary) →
+`db push --include-seed` (= `pnpm db:push`; seed is idempotent) → `migration list`. Only then
+`Deploy staging` ships the containers. Manual: Actions → Migrate staging → Run workflow (from `main`).
+Status: `gh run list --workflow "Migrate staging"`.
+
+**Roll back:** migrations are forward-only. Write a new migration that reverses the change
+(`DROP …` / `ALTER … DROP COLUMN`), merge it, the chain applies it. To mark a migration as applied
+without running it (after a manual fix in the dashboard — avoid): `supabase migration repair --status
+applied <version>` from a linked checkout with the owner's token. Last resort for staging only:
+`supabase db reset --linked` wipes the remote database and re-applies everything — data loss, ask S0.
 
 ## Server
 Shared droplet administered by the TETA+PI manager; SHOSHO staging is a co-tenant under the terms in
