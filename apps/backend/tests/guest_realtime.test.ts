@@ -10,9 +10,15 @@ beforeAll(openAllDay);
  */
 describe("guest tracking realtime", () => {
   let operator: Db;
+  let capability: Record<string, unknown> = {};
   beforeAll(async () => {
     operator = await signIn("operator");
-    await admin().rpc("ensure_guest_realtime_policy");
+    const { data } = await admin().rpc("ensure_guest_realtime_policy");
+    capability = (data ?? {}) as Record<string, unknown>;
+  });
+
+  it("the database can broadcast (messages table, send function, policy)", () => {
+    expect(capability).toMatchObject({ messages_table: true, send_function: true, policy: true });
   });
 
   it("an order update reaches the token topic and carries no PII", async () => {
@@ -41,7 +47,7 @@ describe("guest tracking realtime", () => {
       await rpc(operator, "set_order_status", { order_id: o.order_id, new_status: "accepted" });
       const deadline = Date.now() + 10_000;
       while (received.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-      expect(received.length).toBeGreaterThan(0);
+      expect(received.length, `no broadcast received — realtime capability: ${JSON.stringify(capability)}`).toBeGreaterThan(0);
       const msg = received[0] as Record<string, unknown>;
       expect(msg).toMatchObject({ order_id: o.order_id, number: o.number, status: "accepted", payment_status: "pending" });
       for (const forbidden of ["contact_name", "contact_phone", "address", "tracking_token", "courier_comment"]) {

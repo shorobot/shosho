@@ -17,24 +17,58 @@
 -- restarts the containers. Hence an idempotent installer, run here and callable later
 -- (service role; the test suite calls it before the realtime test).
 create or replace function public.ensure_guest_realtime_policy()
-returns boolean
+returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_has_msgs boolean := to_regclass('realtime.messages') is not null;
+  v_has_send boolean := to_regprocedure('realtime.send(jsonb, text, text, boolean)') is not null;
+  v_policy   boolean := false;
+  v_parts    text[] := '{}';
+  v_partitioned boolean := false;
+  v_part     text;
+  d          date;
 begin
-  if to_regclass('realtime.messages') is null then
-    return false;
+  if v_has_msgs then
+    if not exists (select 1 from pg_policies
+                   where schemaname = 'realtime' and tablename = 'messages' and policyname = 'guest order topics read') then
+      begin
+        execute $p$
+          create policy "guest order topics read" on realtime.messages
+            for select to anon, authenticated
+            using (realtime.topic() like 'order:%' and extension = 'broadcast')
+        $p$;
+      exception when others then
+        raise notice 'guest realtime policy not installed: %', sqlerrm;
+      end;
+    end if;
+    v_policy := exists (select 1 from pg_policies
+                        where schemaname = 'realtime' and tablename = 'messages' and policyname = 'guest order topics read');
+
+    -- realtime.messages is partitioned by day; a missing partition makes realtime.send() fail
+    -- silently. The Realtime service creates them on hosted projects — do it here too so a fresh
+    -- local stack (and a project whose partition job has not run yet) can broadcast.
+    select relkind = 'p' into v_partitioned from pg_class where oid = 'realtime.messages'::regclass;
+    if coalesce(v_partitioned, false) then
+      for d in select generate_series(current_date - 1, current_date + 2, interval '1 day')::date loop
+        v_part := 'messages_' || to_char(d, 'YYYY_MM_DD');
+        if to_regclass('realtime.' || quote_ident(v_part)) is null then
+          begin
+            execute format('create table realtime.%I partition of realtime.messages for values from (%L) to (%L)',
+                           v_part, d, d + 1);
+            v_parts := v_parts || v_part;
+          exception when others then
+            raise notice 'partition %: %', v_part, sqlerrm;
+          end;
+        end if;
+      end loop;
+    end if;
   end if;
-  if not exists (select 1 from pg_policies
-                 where schemaname = 'realtime' and tablename = 'messages' and policyname = 'guest order topics read') then
-    execute $p$
-      create policy "guest order topics read" on realtime.messages
-        for select to anon, authenticated
-        using (realtime.topic() like 'order:%' and extension = 'broadcast')
-    $p$;
-  end if;
-  return true;
+
+  return jsonb_build_object('messages_table', v_has_msgs, 'send_function', v_has_send,
+                            'policy', v_policy, 'partitions_created', to_jsonb(v_parts));
 end;
 $$;
 revoke execute on function public.ensure_guest_realtime_policy() from public;
@@ -84,6 +118,7 @@ begin
         'order:' || new.tracking_token;
     end if;
   exception when others then
+    -- never let a broadcast problem block an order update; the guest still polls (§5.6)
     raise warning 'orders_broadcast_tracking: %', sqlerrm;
   end;
   return new;
