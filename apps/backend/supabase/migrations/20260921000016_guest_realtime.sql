@@ -26,7 +26,7 @@ declare
   v_has_msgs boolean := to_regclass('realtime.messages') is not null;
   v_has_send boolean := to_regprocedure('realtime.send(jsonb, text, text, boolean)') is not null;
   v_policy   boolean := false;
-  v_parts    text[] := '{}';
+  v_parts    text[] := '{}'::text[];
   v_partitioned boolean := false;
   v_part     text;
   d          date;
