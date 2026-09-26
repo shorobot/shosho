@@ -1,8 +1,10 @@
 import type { MenuItem } from "@/lib/types";
 
-// Photos: storage bucket `menu` does not exist yet (api-contracts §5.5) → placeholder art in brand tints,
-// with the kana as a quiet stamp. When `photos[0]` is an absolute URL it is used as-is.
+// Photos: storage bucket `menu` does not exist yet (api-contracts §5.5) → placeholder art in brand tints
+// with a stone shape, no lettering (the kana already sits above the name on the card). When `photos[0]`
+// is an absolute URL it is used as-is.
 const TINTS = ["photo-sand", "photo-sky", "photo-blush", "photo-stone"];
+const STONES = ["bg-sky/45", "bg-blush/50", "bg-sand", "bg-sky/35"];
 
 export function photoUrl(item: Pick<MenuItem, "photos">): string | null {
   const p = Array.isArray(item.photos) ? item.photos[0] : null;
@@ -16,8 +18,9 @@ export function Photo({ item, index = 0, className = "" }: { item: Pick<MenuItem
     return <img src={url} alt={item.name_en} className={`h-full w-full object-cover ${className}`} loading="lazy" />;
   }
   return (
-    <div className={`flex h-full w-full items-center justify-center overflow-hidden ${TINTS[index % TINTS.length]} ${className}`} aria-hidden>
-      <span className="kana max-w-full truncate px-2 text-[18px] font-bold text-ink/20">{item.name_ja ?? ""}</span>
+    <div className={`relative h-full w-full overflow-hidden ${TINTS[index % TINTS.length]} ${className}`} aria-hidden>
+      <span className={`stone absolute left-[16%] top-[18%] h-[62%] w-[56%] ${STONES[index % STONES.length]}`} />
+      <span className="dot-grid absolute bottom-[12%] right-[10%] h-[44px] w-[28px]" />
     </div>
   );
 }
