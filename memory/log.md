@@ -202,3 +202,54 @@ with numbers, only if S5 actually needs the slot. Numbers already sent to `TTPI 
 both land the back-office stays ssh-only and no URL goes to anyone. `S1-06-prod-target.md` written for
 S0 — six gaps, the notable one being that **no `migrate-prod.yml` exists at all**, so prod is more than
 filling in secrets.
+
+## 2026-09-26 — S1 DevOps — S1-04 (addendum: TETA+PI answered; two corrections to the entry above)
+TETA+PI replied as `teta-pi-e0` from the `TTPI · MANAGER` session. Two things I wrote above were
+wrong and are corrected here rather than edited in place (append-only).
+
+**Their answer.** Vhost **approved** and booted to their devops session: `bo.shos.hellfiresol.com` →
+`127.0.0.1:8202`, same security headers as `shos.`, **basic-auth created in the same change** — the
+no-unguarded-window condition I asked for is accepted. Credentials go to the owner directly on his
+machine, never into chat or a repo. They will not remove the gate on their own; when Cloudflare
+Access lands we ask them and they drop it. They re-confirmed 8200/8201/8202 are loopback-only from
+their side. DNS still does not exist — owner action; the vhost will 502/404 publicly until the record
+is created, which is expected and not a fault.
+
+**Correction 1 — I asked for the wrong thing on https, and they were right to refuse it.** I asked
+for an origin-side `:80 → https` redirect. That would have caused a **redirect loop**: the zone
+terminates TLS at Cloudflare and CF reaches this origin over plain `:80`, so CF would fetch `:80`,
+the origin would answer "go to https", and CF would fetch `:80` again. No origin redirect is being
+added, and none should be requested. **HTTPS enforcement belongs at the Cloudflare edge instead** —
+this is an extra owner action that my list above was missing:
+
+> **Owner, additional step:** Cloudflare → zone `hellfiresol.com` → enable **"Always Use HTTPS"** for
+> `bo.shos.hellfiresol.com` (SSL/TLS → Edge Certificates, or as a Configuration Rule scoped to the
+> hostname — the same place the `shos.` rule was made). This is what actually stops a staff password
+> crossing plain http; the origin cannot do it under this topology.
+
+The intent in the original entry stands — no staff password over plain http — but the mechanism named
+there was wrong.
+
+**Correction 2 — the `oom_kill 1` is explained, and it was not ours.** I reported it as a warning
+sign. It was **TETA+PI's own deliberate test on 2026-09-20**: they load-tested our slice's cap to
+prove `MemoryMax` was a hard ceiling. It was not at first — the slice spilled into swap — so they
+added `MemorySwapMax=0` and re-tested with a process that allocates past 512M. Exit 137, `oom_kill=1`.
+That is the counter we have been reading ever since, and it is why our slice has no swap. All three
+containers showing `oom_kill 0` is consistent with this: the killed process was theirs, not ours.
+Nothing of ours has ever been OOM-killed, and nothing of theirs has been reacting to us.
+
+So the capacity picture is **less alarming than the entry above implies**: strike `oom_kill 1` from
+the list of warning signs. What remains true and unchanged — `memory.current` 487.6 MiB of 512 MiB,
+`memory.peak` 515 MiB, `memory.events.max` 7736, no swap, and a ~494 MiB worst case if all three
+containers sat at their declared limits. Thin, but not a box with a history of killing our workload.
+
+**Their guidance on the trim.** Explicitly: do **not** shrink before the vhost — "a vhost costs no
+memory, and gating an auth control on unrelated cleanup is the wrong trade." They agree dropping the
+`api` placeholder (160M limit, 32M RSS) is the obvious trim and left it to our own schedule. Not done
+in S1-04: this boot says propose, not execute. It stays a recommendation for S0 to schedule. If we
+ever want the 512M cap raised, they want the request with numbers, because the 2 GB is shared with
+tetapi.dev and it is the owner's call — "we'd rather raise it deliberately than discover it through
+an OOM at a bad moment."
+
+**Still blocked on the owner, unchanged:** the DNS record, the Configuration Rule, "Always Use HTTPS",
+and Cloudflare Access. The vhost side is now handled. No URL has been given to anyone.
