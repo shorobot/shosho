@@ -77,7 +77,12 @@ invoke `POST /functions/v1/payment-worker` (including `{"action":"install"}`, wh
 `schedule_payment_worker` — harmless since its params are hardcoded server-side, not attacker-supplied,
 but still an unnecessarily wide surface). This is a known, commented, deliberate tradeoff (cron calls
 it via a Vault-stored anon key) — flagging so S2 can decide whether to add an explicit
-`is_service_request()`-style check or accept the tradeoff as documented.
+`is_service_request()`-style check or accept the tradeoff as documented. **Note:** S1 independently
+flagged the exact same issue in the S1-04 log entry (2026-09-26, "Not mine to fix, flagging to
+S7/S2") while reviewing the functions-deploy pipeline — two independent reviews landing on the same
+finding; S1 deliberately left the workflow's own install POST on the anon key ("that is how pg_cron
+invokes it, and swapping in the service-role key would hide the problem rather than fix it"), which
+S7 agrees with — the fix belongs inside the function, not in how the workflow calls it.
 
 ## Task 4 (Low) — non-constant-time `tracking_token` comparison
 

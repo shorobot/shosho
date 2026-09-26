@@ -54,6 +54,14 @@ Options (owner/S1 decision, not S7's or S4's to make unilaterally):
 3. At minimum, before the public URL exists: put an access gate in front (Cloudflare Access, or
    nginx basic-auth from TETA+PI) as a second layer, per S4-01's proposal.
 
+**Already in progress (S1-04, per its 2026-09-26 log entry):** the vhost + access gate (Cloudflare
+Access with a staff-email allowlist, or basic-auth from TETA+PI as a stopgap) is requested and
+blocked on the owner + TETA+PI — that covers "who can even reach `/login`." **This task (staff
+password rotation) is the separate, still-open layer underneath it**: even with a perfect access gate
+in front, the back-office's own Supabase Auth accounts still have one published, googleable password
+— worth fixing regardless of how the outer gate turns out, since an access-gate misconfiguration or a
+future second entry point (e.g. a direct Supabase Auth API call) would fall back on it entirely.
+
 ## Task 4 (Low) — GitHub Actions supply-chain hygiene
 
 All third-party `uses:` actions are pinned to a mutable major-version tag (`@v7`, `@v6`, `@v4`), not a
