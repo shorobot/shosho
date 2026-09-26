@@ -18,8 +18,10 @@ test("operator signs in and the board renders", async ({ page }) => {
   // KPI strip + the four filter chips are always there, with or without orders
   await expect(page.getByText("BESTELLUNGEN", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Lieferung" })).toBeVisible();
-  // either a card grid or one of the documented empty states
-  await expect(page.locator("article, text=Noch keine Bestellungen heute").first()).toBeVisible();
+  // either order cards or one of the documented empty states (a fresh seed has no orders today)
+  const cards = page.locator("article");
+  const emptyState = page.getByText("Noch keine Bestellungen heute");
+  await expect(cards.first().or(emptyState)).toBeVisible();
 });
 
 test("DE/EN toggle switches the shell", async ({ page }) => {
