@@ -24,12 +24,16 @@ jobs:
         run: pnpm exec supabase start
       - name: Playwright browsers
         run: pnpm --filter @shosho/backoffice exec playwright install --with-deps chromium
+      - name: Local Supabase env
+        working-directory: apps/backend
+        run: |
+          eval "$(pnpm exec supabase status -o env | sed 's/^/export /')"
+          echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL" >> "$GITHUB_ENV"
+          echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY" >> "$GITHUB_ENV"
+
       - name: Smoke (login → board, roles, redirect)
         working-directory: apps/backoffice
-        run: |
-          eval "$(pnpm exec supabase status --workdir ../backend -o env | sed 's/^/export /')"
-          export NEXT_PUBLIC_SUPABASE_URL="$API_URL" NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
-          pnpm exec playwright test --project=desktop
+        run: pnpm exec playwright test --project=desktop
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
