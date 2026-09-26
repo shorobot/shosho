@@ -92,7 +92,18 @@ export function Board() {
             </Section>
           )}
           {g.doneToday.length > 0 && (
-            <Section dot="#C7C1B8" title={t("col.doneToday")} count={g.doneToday.length} hint={t("col.doneSummary", { c: k.cancelled, r: euro(k.revenueCents, lang) })} expandable={false}>
+            <Section
+              dot="#C7C1B8"
+              title={t("col.doneToday")}
+              count={g.doneToday.length}
+              // summary of what is in this column (completed today), not of today's intake — those differ
+              // whenever an order created yesterday is finished this morning.
+              hint={t("col.doneSummary", {
+                c: g.doneToday.filter((o) => o.status === "cancelled").length,
+                r: euro(g.doneToday.filter((o) => o.status === "delivered" || o.status === "picked_up").reduce((s, o) => s + o.total_cents, 0), lang),
+              })}
+              expandable={false}
+            >
               <DoneColumn rows={g.doneToday} />
             </Section>
           )}

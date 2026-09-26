@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Pill } from "@/components/ui/Pill";
 import { EmptyState, Spinner } from "@/components/ui/States";
 import { useI18n, type Key } from "@/lib/i18n";
-import { payMethodKey, payStatusKey, statusKey, statusTone } from "@/lib/labels";
+import { isCashUnpaid, payMethodKey, payStatusKey, statusKey, statusTone } from "@/lib/labels";
 import { euro, km } from "@/lib/money";
 import { actionsFor, addressOf, eta, timerFor } from "@/lib/orders";
 import { useOrders } from "@/lib/store";
@@ -174,7 +174,8 @@ export function OrderDetail({ id }: { id: string }) {
         </div>
         <div className="flex items-center justify-between gap-3">
           <span className="text-[11px] text-muted">{t("detail.vat", { v: euro(order.vat_cents, lang) })}</span>
-          <PaymentLine order={order} />
+          {/* the emphasised banner only where it adds something: failed payment or cash still to collect */}
+          {(order.payment_status === "failed" || isCashUnpaid(order)) && <PaymentLine order={order} />}
         </div>
         <span className="text-[11px] text-muted">{t("detail.paymentRef", { s: t(payStatusKey(order.payment_status)), m: order.payment_ref || t(payMethodKey(order.payment_method)) })}</span>
         {order.cancel_reason && <span className="text-[11px] font-extrabold text-alert">{order.cancel_reason}</span>}

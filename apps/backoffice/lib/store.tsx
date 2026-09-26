@@ -63,8 +63,12 @@ export function OrdersProvider({ me, children }: { me: Staff; children: ReactNod
     if (role === "kitchen") return q.in("status", KITCHEN_STATUSES).order("created_at", { ascending: true });
     if (role === "driver") return q.in("status", ["ready", "out_for_delivery"]).order("created_at", { ascending: true });
     const today = startOfDay(new Date()).toISOString();
+    // Everything the board shows: created today, still active, finished/cancelled today (an order taken
+    // yesterday and handed out this morning belongs in "Erledigt heute"), or a pending pre-order.
     return q
-      .or(`created_at.gte.${today},status.in.(${ACTIVE.join(",")}),and(scheduled_for.not.is.null,status.in.(new,accepted))`)
+      .or(
+        `created_at.gte.${today},completed_at.gte.${today},cancelled_at.gte.${today},status.in.(${ACTIVE.join(",")}),and(scheduled_for.not.is.null,status.in.(new,accepted))`,
+      )
       .order("created_at", { ascending: false })
       .limit(500);
   }, [supabase, role]);

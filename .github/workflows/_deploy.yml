@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: "8201"
+      backoffice_port:
+        description: Host port (127.0.0.1) the back-office container publishes — used by the health check
+        required: false
+        type: string
+        default: "8202"
       secret_prefix:
         description: Prefix of the environment secrets to use (STAGING | PROD)
         required: true
@@ -48,15 +53,17 @@ jobs:
     outputs:
       web_image: ${{ steps.meta.outputs.web }}
       api_image: ${{ steps.meta.outputs.api }}
+      backoffice_image: ${{ steps.meta.outputs.backoffice }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Resolve build contexts
         id: ctx
-        # web: apps/web/Dockerfile builds from the repo root (pnpm workspace). api: placeholder until apps/automation has a Dockerfile.
+        # web / backoffice: their Dockerfile builds from the repo root (pnpm workspace). api: placeholder until apps/automation has a Dockerfile.
         run: |
           if [ -f apps/web/Dockerfile ]; then echo "web=." >> "$GITHUB_OUTPUT"; echo "web_file=apps/web/Dockerfile" >> "$GITHUB_OUTPUT"; else echo "web=apps/infra/placeholder-web" >> "$GITHUB_OUTPUT"; echo "web_file=apps/infra/placeholder-web/Dockerfile" >> "$GITHUB_OUTPUT"; fi
           if [ -f apps/automation/Dockerfile ]; then echo "api=apps/automation" >> "$GITHUB_OUTPUT"; else echo "api=apps/infra/placeholder-api" >> "$GITHUB_OUTPUT"; fi
+          if [ -f apps/backoffice/Dockerfile ]; then echo "bo=." >> "$GITHUB_OUTPUT"; echo "bo_file=apps/backoffice/Dockerfile" >> "$GITHUB_OUTPUT"; else echo "bo=apps/infra/placeholder-web" >> "$GITHUB_OUTPUT"; echo "bo_file=apps/infra/placeholder-web/Dockerfile" >> "$GITHUB_OUTPUT"; fi
 
       - name: Image names
         id: meta
@@ -64,6 +71,7 @@ jobs:
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "web=ghcr.io/${OWNER}/shosho-web:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
           echo "api=ghcr.io/${OWNER}/shosho-api:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          echo "backoffice=ghcr.io/${OWNER}/shosho-backoffice:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
@@ -92,6 +100,16 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max,ignore-error=true
 
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ steps.ctx.outputs.bo }}
+          file: ${{ steps.ctx.outputs.bo_file }}
+          push: true
+          tags: ${{ steps.meta.outputs.backoffice }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=backoffice
+          cache-to: type=gha,scope=backoffice,mode=max,ignore-error=true
+
   deploy:
     name: deploy to ${{ inputs.environment }}
     needs: build
@@ -103,6 +121,7 @@ jobs:
       REMOTE_DIR: ${{ inputs.remote_dir }}
       WEB_PORT: ${{ inputs.web_port }}
       API_PORT: ${{ inputs.api_port }}
+      BO_PORT: ${{ inputs.backoffice_port }}
       # Environment secrets, looked up by prefix (STAGING_SSH_HOST, PROD_SSH_HOST, …).
       SSH_HOST: ${{ secrets[format('{0}_SSH_HOST', inputs.secret_prefix)] }}
       SSH_USER: ${{ secrets[format('{0}_SSH_USER', inputs.secret_prefix)] }}
@@ -131,6 +150,7 @@ jobs:
           cat > env.rendered <<EOT
           WEB_IMAGE=${{ needs.build.outputs.web_image }}
           API_IMAGE=${{ needs.build.outputs.api_image }}
+          BACKOFFICE_IMAGE=${{ needs.build.outputs.backoffice_image }}
           SUPABASE_URL=${{ secrets[format('{0}_SUPABASE_URL', inputs.secret_prefix)] }}
           SUPABASE_ANON_KEY=${{ secrets[format('{0}_SUPABASE_ANON_KEY', inputs.secret_prefix)] }}
           SUPABASE_SERVICE_ROLE_KEY=${{ secrets[format('{0}_SUPABASE_SERVICE_ROLE_KEY', inputs.secret_prefix)] }}
@@ -168,16 +188,19 @@ jobs:
 
       - name: Health (on the server, 127.0.0.1 only)
         run: |
-          ssh target "REMOTE_DIR='$REMOTE_DIR' WEB_PORT='$WEB_PORT' API_PORT='$API_PORT' bash -s" <<'EOT'
+          ssh target "REMOTE_DIR='$REMOTE_DIR' WEB_PORT='$WEB_PORT' API_PORT='$API_PORT' BO_PORT='$BO_PORT' bash -s" <<'EOT'
           set -e
           export DOCKER_HOST="unix:///run/user/$(id -u)/docker.sock"
           for i in $(seq 1 20); do
             web=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/" || true)
             api=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${API_PORT}/health" || true)
-            echo "try $i: web=$web api=$api"
-            if [ "$web" = 200 ] && [ "$api" = 200 ]; then
+            # back-office: /login is the only page without a session (the rest 307 there)
+            bo=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${BO_PORT}/login" || true)
+            echo "try $i: web=$web api=$api backoffice=$bo"
+            if [ "$web" = 200 ] && [ "$api" = 200 ] && [ "$bo" = 200 ]; then
               curl -fsS "http://127.0.0.1:${WEB_PORT}/" | grep -oE '<title>[^<]*' || true
               curl -fsS "http://127.0.0.1:${API_PORT}/health"; echo
+              curl -fsS "http://127.0.0.1:${BO_PORT}/login" | grep -oE '<title>[^<]*' || true
               echo "--- memory (cgroup slice of user $(id -u), limit 512M) ---"
               m=$(cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/memory.current" 2>/dev/null || echo 0)
               echo "memory.current=$((m/1024/1024))M"

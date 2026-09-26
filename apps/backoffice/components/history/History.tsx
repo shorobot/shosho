@@ -74,7 +74,7 @@ export function History() {
   const items = filtered.reduce((acc, r) => acc + (r.order_items[0]?.count ?? 0), 0);
 
   function exportCsv() {
-    const head = [t("th.no"), t("th.date"), t("th.customer"), t("history.payment"), t("th.type"), t("th.items"), t("th.total"), t("th.payment"), t("th.status"), t("th.driver"), "Adresse"];
+    const head = [t("th.no"), t("th.date"), t("th.customer"), t("th.phone"), t("th.type"), t("th.items"), t("th.total"), t("th.payment"), t("th.status"), t("th.driver"), t("th.address")];
     const body = filtered.map((r) => [
       r.number,
       ddmmHHmm(r.created_at),

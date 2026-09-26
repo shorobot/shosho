@@ -69,14 +69,13 @@ export function minutesBetween(fromIso: string | null | undefined, to: Date | st
   return Math.max(0, Math.floor((b - a) / 60000));
 }
 
-/** "0:42" style elapsed label (m:ss under 1 h, else h:mm). */
+/** "0:42" style elapsed label (m:ss under 1 h, h:mm under a day, then days — a stale order stays readable). */
 export function elapsedLabel(fromIso: string | null | undefined, now: Date): string {
   if (!fromIso) return "";
   const s = Math.max(0, Math.floor((now.getTime() - new Date(fromIso).getTime()) / 1000));
   if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return `${h}:${String(m).padStart(2, "0")} h`;
+  if (s < 86400) return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")} h`;
+  return `${Math.floor(s / 86400)} d`;
 }
 
 /** Relative day label for a schedule: today → "HH:MM", tomorrow → {tomorrow} HH:MM, else "DD.MM HH:MM". */

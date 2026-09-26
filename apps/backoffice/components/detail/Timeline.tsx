@@ -2,7 +2,7 @@
 
 import { useI18n, type Key } from "@/lib/i18n";
 import { useOrders } from "@/lib/store";
-import { hhmm } from "@/lib/time";
+import { dayKey, ddmm, hhmm } from "@/lib/time";
 import type { OrderEventRow } from "@/lib/types";
 
 const EVENT_KEY: Record<string, Key> = {
@@ -25,8 +25,9 @@ const EVENT_KEY: Record<string, Key> = {
 /** "Verlauf" — order_events with the actor's name resolved through `staff` (api-contracts §6.2). */
 export function Timeline({ events }: { events: OrderEventRow[] }) {
   const { t } = useI18n();
-  const { staff } = useOrders();
+  const { staff, now } = useOrders();
   const rows = [...events].sort((a, b) => a.at.localeCompare(b.at));
+  const today = dayKey(now);
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -48,7 +49,7 @@ export function Timeline({ events }: { events: OrderEventRow[] }) {
             : `${e.type} · ${actor}`;
           return (
             <li key={e.id} className="flex gap-3 text-[12px] leading-[1.45]">
-              <span className="w-[42px] flex-none font-extrabold text-muted">{hhmm(e.at)}</span>
+              <span className="w-[86px] flex-none font-extrabold text-muted">{dayKey(new Date(e.at)) === today ? hhmm(e.at) : `${ddmm(e.at)} · ${hhmm(e.at)}`}</span>
               <span className="min-w-0 flex-1 text-ink-2">
                 {text}
                 {e.type === "cancelled" && typeof payload["reason"] === "string" && payload["reason"] ? ` · ${payload["reason"]}` : ""}

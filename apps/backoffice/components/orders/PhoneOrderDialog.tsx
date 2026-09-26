@@ -12,7 +12,10 @@ import { toast } from "@/lib/toast";
 import type { OrderType, PaymentMethod } from "@/lib/types";
 
 type Item = { id: string; name_de: string | null; name_en: string | null; base_price_cents: number | null };
-type Line = { item_id: string; qty: number };
+type Option = { id: string; name_de: string | null; name_en: string | null; price_cents: number; active: boolean };
+type Group = { id: string; name_de: string | null; name_en: string | null; min_select: number; max_select: number | null; required: boolean; options: Option[] };
+type ItemGroups = { item_id: string; option_groups: Group | null };
+type Line = { item_id: string; qty: number; option_ids: string[] };
 type Problem = { code: string; field?: string; reason?: string };
 type Quote = { ok?: boolean; total_cents?: number; subtotal_cents?: number; delivery_fee_cents?: number; discount_cents?: number; problems?: Problem[] };
 
@@ -32,6 +35,7 @@ export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: ()
   const supabase = useSupabase();
   const { reload } = useOrders();
   const [items, setItems] = useState<Item[]>([]);
+  const [groups, setGroups] = useState<ItemGroups[]>([]);
   const [search, setSearch] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [type, setType] = useState<OrderType>("delivery");
@@ -53,12 +57,28 @@ export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: ()
       .select("id, name_de, name_en, base_price_cents")
       .order("name_de")
       .then(({ data }) => setItems((data ?? []).filter((i): i is Item => Boolean(i.id))));
+    // Required option groups ("Sojasauce: genau eine") — quote_order rejects an item without them.
+    void supabase
+      .from("menu_item_option_groups")
+      .select("item_id, option_groups(id, name_de, name_en, min_select, max_select, required, options(id, name_de, name_en, price_cents, active))")
+      .then(({ data }) => setGroups((data ?? []) as unknown as ItemGroups[]));
   }, [open, items.length, supabase]);
+
+  /** Groups the operator must answer for an item: min_select >= 1 (the design's "exactly one" rule). */
+  const requiredGroups = useCallback(
+    (item_id: string): Group[] =>
+      groups
+        .filter((g) => g.item_id === item_id && g.option_groups && (g.option_groups.required || g.option_groups.min_select > 0))
+        .map((g) => g.option_groups as Group)
+        .map((g) => ({ ...g, options: g.options.filter((o) => o.active) }))
+        .filter((g) => g.options.length > 0),
+    [groups],
+  );
 
   const payload = useMemo(
     () => ({
       type,
-      items: lines.filter((l) => l.qty > 0).map((l) => ({ item_id: l.item_id, qty: l.qty })),
+      items: lines.filter((l) => l.qty > 0).map((l) => ({ item_id: l.item_id, qty: l.qty, option_ids: l.option_ids })),
       postal_code: type === "delivery" ? postal.trim() || undefined : undefined,
       contact: { phone: phone.trim() || undefined },
     }),
@@ -81,9 +101,23 @@ export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: ()
 
   function setQty(item_id: string, qty: number) {
     setLines((ls) => {
+      const prev = ls.find((l) => l.item_id === item_id);
       const rest = ls.filter((l) => l.item_id !== item_id);
-      return qty > 0 ? [...rest, { item_id, qty }] : rest;
+      if (qty <= 0) return rest;
+      // first unit: preselect the first option of every required group so the quote passes straight away
+      const option_ids = prev?.option_ids ?? requiredGroups(item_id).map((g) => g.options[0]?.id).filter((v): v is string => Boolean(v));
+      return [...rest, { item_id, qty, option_ids }];
     });
+  }
+
+  function setGroupOption(item_id: string, group: Group, option_id: string) {
+    setLines((ls) =>
+      ls.map((l) => {
+        if (l.item_id !== item_id) return l;
+        const others = l.option_ids.filter((id) => !group.options.some((o) => o.id === id));
+        return { ...l, option_ids: [...others, option_id] };
+      }),
+    );
   }
 
   const visible = items.filter((i) => pickName(lang, i.name_de, i.name_en).toLowerCase().includes(search.trim().toLowerCase())).slice(0, search ? 12 : 8);
@@ -141,19 +175,40 @@ export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: ()
           <div className="flex max-h-[220px] flex-col gap-1.5 overflow-auto pr-1">
             {visible.map((i) => {
               const qty = lines.find((l) => l.item_id === i.id)?.qty ?? 0;
+              const line = lines.find((l) => l.item_id === i.id);
               return (
-                <div key={i.id} className={`flex items-center gap-2 rounded-[12px] px-3 py-2 ${qty ? "bg-orange-tint" : "bg-field-2"}`}>
-                  <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{pickName(lang, i.name_de, i.name_en)}</span>
-                  <span className="whitespace-nowrap text-[12px] font-extrabold">{euro(i.base_price_cents ?? 0, lang)}</span>
-                  <div className="flex items-center gap-1.5">
-                    <button type="button" className="h-7 w-7 rounded-full bg-paper text-[13px] shadow-(--shadow-pill)" onClick={() => setQty(i.id, Math.max(0, qty - 1))} aria-label="−">
-                      −
-                    </button>
-                    <span className="w-5 text-center text-[12px] font-extrabold">{qty}</span>
-                    <button type="button" className="h-7 w-7 rounded-full bg-ink text-[13px] text-cream" onClick={() => setQty(i.id, qty + 1)} aria-label="+">
-                      +
-                    </button>
+                <div key={i.id} className={`flex flex-col gap-1.5 rounded-[12px] px-3 py-2 ${qty ? "bg-orange-tint" : "bg-field-2"}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{pickName(lang, i.name_de, i.name_en)}</span>
+                    <span className="whitespace-nowrap text-[12px] font-extrabold">{euro(i.base_price_cents ?? 0, lang)}</span>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" className="h-7 w-7 rounded-full bg-paper text-[13px] shadow-(--shadow-pill)" onClick={() => setQty(i.id, Math.max(0, qty - 1))} aria-label="−">
+                        −
+                      </button>
+                      <span className="w-5 text-center text-[12px] font-extrabold">{qty}</span>
+                      <button type="button" className="h-7 w-7 rounded-full bg-ink text-[13px] text-cream" onClick={() => setQty(i.id, qty + 1)} aria-label="+">
+                        +
+                      </button>
+                    </div>
                   </div>
+                  {qty > 0 &&
+                    requiredGroups(i.id).map((g) => (
+                      <label key={g.id} className="flex items-center gap-2 pl-1 text-[11px]">
+                        <span className="w-[90px] flex-none text-muted">{pickName(lang, g.name_de, g.name_en)}</span>
+                        <select
+                          className="field py-1.5 text-[11px]"
+                          value={g.options.find((o) => line?.option_ids.includes(o.id))?.id ?? ""}
+                          onChange={(e) => setGroupOption(i.id, g, e.target.value)}
+                        >
+                          {g.options.map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {pickName(lang, o.name_de, o.name_en)}
+                              {o.price_cents ? ` +${euro(o.price_cents, lang)}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
                 </div>
               );
             })}

@@ -188,6 +188,7 @@ describe("timers", () => {
     expect(elapsedLabel(new Date(NOW.getTime() - 42000).toISOString(), NOW)).toBe("0:42");
     expect(elapsedLabel(new Date(NOW.getTime() - 65000).toISOString(), NOW)).toBe("1:05");
     expect(elapsedLabel(new Date(NOW.getTime() - 3700000).toISOString(), NOW)).toBe("1:01 h");
+    expect(elapsedLabel(new Date(NOW.getTime() - 3 * 86400000).toISOString(), NOW)).toBe("3 d");
   });
 });
 
