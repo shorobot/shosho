@@ -1175,6 +1175,42 @@ export type Database = {
         Args: { p_anon_key: string; p_url: string }
         Returns: Json
       }
+      security_audit_function_grants: {
+        Args: never
+        Returns: {
+          anon_execute: boolean
+          args: string
+          authenticated_execute: boolean
+          is_trigger: boolean
+          proname: string
+          prosecdef: boolean
+          search_path_pinned: boolean
+          service_role_execute: boolean
+        }[]
+      }
+      security_audit_policies: {
+        Args: never
+        Returns: {
+          cmd: string
+          policyname: string
+          qual: string | null
+          roles: string[]
+          schemaname: string
+          tablename: string
+          with_check: string | null
+        }[]
+      }
+      security_audit_table_grants: {
+        Args: never
+        Returns: {
+          anon_select: boolean
+          authenticated_select: boolean
+          policy_count: number
+          rowsecurity: boolean
+          schemaname: string
+          tablename: string
+        }[]
+      }
       set_order_status: {
         Args: {
           new_status: Database["public"]["Enums"]["order_status"]
