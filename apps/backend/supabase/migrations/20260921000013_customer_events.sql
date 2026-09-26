@@ -97,7 +97,8 @@ declare
   v_role public.staff_role := public.auth_role();
   e public.customer_events;
 begin
-  if v_role not in ('owner', 'operator') then
+  -- v_role is null for anon / non-staff — `not in` would evaluate to NULL, so test it explicitly
+  if v_role is null or v_role not in ('owner', 'operator') then
     raise exception 'forbidden_for_role' using errcode = '42501';
   end if;
   if type not in ('complaint', 'compensation', 'note', 'push_opened') then

@@ -42,6 +42,25 @@ begin
 end
 $$;
 
+---------------------------------------------------------------- helpers
+
+-- True for a direct database connection (pg_cron, psql, automation) and for PostgREST requests made
+-- with the service-role key; false for anon / a staff session. Used to let the nightly job run
+-- unattended while keeping the RPC owner-only for human callers.
+create or replace function public.is_service_request()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claims', true), '')::jsonb->>'role',
+    'service_role') = 'service_role'
+$$;
+revoke execute on function public.is_service_request() from public, anon, authenticated;
+grant execute on function public.is_service_request() to service_role;
+
 ---------------------------------------------------------------- anonymisation
 create or replace function public.anonymise_silent_customers(months integer default 24)
 returns integer
@@ -55,8 +74,8 @@ declare
   v_n      integer := 0;
   c        record;
 begin
-  -- service role (cron / automation) has auth.uid() = null and no staff row; owner may run it by hand
-  if auth.uid() is not null and v_role is distinct from 'owner' then
+  -- the nightly cron / automation runs as the service role; a human caller must be the owner
+  if not (v_role = 'owner' or public.is_service_request()) then
     raise exception 'forbidden_for_role' using errcode = '42501';
   end if;
 

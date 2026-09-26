@@ -45,8 +45,9 @@ describe("storage bucket `menu`", () => {
     const { data: pub } = anon().storage.from("menu").getPublicUrl(path);
     expect(pub.publicUrl).toContain(`/storage/v1/object/public/menu/${path}`);
 
-    const { error: anonDel } = await anon().storage.from("menu").remove([path]);
-    expect(anonDel).not.toBeNull();
+    // storage `remove` answers 200 with an empty list when RLS filters the row — the file survives
+    const { data: anonDel } = await anon().storage.from("menu").remove([path]);
+    expect(anonDel ?? []).toEqual([]);
     expect((await anon().storage.from("menu").download(path)).error).toBeNull(); // still there
     const { error: opDel } = await operator.storage.from("menu").remove([path]);
     expect(opDel).toBeNull();

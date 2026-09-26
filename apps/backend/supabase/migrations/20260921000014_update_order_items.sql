@@ -35,7 +35,8 @@ declare
   p          jsonb;
   v_cap      integer;
 begin
-  if v_role not in ('owner', 'operator') then
+  -- v_role is null for anon / non-staff — `not in` would evaluate to NULL, so test it explicitly
+  if v_role is null or v_role not in ('owner', 'operator') then
     raise exception 'forbidden_for_role' using errcode = '42501';
   end if;
   select * into o from public.orders where id = update_order_items.order_id for update;

@@ -30,13 +30,13 @@ describe("update_order_items", () => {
     expect(r.delivery_fee_cents).toBe(0); // 41.90 ≥ 35 € free delivery
     expect(r.tip_cents).toBe(100);
     expect(r.total_cents).toBe(4190 + 100);
-    expect(r.items.map((i: any) => [i.name, i.qty, i.modified])).toEqual([["Tonkotsu Ramen", 2, false], ["Philadelphia Roll", 1, true]]);
+    expect(r.items.map((i: any) => [i.name, i.qty, i.modified])).toEqual([["Tonkotsu Ramen", 2, false], ["Philadelphia Deluxe", 1, true]]);
 
     const a = admin();
     const { data: rows } = await a.from("order_items").select("name, qty, modified_by_operator, line_total_cents").eq("order_id", o.id).order("created_at");
     expect(rows).toEqual([
       { name: "Tonkotsu Ramen", qty: 2, modified_by_operator: false, line_total_cents: 2700 },
-      { name: "Philadelphia Roll", qty: 1, modified_by_operator: true, line_total_cents: 1490 },
+      { name: "Philadelphia Deluxe", qty: 1, modified_by_operator: true, line_total_cents: 1490 },
     ]);
     const { data: ev } = await a.from("order_events").select("type, actor_type, actor_id, payload").eq("order_id", o.id).eq("type", "item_changed");
     expect(ev).toHaveLength(1);

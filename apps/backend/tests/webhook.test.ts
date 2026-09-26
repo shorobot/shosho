@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { signPayload, verifyStripeSignature } from "../supabase/functions/_shared/stripe-signature";
 import { describePaymentMethod, orderIdOf, paymentIntentIdOf, paymentMethodIdOf, toRecordPaymentEventArgs } from "../supabase/functions/_shared/stripe-mapping";
 import * as fx from "./fixtures/stripe/events";
-import { admin, anon, openAllDay, ramenOrder, rpc, signIn } from "./helpers";
+import { admin, anon, ITEM, openAllDay, ramenOrder, rpc, signIn } from "./helpers";
 
 beforeAll(openAllDay);
 
@@ -91,7 +91,7 @@ describe("record_payment_event (webhook state machine)", () => {
   });
 
   it("is idempotent per event id and finds the order by intent when metadata is missing", async () => {
-    const o = await stripeOrder({ items: [{ item_id: "30000000-0000-4000-8000-000000000002", qty: 2 }] }); // 2 × 38.90 > 50 € → no auto-accept
+    const o = await stripeOrder({ items: [{ item_id: ITEM.ramen, qty: 4 }] }); // 54.00 > 50 € → no auto-accept
     const ev = fx.amountCapturableUpdated(o.pi, o.id, o.total);
     delete (ev.data.object as any).metadata;
     const first = await deliver(ev);
