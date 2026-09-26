@@ -129,7 +129,7 @@ machine — the forwarded port only serves the app itself.
 
 ## Known gaps (v1)
 
-- Positions are read-only until `update_order_items` exists (S2-02).
+- Positions are read-only. `rpc('update_order_items')` landed with S2-02 while this boot was open (§6.2/§6.8) — wiring the editor is S4-02.
 - Kitchen load is a placeholder (`accepted + preparing` against a nominal capacity of 8) — there is
   no capacity model yet.
 - "Info" (notify the customer) on an out-for-delivery order is not wired — no messaging channel yet.
