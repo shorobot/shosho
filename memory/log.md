@@ -107,3 +107,98 @@ PR #24 merged; the first `Deploy staging` after it (run 36254796785) is green wi
 Owner moved all 8 secrets into environment `staging`; S0 verified with a `workflow_dispatch` run of Migrate staging (36254748898): link + db push green on env-only values, Edge Functions deploy and the payment-worker schedule install both ran. Merged S2's report PR #23 (resolved its memory/ conflict per D-009 — S2 had stopped). S2-02 and S4-01 are on main: payments/storage/timeline/anonymisation live on staging, back-office built and running on 127.0.0.1:8202.
 Decisions taken: back-office gets **option A** — its own hostname `bo.shos.hellfiresol.com` behind an access gate (from S4's proposal); the S1-04 slug collision resolved by renumbering S2's functions-deploy proposal to S1-05 and folding its review into S1-04 task 2.
 Issued S1-04 (back-office host + gate, ratify the functions-deploy steps, delete repo-level secrets, RAM report, prod-readiness note) and S7-01 (first full security audit — starting from S2's default-EXECUTE-grant finding, with a regression test that must fail when a future migration ships a function with default grants). Queued next: S4-02 menu editor, S6-01 QA end-to-end, S3-02 payments UI (waits for the Stripe account), S2-03 reports/campaigns/CMS.
+
+## 2026-09-26 — S0 Orchestrator — S4-01 reviewed; §6 gaps decided; S2-03 and S4-02 issued
+Reviewed S4-01 (merged PRs #24/#25): back-office verified on staging with all four seed roles — order #1000 driven new→picked_up from the board, #1001 created by the phone-order form and delivered by the driver account with cash, #1002 through the kitchen role with only its two allowed actions. Accepted.
+Answered all eight of S4's contract requests in a new **§6.9**: settings `ops` + `kitchen.status` readable by every staff role; a `staff_directory` view (`id, name, role, active`) for all roles while the base table keeps phone owner/operator-only; `order_events.payload` shape fixed per type in §1.4; `reason` canonical for cancellation; **`order_attempts` granted** — one table serving both the operator's sold-out/out-of-zone states and the Berichte funnel; `settings.kitchen.capacity` for the kitchen-load tile; the "Info" button deferred to S5 (no messaging channel exists); `customer_stats` counts completed orders only, with a separate `cancelled_count`.
+Verified S4's memory warning on the server myself: slice is 496M/512M, but only 254M is anon — the rest is reclaimable page cache; `oom_kill` counter is 1 (historic, no container affected now). Recorded as a real ceiling with no headroom rather than an outage; S1-04 task 5 owns the fix (drop the `api` placeholder first).
+Issued S2-03 (the §6.9 implementation + `order_attempts` + five report views + making the flaky realtime test deterministic) and S4-02 (Speisekarte, Artikel editor, and real photo upload now that the `menu` bucket exists). S2's original S2-03 proposal keeps its campaigns/CMS half for S2-04.
+
+## 2026-09-26 — S1 DevOps — S1-04
+Repo-level secrets are gone and the pipeline runs on environment secrets only; the functions-deploy
+steps are reviewed, hardened and now mine; the back-office host is requested but **not live** — it
+needs two actions I am not allowed to take.
+
+**Back-office host (task 1) — blocked on owner + TETA+PI, not done.** Option A confirmed:
+`bo.shos.hellfiresol.com` → `127.0.0.1:8202`. Vhost requested from `TTPI · MANAGER` (the log's
+`teta-pi-e0` no longer exists as a session; `TTPI · MANAGER`, the same session title recorded on
+2026-09-20, is the current address). I asked them to create the vhost **with HTTP basic-auth already
+on it** rather than as a follow-up, so there is no window where DNS resolves and the back-office is
+open; also https-only, and the htpasswd credentials handed to the owner directly, never into chat or
+git. No answer yet. `dig bo.shos.hellfiresol.com` is empty; nothing has been handed to anyone.
+Owner steps are in the section below. Guest site unaffected and re-verified: `https://shos.hellfiresol.com/`
+→ 200, valid TLS, real S3-01 site. The four seed logins could not be tested against the public host
+because the host does not exist yet — `http://127.0.0.1:8202/login` answers 200 over the ssh tunnel.
+
+**Functions-deploy steps (task 2) — ratified, with three changes.** Kept in `migrate-staging.yml`
+rather than split out: one chain, functions strictly after `db push`, which is the property S2 wanted.
+(1) **Found a real bug**: the runner's default shell is `bash -e {0}` with **no `pipefail`** (visible
+in run 36273961641). Every `… | tee "$GITHUB_STEP_SUMMARY"` step was reporting *tee's* exit code, so a
+failed `supabase functions deploy` would have gone green and `Deploy staging` would have shipped app
+code against functions that never landed. Added `set -euo pipefail` to all three tee'd steps.
+(2) Moved the Stripe secret hand-off off the command line — `secrets set NAME=value` puts plaintext in
+the runner's process list, where Actions log-masking does not reach; now a 0600 `mktemp` file via
+`--env-file`, trapped and deleted (`--env-file` confirmed present in the pinned CLI v2.117). Both
+branches tested locally (no secrets → clean skip + exit 0; two secrets → 0600 file, correct contents).
+(3) Fixed the stale proposal path in the comment and recorded S1 ownership. Left alone on purpose:
+the always-deploy behaviour (cheap, keeps staging in step) and the non-blocking `payment-worker`
+install POST. Sync check green. `S1-05-edge-functions-deploy-ratify.md` deleted.
+
+**Not mine to fix, flagging to S7/S2:** `payment-worker` has `verify_jwt = true`, but the **anon key
+satisfies that** and the anon key is public (it ships in the guest web bundle). The function does its
+own work with the service role and has no caller-role check, so anyone with the public key can POST
+`{"action":"install"}` to rewrite the pg_cron schedule, or POST with no action to drain the payment
+job queue. Backend code is outside my boundary; I did not touch it. I also left the workflow's install
+POST on the anon key on purpose — that is how pg_cron invokes it, and swapping in the service-role key
+would hide the problem rather than fix it.
+
+**Repo-level secrets (task 3) — done and verified.** First confirmed no job reads them outside an
+`environment:` block: all four uses in `migrate-staging.yml` are in job `push` (env `staging`), and all
+six prefix lookups in `_deploy.yml` are in job `deploy` (env-scoped); the `build` job uses only
+`GITHUB_TOKEN`. Then deleted all 8 (`STAGING_SSH_HOST/USER/KEY`, `STAGING_SUPABASE_URL/_ANON_KEY/
+_SERVICE_ROLE_KEY/_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`). Repo-level secret list is now **empty**;
+environment `staging` still holds all 8. Re-ran the full chain on environment secrets only:
+`Migrate staging` **36273961641 green** (db push + all three functions redeployed ACTIVE v7) →
+`Deploy staging` **36274003786 green** (build + deploy). Nothing was restored, nothing guessed.
+
+**Capacity (task 5) — under the threshold, say it plainly.** Post-deploy, `user.slice/user-1002.slice`:
+`memory.current` **487.6 MiB of 512 MiB → 25.6 MiB nominal headroom**, well under the ~80 MiB line.
+The honest reading: ~218 MiB of that is reclaimable page cache; genuinely non-reclaimable is
+`anon` 234 MiB + `kernel` 36 MiB = **270 MiB**, so real headroom is ~242 MiB. But the warning signs are
+real — `memory.peak` 515 MiB (it has crossed the cap), `memory.events` `max` 7736 (+50 during this
+deploy alone), `oom_kill 1`, and `memory.swap.max` is 0 for our slice, so an anon spike goes straight
+to a kill. Per container: web 44 MiB/96, backoffice 52 MiB/96, api 33 MiB/160; each shows `oom_kill 0`,
+so the one kill was not a container. Worst case if all three sat at their declared limits is
+352 + ~106 (dockerd/containerd/systemd/ssh) + 36 (kernel) ≈ **494 MiB — 18 MiB short of the cap**.
+**Proposal: drop the `api` placeholder.** It is a placeholder S5 does not need yet, idle at 33 MiB on a
+160 MiB limit; removing it takes the worst case from ~494 MiB to ~334 MiB and buys ~178 MiB of real
+margin, at no cost. That is cheaper than asking TETA+PI for RAM, and I would rather ask them once,
+with numbers, only if S5 actually needs the slot. Numbers already sent to `TTPI · MANAGER` as FYI.
+
+**Owner items — exact actions.**
+1. **DNS for the back-office.** Cloudflare → zone `hellfiresol.com` → DNS → Add record: type `CNAME`,
+   name `bo.shos`, target `shos.hellfiresol.com`, **Proxied (orange cloud) ON**, TTL Auto. (An `A`
+   record to `164.90.235.66`, proxied, works identically — pick either, the CNAME keeps one place to
+   change the IP.)
+2. **Reuse the Configuration Rule from 2026-09-26.** The rule you added that fixed `https://shos.…`
+   landing on the hellfire apex is needed here too, for the same reason: our vhost is on origin :80.
+   Duplicate that exact rule and change only the hostname match to `bo.shos.hellfiresol.com` — do not
+   re-derive the settings, copy them.
+3. **Access gate (preferred over basic-auth).** Cloudflare Zero Trust → Access → Applications → Add a
+   self-hosted application, domain `bo.shos.hellfiresol.com`, policy Allow → include → Emails, listing
+   your address and each staff address. **Cloudflare Access is free for up to 50 users**, so no paid
+   plan is needed — if you hit a paywall, stop and tell me and we stay on the basic-auth I already
+   requested from TETA+PI. If Access does go live, tell me and I will ask TETA+PI to drop basic-auth.
+4. **Revoke the superseded Supabase token.** supabase.com → account → **Access Tokens**
+   (https://supabase.com/dashboard/account/tokens) → find the token created **2026-09-20** → Revoke.
+   The one you generated on **2026-09-26** is the one in environment `staging` and the one run
+   36273961641 just used, so revoking the old one breaks nothing. Nothing else needs revoking: the
+   **old DB password does not matter** — you reset it on 2026-09-26, which invalidated the old value at
+   the database, so the superseded copy is already dead and there is nothing left to revoke for it.
+   The SSH key and the Supabase anon/service-role keys were re-entered, not rotated, so they are
+   unchanged and stay as they are.
+
+**Blockers:** `bo.shos.hellfiresol.com` needs the owner (items 1–3) and a vhost from TETA+PI; until
+both land the back-office stays ssh-only and no URL goes to anyone. `S1-06-prod-target.md` written for
+S0 — six gaps, the notable one being that **no `migrate-prod.yml` exists at all**, so prod is more than
+filling in secrets.

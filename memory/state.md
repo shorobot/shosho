@@ -4,16 +4,16 @@ Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster 
 Last update: 2026-09-21 (S0 — D-011 payments; S2-02 issued)
 
 ## Phase
-Phase 3 — hardening and reach. Guest site live on https; back-office built but ssh-only; payments coded, no Stripe account yet. Issued: S1-04 (back-office host + secrets cleanup) ‖ S7-01 (first security audit). Next: S4-02 menu editor, S6-01 QA, S3-02 payments UI (waits for Stripe), S2-03 reports/campaigns.
+Phase 3 — hardening and reach. Guest site live on https; back-office built, verified on staging with all 4 roles, still ssh-only. Issued: S1-04 (host + secrets cleanup) ‖ S7-01 (security audit) ‖ S2-03 (contract gaps, order_attempts, reports) ‖ S4-02 (menu editor + photos). Next: S6-01 QA, S3-02 payments UI (waits for Stripe), S2-04 campaigns/CMS, S5-01 automation.
 
 ## Sessions
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | in progress   | S1-04       | S1-03          | needs owner DNS/Cloudflare for `bo.shos.hellfiresol.com` and a vhost from TETA+PI |
+| S1 | DevOps       | boot done     | —           | S1-04          | `bo.shos.hellfiresol.com` not live: needs owner DNS + Configuration Rule + Cloudflare Access, and a basic-auth vhost from TETA+PI (requested, no answer yet). Repo-level secrets deleted, env-only chain green (36273961641 → 36274003786). Slice at 487/512 MiB — proposes dropping the `api` placeholder |
 | S2 | Backend      | boot done     | —           | S2-02 (PR #21, on staging) | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint in the Stripe dashboard — until then the payment functions answer 503 and no live payment has been walked through |
 | S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
-| S4 | Back-office  | boot done     | —           | S4-01          | public host for the back-office undecided (proposal → `S1-04-backoffice-host.md`); staging is loopback-only (`127.0.0.1:8202`) via ssh port-forward meanwhile |
+| S4 | Back-office  | in progress   | S4-02       | S4-01          | public host comes with S1-04; meanwhile ssh port-forward to `127.0.0.1:8202` |
 | S5 | Automation   | not started   | —           | —              | unblocked (S4-01 done); after S7-01 |
 | S6 | QA           | not started   | —           | —              | unblocked (S4-01 done); S6-01 next |
 | S7 | Security     | in progress   | S7-01       | —              | — |
@@ -41,5 +41,7 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - **Owner**: DNS/Cloudflare record for `bo.shos.hellfiresol.com` (S1-04 gives the exact steps); revoke the superseded Supabase access token from 2026-09-20.
 - All 8 secrets now exist in environment `staging` (owner, 2026-09-26); repo-level copies still present until S1-04 task 3 deletes them. Env-only chain proven green (run 36254748898).
 - No live Stripe payment has ever run; the state machine is verified only against recorded event payloads.
-- Menu photos: bucket `menu` exists (S2-02), no upload UI yet (S4-02).
+- Menu photos: bucket `menu` exists (S2-02); upload UI lands with S4-02.
+- **Staging memory is at its ceiling.** Measured by S0 2026-09-26: slice `memory.current` 496M / 512M — but that is 254M anon (real working set: web 59 MiB, api 32 MiB, backoffice 55 MiB + rootless dockerd) plus 204M reclaimable page cache and 27M slab. `memory.events`: `max` 7686, `oom_kill` **1** (historic, no container is currently affected — all three exited 0 and were recreated 16:41). Not an emergency; no headroom for a fourth service. S1-04 task 5 owns it — cheapest win is dropping the `api` placeholder until S5 needs it, then pruning images after deploys.
+- Flaky test: `tests/guest_realtime.test.ts` failed once on `main` (`no broadcast received … partitions_created: []`) and passed on re-run — S2-03 task 8 makes it deterministic.
 - Prod target — separate decision after S7-01.
