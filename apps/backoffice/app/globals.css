@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+/* SHOSHO brand tokens (docs/design/brandbook.pdf; D-010: tokens are shared with apps/web, components are not).
+   The palette is closed — seven brand colours + the status colours the back-office canvas uses for order states. */
+@theme {
+  --color-cream: #fbf7f2;
+  --color-ink: #16192b;
+  --color-blue: #2e86d6;
+  --color-orange: #f26b21;
+  --color-sky: #8fc4ee;
+  --color-blush: #f6cfd8;
+  --color-sand: #fdeee2;
+
+  /* tints derived on the canvas */
+  --color-page: #faf8f6;
+  --color-paper: #ffffff;
+  --color-field: #f3f0ec;
+  --color-field-2: #f5f2ee;
+  --color-line: #f0ece7;
+  --color-line-2: #ede8e2;
+  --color-line-3: #eae4db;
+  --color-ink-2: #3a3f55;
+  --color-ink-3: #5a5f73;
+  --color-muted: #8a8fa3;
+  --color-muted-2: #9a9aa8;
+  --color-muted-3: #a9a399;
+  --color-nav: #22263d;
+  --color-nav-track: #323754;
+  --color-nav-text: #a9aec4;
+  --color-nav-muted: #8a90ac;
+  --color-orange-tint: #fff3e9;
+  --color-orange-line: #f5d9c2;
+  --color-orange-ink: #b55418;
+  --color-sky-tint: #e3effa;
+
+  /* order-state colours from the BO · Bestellungen canvas */
+  --color-alert: #c8442a;
+  --color-alert-tint: #fdece8;
+  --color-amber: #f2a23c;
+  --color-amber-tint: #ffe7d8;
+  --color-ok: #3e9b5f;
+  --color-ok-tint: #e6f3ea;
+  --color-done: #c7c1b8;
+
+  --font-sans: var(--font-archivo), Archivo, Helvetica, Arial, sans-serif;
+  --font-kana: var(--font-zen), "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", sans-serif;
+
+  /* neumorphic shadows from the canvas */
+  --shadow-card: 4px 4px 10px rgba(174, 164, 152, 0.15), -4px -4px 10px rgba(255, 255, 255, 0.9);
+  --shadow-pill: 3px 3px 8px rgba(174, 164, 152, 0.13), -3px -3px 8px rgba(255, 255, 255, 0.9);
+  --shadow-inset: inset 2px 2px 6px rgba(174, 164, 152, 0.24), inset -2px -2px 6px rgba(255, 255, 255, 0.9);
+  --shadow-cta: 0 6px 14px rgba(242, 107, 33, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  --shadow-alert: 0 6px 18px rgba(200, 68, 42, 0.18);
+  --shadow-modal: 0 24px 60px rgba(22, 25, 43, 0.28);
+
+  /* motion (brandbook 08): micro 120–200 ms, screen 320 ms, no springs */
+  --ease-in-brand: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-brand: cubic-bezier(0.4, 0, 1, 1);
+  --duration-micro: 160ms;
+  --duration-screen: 320ms;
+}
+
+@layer base {
+  html {
+    background: var(--color-page);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.4;
+    min-height: 100dvh;
+  }
+  * { scrollbar-width: thin; scrollbar-color: #dcd6ce transparent; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: #dcd6ce; border-radius: 99px; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  :focus-visible { outline: 2px solid var(--color-blue); outline-offset: 2px; border-radius: 999px; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible { border-radius: 14px; }
+  h1 { font-weight: 800; font-size: 24px; line-height: 1.2; letter-spacing: -0.01em; }
+}
+
+@utility label-caps {
+  font-weight: 500;
+  font-size: 10px;
+  line-height: 1.3;
+  letter-spacing: 0.13em;
+  color: var(--color-muted);
+  text-transform: uppercase;
+}
+
+@utility field {
+  background: var(--color-field-2);
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.3;
+  box-shadow: var(--shadow-inset);
+  border: 0;
+  width: 100%;
+  color: var(--color-ink);
+  &::placeholder { color: var(--color-muted-2); font-weight: 400; }
+}
+
+@utility card {
+  background: var(--color-paper);
+  border-radius: 18px;
+  box-shadow: var(--shadow-card);
+}
+
+@utility kana {
+  font-family: var(--font-kana);
+}
+
+@utility transition-micro {
+  transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+  transition-duration: var(--duration-micro);
+  transition-timing-function: var(--ease-in-brand);
+}
+
+@keyframes screen-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@utility screen-in {
+  animation: screen-in var(--duration-screen) var(--ease-in-brand) both;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 68, 42, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(200, 68, 42, 0); }
+}
+@utility pulse-dot {
+  animation: pulse-dot 1.6s var(--ease-in-brand) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .screen-in, .pulse-dot { animation: none !important; }
+  .transition-micro { transition: none !important; }
+}
+
+/* Kitchen receipt: 80 mm thermal bon (task 5). Only .bon prints. */
+@media print {
+  @page { size: 80mm auto; margin: 4mm; }
+  body { background: #fff !important; font-size: 12px; }
+  body * { visibility: hidden; }
+  .bon, .bon * { visibility: visible; }
+  .bon { position: absolute; left: 0; top: 0; width: 72mm; box-shadow: none !important; }
+}

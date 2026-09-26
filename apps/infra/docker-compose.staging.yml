@@ -24,6 +24,19 @@ services:
     mem_limit: 96m
     memswap_limit: 96m
 
+  backoffice:
+    <<: *common
+    image: ${BACKOFFICE_IMAGE:-ghcr.io/shorobot/shosho-backoffice:staging}
+    ports:
+      # not exposed publicly yet — reachable over ssh port-forward until S1 decides the host (S1-04 proposal)
+      - "127.0.0.1:8202:3000"
+    environment:
+      # read at request time by apps/backoffice (lib/env.ts); anon key only, RLS + staff session guard the data
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+    mem_limit: 96m
+    memswap_limit: 96m
+
   api:
     <<: *common
     image: ${API_IMAGE:-ghcr.io/shorobot/shosho-api:staging}

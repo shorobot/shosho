@@ -1,0 +1,19 @@
+# applies to `docker build -f apps/backoffice/Dockerfile .` (BuildKit picks <Dockerfile>.dockerignore)
+**/node_modules
+**/.next
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.worktrees
+docs
+memory
+apps/infra
+apps/automation
+apps/web
+apps/backend/supabase
+apps/backend/tests
+apps/backoffice/e2e
+apps/backoffice/tests
+apps/backoffice/playwright-report
+apps/backoffice/test-results

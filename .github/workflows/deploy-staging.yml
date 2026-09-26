@@ -2,7 +2,7 @@ name: Deploy staging
 
 # Chain on main (D-005: staging = main, auto-deploy):  CI ──▶ Migrate staging ──▶ Deploy staging.
 # Runs only after the schema push succeeded, so code never ships against a failed migration.
-# Target: shared droplet, user `shos`, rootless docker, 127.0.0.1:8200 (web) / :8201 (api) — D-004.
+# Target: shared droplet, user `shos`, rootless docker, 127.0.0.1:8200 (web) / :8201 (api) / :8202 (back-office) — D-004.
 on:
   workflow_run:
     workflows: [Migrate staging]
@@ -30,5 +30,6 @@ jobs:
       remote_dir: /home/shos/shosho/staging
       web_port: "8200"
       api_port: "8201"
+      backoffice_port: "8202"
       secret_prefix: STAGING
     secrets: inherit   # resolved inside _deploy.yml from environment `staging`
