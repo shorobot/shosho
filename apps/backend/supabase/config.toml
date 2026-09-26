@@ -112,7 +112,8 @@ port = 54324
 # sender_name = "Admin"
 
 [storage]
-enabled = false
+# S2-02: on — bucket `menu` + storage policies are tested by vitest (tests/storage.test.ts).
+enabled = true
 # The maximum file size allowed (e.g. "5MB", "500KB").
 file_size_limit = "50MiB"
 
@@ -383,6 +384,23 @@ deno_version = 2
 
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
+
+# S2-02 Edge Functions (deployed to staging by migrate-staging.yml).
+[functions.create-payment-intent]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/create-payment-intent/index.ts"
+
+[functions.stripe-webhook]
+enabled = true
+# Stripe calls this without a project JWT — the Stripe-Signature header is the authentication.
+verify_jwt = false
+entrypoint = "./functions/stripe-webhook/index.ts"
+
+[functions.payment-worker]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/payment-worker/index.ts"
 
 [analytics]
 enabled = false
