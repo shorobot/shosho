@@ -49,11 +49,15 @@ export const OPT = {
 export const POSTAL = { zoneA: "10115", zoneB: "10243", zoneC: "10961", outside: "99999" } as const;
 
 let phoneSeq = 0;
-/** Unique E.164 phone per call so customer/first-order state never leaks between tests. */
+/**
+ * Unique E.164 phone per call so customer / first-order state never leaks between tests.
+ * The random block matters: test files run in separate module registries, so a per-file counter
+ * plus a coarse clock value collided between files and made two suites share one customer.
+ */
 export function freshPhone(): string {
   phoneSeq += 1;
-  const n = (Date.now() % 1_000_000_000).toString().padStart(9, "0");
-  return `+4917${n.slice(0, 6)}${phoneSeq.toString().padStart(3, "0")}`;
+  const rand = Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
+  return `+4917${rand}${(phoneSeq % 1000).toString().padStart(3, "0")}`;
 }
 
 export function ramenOrder(overrides: Record<string, unknown> = {}) {
