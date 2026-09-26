@@ -4,19 +4,19 @@ Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster 
 Last update: 2026-09-21 (S0 — D-011 payments; S2-02 issued)
 
 ## Phase
-Phase 2 — product. Backend v1 live on staging. Running in parallel: S1-03 (finishing) ‖ S2-02 (payments, storage, timeline) ‖ S3-01 (guest site) ‖ S4-01 (back-office orders board).
+Phase 3 — hardening and reach. Guest site live on https; back-office built but ssh-only; payments coded, no Stripe account yet. Issued: S1-04 (back-office host + secrets cleanup) ‖ S7-01 (first security audit). Next: S4-02 menu editor, S6-01 QA, S3-02 payments UI (waits for Stripe), S2-03 reports/campaigns.
 
 ## Sessions
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | boot done     | —           | S1-03          | owner: re-enter 5 secrets with `--env staging` (see log 2026-09-21), then S1 deletes repo-level copies |
+| S1 | DevOps       | in progress   | S1-04       | S1-03          | needs owner DNS/Cloudflare for `bo.shos.hellfiresol.com` and a vhost from TETA+PI |
 | S2 | Backend      | boot done     | —           | S2-02 (PR #21, on staging) | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint in the Stripe dashboard — until then the payment functions answer 503 and no live payment has been walked through |
 | S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
 | S4 | Back-office  | boot done     | —           | S4-01          | public host for the back-office undecided (proposal → `S1-04-backoffice-host.md`); staging is loopback-only (`127.0.0.1:8202`) via ssh port-forward meanwhile |
-| S5 | Automation   | not started   | —           | —              | waits for S4-01 |
-| S6 | QA           | not started   | —           | —              | waits for S4-01 |
-| S7 | Security     | not started   | —           | —              | waits for S4-01 |
+| S5 | Automation   | not started   | —           | —              | unblocked (S4-01 done); after S7-01 |
+| S6 | QA           | not started   | —           | —              | unblocked (S4-01 done); S6-01 next |
+| S7 | Security     | in progress   | S7-01       | —              | — |
 
 Statuses: `not started` → `in progress` → `boot done` → `blocked`
 
@@ -37,8 +37,9 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/docs`: architecture.md, api-contracts.md (§1–4 implemented schema, §5 web contract by S2, §6 backoffice contract by S0), design/ (brandbook, canvas, README).
 
 ## Not yet done / open
-- **Owner**: re-enter 5 secrets with `--env staging` (`STAGING_SSH_KEY`, `STAGING_SUPABASE_ANON_KEY`, `STAGING_SUPABASE_SERVICE_ROLE_KEY`, `STAGING_SUPABASE_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`) so S1 can delete the repo-level copies (S1-03 task 0).
-- **Owner**: Stripe account + test keys for S2-02 (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, env `staging`).
-- S2-02 PR #21: `backend (supabase)` red — `db lint` warning in `ensure_guest_realtime_policy` (`v_parts` declared `text[]`, initialised from `text`, line 6). S2 fixes.
-- Back-office public host undecided (S4 proposal → S1-04); menu photos bucket lands with S2-02.
+- **Owner**: Stripe account (Shosho Sushi GmbH, test mode) + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in env `staging`, and the webhook endpoint in the Stripe dashboard (`…/functions/v1/stripe-webhook`, 5 events — `apps/backend/README.md`). Blocks the live payment walkthrough and S3-02.
+- **Owner**: DNS/Cloudflare record for `bo.shos.hellfiresol.com` (S1-04 gives the exact steps); revoke the superseded Supabase access token from 2026-09-20.
+- All 8 secrets now exist in environment `staging` (owner, 2026-09-26); repo-level copies still present until S1-04 task 3 deletes them. Env-only chain proven green (run 36254748898).
+- No live Stripe payment has ever run; the state machine is verified only against recorded event payloads.
+- Menu photos: bucket `menu` exists (S2-02), no upload UI yet (S4-02).
 - Prod target — separate decision after S7-01.
