@@ -14,12 +14,14 @@ name: Migrate staging
 # Secrets (environment `staging`, owner-entered, never printed): SUPABASE_ACCESS_TOKEN,
 # STAGING_SUPABASE_DB_PASSWORD. Variable: STAGING_SUPABASE_PROJECT_REF.
 #
-# S2-02: the same push job also deploys the Supabase Edge Functions in
-# apps/backend/supabase/functions (D-011 keeps the payment logic next to the DB) and sets their
-# function secrets from environment `staging`: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and the
-# optional STRIPE_PUBLISHABLE_KEY. Functions deploy AFTER `db push` so a function never runs against
-# a schema that has not been migrated. Optional secrets are simply skipped while the owner has not
-# created the Stripe account — the functions then answer 503 `stripe_not_configured`.
+# The same push job also deploys the Supabase Edge Functions in apps/backend/supabase/functions
+# (D-011 keeps the payment logic next to the DB) and sets their function secrets from environment
+# `staging`: STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and the optional STRIPE_PUBLISHABLE_KEY.
+# Functions deploy AFTER `db push` so a function never runs against a schema that has not been
+# migrated, and a failure there fails the whole chain on purpose — `Deploy staging` must not ship
+# app code whose backend functions did not land. Optional secrets are simply skipped while the owner
+# has not created the Stripe account — the functions then answer 503 `stripe_not_configured`.
+# (Written by S2 in S2-02, ratified by S1 in S1-04.)
 on:
   workflow_run:
     workflows: [CI]
@@ -125,6 +127,10 @@ jobs:
 
       - name: Plan (dry run against the remote)
         run: |
+          # S1-04: the runner's default shell is `bash -e {0}` — NO pipefail (verified in run
+          # 36273961641). Without this line `cmd | tee` reports tee's exit code and a failing
+          # supabase call passes the step silently. Every tee'd step below sets it explicitly.
+          set -euo pipefail
           echo "## Migrate staging — plan" >> "$GITHUB_STEP_SUMMARY"
           pnpm exec supabase db push --dry-run 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -135,13 +141,16 @@ jobs:
 
       - name: Remote migration list
         run: |
+          set -euo pipefail
           echo "## Migrate staging — remote state" >> "$GITHUB_STEP_SUMMARY"
           pnpm exec supabase migration list 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # ---------------------------------------------------------------- S2-02: Edge Functions
+      # ---------------------------------------------------------------- Edge Functions
       # Payment functions live in apps/backend/supabase/functions (D-011). They are deployed after
-      # the schema push, with their secrets taken from environment `staging`. Requested by S2-02
-      # (proposal: /memory/boots/proposed/S1-04-edge-functions-deploy.md) — S1 owns this workflow.
+      # the schema push, with their secrets taken from environment `staging`.
+      # Added by S2 during S2-02, reviewed and ratified by S1 in S1-04 (2026-09-26): kept in this
+      # workflow (one chain, functions strictly after `db push`), with the secret hand-off moved off
+      # the command line. S1 owns these steps from here on (D-003).
       - name: Function secrets (Stripe — skipped when not provided yet)
         env:
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -149,20 +158,35 @@ jobs:
           STRIPE_PUBLISHABLE_KEY: ${{ secrets.STRIPE_PUBLISHABLE_KEY }}
         run: |
           set -euo pipefail
-          args=()
+          # S1-04: values go through a 0600 file, never through argv. `secrets set NAME=value` puts
+          # the plaintext in the runner's process list, where any other step or tool on the box can
+          # read it; --env-file keeps it in a file we own and delete. Actions masking only covers
+          # the log, not /proc.
+          umask 077
+          envfile="$(mktemp)"
+          trap 'rm -f "$envfile"' EXIT
+          n=0
           for name in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_PUBLISHABLE_KEY; do
             value="${!name:-}"
-            if [ -n "$value" ]; then args+=("$name=$value"); else echo "::notice::$name not set in environment staging — skipped"; fi
+            if [ -n "$value" ]; then
+              printf '%s=%s\n' "$name" "$value" >> "$envfile"; n=$((n + 1))
+            else
+              echo "::notice::$name not set in environment staging — skipped"
+            fi
           done
-          if [ ${#args[@]} -eq 0 ]; then
+          if [ "$n" -eq 0 ]; then
             echo "::warning::no Stripe secrets set — payment functions will answer 503 stripe_not_configured"
             exit 0
           fi
-          # Values are masked by Actions; the CLI prints only the names it set.
-          pnpm exec supabase secrets set --project-ref "$PROJECT_REF" "${args[@]}"
+          # The CLI prints only the names it set, never the values.
+          pnpm exec supabase secrets set --project-ref "$PROJECT_REF" --env-file "$envfile"
 
       - name: Deploy Edge Functions
         run: |
+          # S1-04: pipefail is mandatory here. Without it a failed `functions deploy` is masked by
+          # tee, the step goes green, and `Deploy staging` ships app code against functions that
+          # never landed — the exact failure this step exists to prevent.
+          set -euo pipefail
           echo "## Migrate staging — Edge Functions" >> "$GITHUB_STEP_SUMMARY"
           # --use-api bundles server-side (no Docker on the runner). verify_jwt per function comes
           # from apps/backend/supabase/config.toml (stripe-webhook: false — Stripe signs instead).

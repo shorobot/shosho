@@ -10,7 +10,7 @@ Phase 3 — hardening and reach. Guest site live on https; back-office built but
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
-| S1 | DevOps       | in progress   | S1-04       | S1-03          | needs owner DNS/Cloudflare for `bo.shos.hellfiresol.com` and a vhost from TETA+PI |
+| S1 | DevOps       | boot done     | —           | S1-04          | `bo.shos.hellfiresol.com` not live: needs owner DNS + Configuration Rule + Cloudflare Access, and a basic-auth vhost from TETA+PI (requested, no answer yet). Repo-level secrets deleted, env-only chain green (36273961641 → 36274003786). Slice at 487/512 MiB — proposes dropping the `api` placeholder |
 | S2 | Backend      | boot done     | —           | S2-02 (PR #21, on staging) | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint in the Stripe dashboard — until then the payment functions answer 503 and no live payment has been walked through |
 | S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
 | S4 | Back-office  | boot done     | —           | S4-01          | public host for the back-office undecided (proposal → `S1-04-backoffice-host.md`); staging is loopback-only (`127.0.0.1:8202`) via ssh port-forward meanwhile |
