@@ -6,12 +6,15 @@
 export type PublicEnv = {
   supabaseUrl: string;
   supabaseAnonKey: string;
+  /** Public storefront, for the menu screen's "Vorschau auf Website" link. */
+  siteUrl: string;
 };
 
 export function publicEnv(): PublicEnv {
   return {
     supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "",
     supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? "",
+    siteUrl: process.env.NEXT_PUBLIC_SITE_URL ?? "https://shos.hellfiresol.com",
   };
 }
 

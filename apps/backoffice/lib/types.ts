@@ -54,3 +54,24 @@ export type KitchenSettings = {
 export type KitchenStatus = { paused?: boolean; since?: string | null };
 
 export const ORDER_SELECT = "*, order_items(*), order_events(*)" as const;
+
+/* ---------------------------------------------------------------- menu (api-contracts §1.2 / §6.5) */
+
+export type MenuCategoryRow = Tables["menu_categories"]["Row"];
+export type OptionGroupRow = Tables["option_groups"]["Row"];
+export type OptionRow = Tables["options"]["Row"];
+export type ItemOptionGroupRow = Tables["menu_item_option_groups"]["Row"];
+
+export type MenuCategoryInsert = Tables["menu_categories"]["Insert"];
+export type MenuItemInsert = Tables["menu_items"]["Insert"];
+export type OptionGroupInsert = Tables["option_groups"]["Insert"];
+export type OptionInsert = Tables["options"]["Insert"];
+
+/** An option group with its options, as both the /menu panel and the item editor load it. */
+export type OptionGroup = OptionGroupRow & { options: OptionRow[] };
+
+/** A group as it is linked to one item (§1.2 `menu_item_option_groups`). */
+export type LinkedGroup = OptionGroup & { link_sort: number };
+
+export const MENU_ITEM_SELECT = "*" as const;
+export const OPTION_GROUP_SELECT = "*, options(*)" as const;

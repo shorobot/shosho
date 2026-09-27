@@ -6,7 +6,7 @@ import { createClient, type Client } from "@/lib/supabase/client";
 
 type Ctx = { env: PublicEnv; supabase: Client | null };
 
-const EnvContext = createContext<Ctx>({ env: { supabaseUrl: "", supabaseAnonKey: "" }, supabase: null });
+const EnvContext = createContext<Ctx>({ env: { supabaseUrl: "", supabaseAnonKey: "", siteUrl: "" }, supabase: null });
 
 // Hands the server's runtime env to the browser bundle and builds the one browser Supabase client.
 // Only public values cross this boundary: the anon key is public by design (RLS does the guarding).
