@@ -1,4 +1,4 @@
--- [S2-03] 19 — role access: settings key sets, staff_directory, kitchen capacity
+-- [S2-03] 21 — role access: settings key sets, staff_directory, kitchen capacity
 --            (api-contracts §6.9 rows 1, 2, 6; §4)
 --
 -- S4-01 found that `kitchen` and `driver` sessions can read neither `settings.ops` nor any `staff`
@@ -82,10 +82,10 @@ on conflict (key) do update
   set value = settings.value || jsonb_build_object(
     'capacity', coalesce(settings.value->'capacity', to_jsonb(8)));
 
--- kitchen_pause() used to replace the whole `kitchen.status` value, which would drop `capacity`.
--- It also had a NULL-role hole: `v_role not in ('owner','operator')` evaluates to NULL for a
--- non-staff authenticated caller, so the gate did not raise (migration 18 kept `anon` out, but an
--- authenticated non-staff JWT got through). Both fixed; signature and return shape unchanged.
+-- kitchen_pause() replaced the whole `kitchen.status` value, which would drop `capacity` on the
+-- first pause. Replaced here so it **merges** instead. The NULL-role guard
+-- (`v_role is null or v_role not in (...)`) is S7-01's fix from migration 19 and is carried over
+-- verbatim — this migration must not regress it. Signature and return shape unchanged.
 create or replace function public.kitchen_pause(paused boolean)
 returns jsonb
 language plpgsql

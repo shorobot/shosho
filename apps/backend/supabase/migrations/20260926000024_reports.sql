@@ -1,4 +1,4 @@
--- [S2-03] 22 — Berichte: customer_stats rebuilt + four report functions (api-contracts §1.3, §6.10)
+-- [S2-03] 24 — Berichte: customer_stats rebuilt + four report functions (api-contracts §1.3, §6.10)
 --
 -- Shape: security-definer set-returning functions, not views. A `security_invoker` view would be
 -- read through the caller's RLS, and `orders` RLS is per-role (kitchen sees every order, a driver

@@ -53,8 +53,10 @@ checks) plus the existing feature test files (`rls.test.ts`, `status.test.ts`, `
 |---|---|---|---|---|---|
 | `menu_categories`/`items`/`option_groups`/`options`/`menu_item_option_groups` | read on-sale/active rows only | same as anon (+ staff-read for full catalogue: `items_staff_read` etc.) | full read + write | full read + write | all |
 | `delivery_zones` | read active zones | read active zones (+ staff read) | read + write | read + write | all |
-| `settings` | public keys only (`settings_public_keys()`) | public keys only | public keys + `ops`/private read (`settings_staff_read`); no write | full read/write | all |
+| `settings` | public keys only (`settings_public_keys()`) | public keys + `ops` (`settings_staff_keys()` — S2-03, api-contracts §6.9 row 1); private `payments` / `kitchen` invisible | read every key (`settings_staff_read`); no write | full read/write | all |
 | `staff` | none | own row only | own row + staff list read | full read/write | all |
+| view `staff_directory` (S2-03) | none (grant revoked) | read `id, name, role, active` for the team | same | same | all |
+| `order_attempts` (S2-03) | none — insert via `record_order_attempt()` only, never select (grant revoked, no insert policy) | none | read | read | all |
 | `customers`, `customer_addresses` | none (only via `place_order`/`get_order_by_token`) | none | full | full | all |
 | `orders`, `order_items`, `order_events` | none directly | kitchen: read all; driver: read own (`driver_id = auth.uid()`) only | full | full | all |
 | `promo_codes` | none | none | full | full | all |
@@ -70,7 +72,7 @@ assumed — to have RLS on, by `security.test.ts`.
 
 | Function | anon | authenticated (staff) | service_role |
 |---|---|---|---|
-| `quote_order`, `place_order`, `get_order_by_token`, `shop_open_at`, `normalize_phone`, `auth_role`, `is_staff`, `settings_public_keys`, `menu_item_on_sale` | ✅ | ✅ | ✅ |
+| `quote_order`, `place_order`, `get_order_by_token`, `shop_open_at`, `normalize_phone`, `auth_role`, `is_staff`, `settings_public_keys`, `settings_staff_keys`, `menu_item_on_sale`, `record_order_attempt`, `order_attempt_items_ok` | ✅ | ✅ | ✅ |
 | `set_order_status`, `kitchen_pause`, `update_order_items`, `add_customer_event`, `anonymise_silent_customers`, `order_transition_allowed` | ❌ | ✅ (role-gated inside the function) | ✅ |
 | `current_actor`, `enqueue_payment_job`, `claim_payment_jobs`, `finish_payment_job`, `record_payment_event`, `schedule_payment_worker`, `run_payment_worker`, `ensure_menu_bucket_policies`, `ensure_guest_realtime_policy`, `is_service_request` | ❌ | ❌ | ✅ |
 | Edge Function `create-payment-intent` | ✅ (with a matching `tracking_token`) | ✅ (owner/operator, no token needed) | n/a (not called by staff/guest sessions) |

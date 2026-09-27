@@ -1,4 +1,4 @@
--- [S2-03] 21 — order_attempts: the rejected/abandoned checkout feed (api-contracts §1.5, §6.9 row 5)
+-- [S2-03] 23 — order_attempts: the rejected/abandoned checkout feed (api-contracts §1.7, §6.9 row 5)
 --
 -- Why it exists (S4-01 request 5 + the Berichte funnel): `quote_order` reports a problem to the
 -- **guest** and a rejected checkout creates no order, so the back-office had no signal for the two

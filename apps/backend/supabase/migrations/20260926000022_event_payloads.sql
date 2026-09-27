@@ -1,4 +1,4 @@
--- [S2-03] 20 — order_events payloads per type + `reason` as the canonical cancel key
+-- [S2-03] 22 — order_events payloads per type + `reason` as the canonical cancel key
 --            (api-contracts §1.4, §6.1, §6.9 rows 3 and 4)
 --
 -- S4-01 had to guess what `order_events.payload` contains. §1.4 now fixes it per type:
