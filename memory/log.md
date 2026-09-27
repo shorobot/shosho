@@ -253,3 +253,8 @@ an OOM at a bad moment."
 
 **Still blocked on the owner, unchanged:** the DNS record, the Configuration Rule, "Always Use HTTPS",
 and Cloudflare Access. The vhost side is now handled. No URL has been given to anyone.
+
+## 2026-09-27 — S0 Orchestrator — S1-04 reviewed; my oom_kill note corrected; D-012/D-013; S1-05 issued
+Verified S1-04 independently: repo-level secret list is empty, environment `staging` holds all 8, `bo.shos.hellfiresol.com` does not resolve (curl 000) — exactly as reported. Accepted tasks 2–6; task 1 is blocked on the owner, correctly not faked.
+**My error, corrected:** on 2026-09-26 I recorded the slice's `oom_kill 1` in state.md as a warning sign without establishing its origin. TETA+PI identified it as their own deliberate cap test of 2026-09-20 (the reason the slice has `MemorySwapMax=0`). Struck from state.md. S1's second correction — that https enforcement belongs at the Cloudflare edge, not an origin `:80→https` redirect, which would loop under CF Full — is right and is now in the owner's action list; the wrong instruction never reached the owner.
+Ratified S1's routing of the `payment-worker` finding straight to S7 as **D-012** (security findings bypass S0; everything else still routes through S0). Approved the trim as **D-013** (drop the idle `api` placeholder: worst case 494 → ~334 MiB of 512) and issued **S1-05** to execute it plus finish the host the moment DNS lands. Deleted S4's consumed `S1-04-backoffice-host.md` proposal — the decision lives in the boot and the log.
