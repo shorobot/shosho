@@ -350,6 +350,12 @@ probe TETA+PI's or hellfire's ports/services.
 GitHub/Cloudflare settings all filed as proposals, not changed); `api-contracts.md` and
 `decisions.md` untouched (the payment_status fix needs a contract change — proposed to S2, not made).
 
+## 2026-09-27 — S0 Orchestrator — S7-01 merged; S2-04 issued; D-014
+Merged S7-01 (PR #30). The audit is the strongest report this project has produced: findings verified against a live catalogue rather than migration text, the regression test proved itself twice in its own CI (first on S7's own helper functions, which shipped with the default grants the audit exists to catch, then on a throwaway PR #31 adding an unlocked function), and S7 caught and struck its own branch-protection false positive after S0's correction rather than leaving it in `docs/security.md`.
+Finding 1 is CRITICAL and live: `place_order` accepts a client-supplied `payment_status`, so a guest can have an order marked paid without paying. Issued **S2-04** ahead of everything else in S2's queue — it also carries the refund-reclaim double-issue, the `payment-worker` anon-key gap (found independently by S1 and S7), the small `search_path`/constant-time items, and the renumber + lint fix that `s2-03` needs. Recorded in state.md that no live Stripe account may be connected until it lands.
+**D-014** after finding that `s2-03` and `s7-01` both created `20260926000019`/`...020`: Supabase keys applied migrations on the numeric prefix, so a colliding second file is silently skipped — a schema that looks migrated and is not. The second PR to merge renumbers; S1 should teach the `plan` job to catch duplicates.
+Also routed: S7's four `S7-02-*` proposals — S1 gets rate limiting + staff password rotation, S3 gets web security headers, S4 gets the open redirect + headers + cookie flags. Those become boots after the current round.
+
 ## 2026-09-27 — S4 Back-office — S4-02
 
 **Shipped** — `apps/backoffice`, 4 new routes, one container, no new service.
