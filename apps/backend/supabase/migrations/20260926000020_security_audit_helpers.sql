@@ -44,7 +44,10 @@ as $$
   where n.nspname = 'public';
 $$;
 
-revoke all on function public.security_audit_function_grants() from public;
+-- `revoke all ... from public` alone is not enough (that's the whole point of this file, and of
+-- migration 18): Supabase's default privileges grant EXECUTE to `anon`/`authenticated` directly,
+-- not via the PUBLIC pseudo-role. Revoke from all three explicitly.
+revoke all on function public.security_audit_function_grants() from public, anon, authenticated;
 grant execute on function public.security_audit_function_grants() to service_role;
 
 -- RLS-enabled + policy-count per table, across `public` and the two extension schemas this project
@@ -78,7 +81,7 @@ as $$
     and n.nspname in ('public', 'storage', 'realtime');
 $$;
 
-revoke all on function public.security_audit_table_grants() from public;
+revoke all on function public.security_audit_table_grants() from public, anon, authenticated;
 grant execute on function public.security_audit_table_grants() to service_role;
 
 -- Full policy definitions (same three schemas) — lets the test assert on the actual USING / WITH
@@ -104,5 +107,5 @@ as $$
   where schemaname in ('public', 'storage', 'realtime');
 $$;
 
-revoke all on function public.security_audit_policies() from public;
+revoke all on function public.security_audit_policies() from public, anon, authenticated;
 grant execute on function public.security_audit_policies() to service_role;
