@@ -350,6 +350,12 @@ probe TETA+PI's or hellfire's ports/services.
 GitHub/Cloudflare settings all filed as proposals, not changed); `api-contracts.md` and
 `decisions.md` untouched (the payment_status fix needs a contract change — proposed to S2, not made).
 
+## 2026-09-27 — S0 Orchestrator — S7-01 merged; S2-04 issued; D-014
+Merged S7-01 (PR #30). The audit is the strongest report this project has produced: findings verified against a live catalogue rather than migration text, the regression test proved itself twice in its own CI (first on S7's own helper functions, which shipped with the default grants the audit exists to catch, then on a throwaway PR #31 adding an unlocked function), and S7 caught and struck its own branch-protection false positive after S0's correction rather than leaving it in `docs/security.md`.
+Finding 1 is CRITICAL and live: `place_order` accepts a client-supplied `payment_status`, so a guest can have an order marked paid without paying. Issued **S2-04** ahead of everything else in S2's queue — it also carries the refund-reclaim double-issue, the `payment-worker` anon-key gap (found independently by S1 and S7), the small `search_path`/constant-time items, and the renumber + lint fix that `s2-03` needs. Recorded in state.md that no live Stripe account may be connected until it lands.
+**D-014** after finding that `s2-03` and `s7-01` both created `20260926000019`/`...020`: Supabase keys applied migrations on the numeric prefix, so a colliding second file is silently skipped — a schema that looks migrated and is not. The second PR to merge renumbers; S1 should teach the `plan` job to catch duplicates.
+Also routed: S7's four `S7-02-*` proposals — S1 gets rate limiting + staff password rotation, S3 gets web security headers, S4 gets the open redirect + headers + cookie flags. Those become boots after the current round.
+
 ## 2026-09-27 — S2 Backend — S2-03
 
 Closed all eight §6.9 contract gaps S4-01 hit, added the rejected-checkout feed, shipped the Berichte
@@ -469,6 +475,9 @@ the sections task 9 named (plus the §1.1/§1.3/§1.4/§6.1/§6.4 pointer lines 
 and S7's two files above). `order_attempts` is documented as **§1.7**, not §1.5 — §1.5 is Promotions,
 and renumbering would have broken cross-references.
 
-**Next:** S2-04 (campaigns, automations, banners/site publish — S0 renames
-`boots/proposed/S2-03-reports-campaigns-cms.md`); `boots/proposed/S2-single-customer-erasure.md` and
-`boots/proposed/S3-record-order-attempt.md` filed, neither executed.
+**Next:** S0 has since issued **S2-04** for S7-01's CRITICAL payment finding, so campaigns /
+automations / banners move behind it (S2-05 — S0 renames `boots/proposed/S2-03-reports-campaigns-cms.md`).
+S2-04's brief also lists "the renumber + lint fix that `s2-03` needs": **both are already done in this
+PR** — migrations renumbered to 21–24 per D-014 and the `db lint` 42702 fixed, so S2-04 inherits a
+green branch and can go straight at the payment trust boundary. Also filed, neither executed:
+`boots/proposed/S2-single-customer-erasure.md`, `boots/proposed/S3-record-order-attempt.md`.

@@ -1,17 +1,17 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-09-21 (S0 — D-011 payments; S2-02 issued)
+Last update: 2026-09-27 (S0 — S7-01 merged; S2-04 issued for the CRITICAL payment finding; migration-collision rule D-014)
 
 ## Phase
-Phase 3 — hardening and reach. Guest site live on https; back-office built, verified on staging with all 4 roles, still ssh-only. Issued: S1-04 (host + secrets cleanup) ‖ S7-01 (security audit) ‖ S2-03 (contract gaps, order_attempts, reports) ‖ S4-02 (menu editor + photos). Next: S6-01 QA, S3-02 payments UI (waits for Stripe), S2-04 campaigns/CMS, S5-01 automation.
+Phase 3 — hardening. Security audit landed (S7-01): one CRITICAL money finding, fixes now scheduled. Running: S1-05 (capacity trim + host) ‖ S2-03 (contract gaps, red on lint + needs renumber) ‖ S4-02 (menu editor) ‖ S2-04 (security fixes, issued). Queued: S6-01 QA, S3-02 payments UI (needs Stripe), S4-03/04, S2-05, S5-01.
 
 ## Sessions
 
 | ID | Session      | Status        | Active boot | Last completed | Blockers |
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | boot done     | —           | S1-04          | `bo.shos.hellfiresol.com` not live: **vhost approved by TETA+PI with basic-auth in the same change**; still needs owner DNS record + Configuration Rule + **"Always Use HTTPS"** + Cloudflare Access. Repo-level secrets deleted, env-only chain green (36273961641 → 36274003786). Slice 487/512 MiB — proposes dropping the `api` placeholder; the historic `oom_kill 1` was TETA+PI's own cap test, not ours |
-| S2 | Backend      | boot done     | —           | S2-03 (PR #34) | owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint in the Stripe dashboard — until then the payment functions answer 503 and no live payment has been walked through. S7-01's CRITICAL on `place_order`'s client-supplied `payment_status` is untouched and needs its own boot (§5.3 contract change). Funnel `attempts` figures read 0 until S3 calls `record_order_attempt` (`boots/proposed/S3-record-order-attempt.md`) |
+| S2 | Backend      | boot done     | —           | S2-03 (PR #34) | next boot is S2-04 (S7-01's CRITICAL `payment_status` trust boundary) — **S2-03 already did S2-04's renumber (D-014: migrations 21–24) and the `db lint` fix**, so that branch starts green. owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint — no live payment has been walked through, and per S0 none may be connected until S2-04 lands. Funnel `attempts` figures read 0 until S3 calls `record_order_attempt` (`boots/proposed/S3-record-order-attempt.md`) |
 | S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
 | S4 | Back-office  | in progress   | S4-02       | S4-01          | public host comes with S1-04; meanwhile ssh port-forward to `127.0.0.1:8202` |
 | S5 | Automation   | not started   | —           | —              | unblocked (S4-01 done); after S7-01 |
@@ -40,7 +40,8 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - **Owner**: Stripe account (Shosho Sushi GmbH, test mode) + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in env `staging`, and the webhook endpoint in the Stripe dashboard (`…/functions/v1/stripe-webhook`, 5 events — `apps/backend/README.md`). Blocks the live payment walkthrough and S3-02.
 - **Owner, 4 Cloudflare actions for the back-office host** (S1-04 log has the click-by-click): (1) DNS `CNAME bo.shos → shos.hellfiresol.com`, proxied; (2) duplicate the 2026-09-26 Configuration Rule with the hostname changed to `bo.shos.hellfiresol.com`; (3) **Always Use HTTPS** for that hostname — the origin cannot do this under CF's Full topology, an origin-side `:80→https` redirect would loop (S1-04 addendum); (4) Cloudflare Access self-hosted app with an email allow-list (free ≤ 50 users) — if it paywalls, stay on TETA+PI's basic-auth.
 - **Owner**: revoke the Supabase access token created 2026-09-20 (the 2026-09-26 one is live and in use). The old DB password needs nothing — it died when you reset it.
-- **Security, pre-prod blocker**: `payment-worker` Edge Function has `verify_jwt = true`, which the **public** anon key satisfies, and it acts with the service role without a caller check — anyone with the key could rewrite the pg_cron schedule or drain the payment job queue. Found by S1-04, routed straight to S7 (D-012), audit in flight. Staging-only today (no Stripe keys, no real money), must be fixed before any prod or real payment.
+- **CRITICAL, blocks any real payment**: `place_order` trusts a client-supplied `payment_status` — a guest can post `authorized` with any non-cash method and the order reaches `paid` on delivery with no money moved (S7-01 finding 1, `rpc.sql:435-442,533-547`). Fix is S2-04, issued 2026-09-27. Until it lands, **do not connect a live Stripe account**; test mode is fine.
+- Other open S7-01 findings, each filed as a proposal: staff seed passwords shared and published (S1/owner — rotate before `bo.` goes live), refund double-issue on worker reclaim (S2-04), no rate limiting anywhere (S1/owner, Cloudflare), no security headers on either app (S3/S4), back-office open redirect via `?next=` (S4), `payment-worker` accepts the public anon key (S2-04, found independently by S1 and S7).
 - All 8 secrets now exist in environment `staging` (owner, 2026-09-26); repo-level copies still present until S1-04 task 3 deletes them. Env-only chain proven green (run 36254748898).
 - No live Stripe payment has ever run; the state machine is verified only against recorded event payloads.
 - Menu photos: bucket `menu` exists (S2-02); upload UI lands with S4-02.
