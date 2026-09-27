@@ -3,7 +3,9 @@
 The single place where contracts between layers are fixed. Changed ONLY through S0.
 A child session that needs a contract change → writes a proposal to /memory/boots/proposed/.
 
-Derived from `/docs/design/` by S0 on 2026-09-20; reconciled with what S2-01 actually shipped (PR #6) on 2026-09-20 — §1–4 describe the **implemented** schema. Rows marked S2-02 were added by S2 in S2-02 (PR #21, 2026-09-26) and are live: payments (Stripe, D-011), storage bucket `menu`, `customer_events`, order edits, guest realtime, anonymisation — see §5.6 and §6.8. Source of truth for column names: `apps/backend/supabase/migrations/` + `apps/backend/types/database.ts`.
+Derived from `/docs/design/` by S0 on 2026-09-20; reconciled with what S2-01 actually shipped (PR #6) on 2026-09-20 — §1–4 describe the **implemented** schema. Rows marked S2-02 were added by S2 in S2-02 (PR #21, 2026-09-26) and are live: payments (Stripe, D-011), storage bucket `menu`, `customer_events`, order edits, guest realtime, anonymisation — see §5.6 and §6.8. Rows marked S2-03 were added by S2 in S2-03 (PR #34, 2026-09-27): the §6.9 role
+decisions, the §1.4 event payloads, `order_attempts` (§1.7) and the Berichte reports (§6.10). Source
+of truth for column names: `apps/backend/supabase/migrations/` + `apps/backend/types/database.ts`.
 
 ## 1. DB schema (Supabase / Postgres, schema `public`)
 
@@ -12,7 +14,7 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ### 1.1 Settings & team — S2-01
 | Table | Key columns | Notes |
 |---|---|---|
-| `settings` | `key text pk`, `value jsonb` | single-tenant key/value: `business` (name, address, phone, email, impressum, ust_id), `opening_hours` (per weekday + holidays), `ops` (prep_default_min=22, rush_extra_min=15, preorder_max_days=7, auto_accept_paid_under_cents=5000, pause_allowed, pickup_discount_pct=10), `payments` (private: provider, payout) and **`payments.enabled`** (public: methods, tip_presets_cents, capture), `kitchen` (private: paused_by, paused_at, rush bool) and **`kitchen.status`** (public: paused, since — written by `kitchen_pause()`), `site` (seo title/desc, cookie_banner, robots, maintenance). Public allow-list = `settings_public_keys()`: business, opening_hours, site, payments.enabled, kitchen.status |
+| `settings` | `key text pk`, `value jsonb` | single-tenant key/value: `business` (name, address, phone, email, impressum, ust_id), `opening_hours` (per weekday + holidays), `ops` (prep_default_min=22, rush_extra_min=15, preorder_max_days=7, auto_accept_paid_under_cents=5000, pause_allowed, pickup_discount_pct=10), `payments` (private: provider, payout) and **`payments.enabled`** (public: methods, tip_presets_cents, capture), `kitchen` (private: paused_by, paused_at, rush bool) and **`kitchen.status`** (public: paused, since — written by `kitchen_pause()`), `site` (seo title/desc, cookie_banner, robots, maintenance). **S2-03**: `kitchen.status` also carries `capacity` (int, default 8 — the kitchen-load denominator, §6.9 row 6) and `ops` carries `attempt_rate_limit_per_min` (default 20, §1.7). Three key sets (§4): `settings_public_keys()` = business, opening_hours, site, payments.enabled, kitchen.status (anon + everyone); `settings_staff_keys()` = that plus `ops` (every staff role); everything else (`payments`, `kitchen`) is owner/operator. |
 | `staff` | `id uuid pk = auth.users.id`, `name`, `role staff_role`, `phone`, `active` | `staff_role`: `owner`, `operator`, `kitchen`, `driver` |
 | `delivery_zones` | `code text` (A/B/C), `name`, `areas text`, `min_order_cents`, `fee_cents`, `free_delivery_over_cents int null` (null = never free), `promised_minutes`, `active`, `postal_codes text[]` | zone resolution v1 = by postal code list; polygon later |
 
@@ -31,14 +33,14 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 | `customers` | `name`, `phone text unique` (E.164), `email`, `kitchen_note` (allergy — copied onto every order), `tags text[]` (VIP/ALLERGIE/KATERING/PROBLEM), `birthday date null`, `is_company bool`, `consent_email/push/phone jsonb null` (`{granted_at, source}`), `anonymised_at null` | created automatically by `place_order` when phone is new |
 | `customer_addresses` | `customer_id`, `label`, `street`, `floor_apt`, `postal_code`, `city`, `zone_id null`, `is_default` | |
 | `customer_events` — S2-02 | `customer_id`, `at`, `type` (order/complaint/compensation/note/push_opened/consent_changed/anonymised), `payload jsonb`, `actor_type`, `actor_id null` | profile timeline; written by triggers (new order → `order`; `consent_*` change → `consent_changed`), by `set_order_status` payload `note`, by `add_customer_event` (staff) and by `anonymise_silent_customers` |
-| view `customer_stats` | orders_count, spent_cents, avg_cents, last_order_at, days_silent | for CRM list/segments. **Intent (S0, 2026-09-26): completed orders only** — `delivered` + `picked_up`; cancelled and refunded orders are excluded from all four figures. S2-03 adds `cancelled_count` as a separate column for the CRM's PROBLEM tag. |
+| view `customer_stats` | orders_count, spent_cents, avg_cents, last_order_at, days_silent | for CRM list/segments. **Intent (S0, 2026-09-26): completed orders only** — `delivered` + `picked_up`; cancelled and refunded orders are excluded from all four figures. **Implemented in S2-03**, which also added `cancelled_count` as a separate column (at the end) for the CRM's PROBLEM tag. |
 
 ### 1.4 Orders — S2-01
 | Table | Key columns | Notes |
 |---|---|---|
 | `orders` | `number int unique` (sequence, #2418), `channel order_channel`, `type order_type`, `status order_status`, `payment_status payment_status`, `payment_method payment_method`, `payment_ref text` ("Visa ···4417"), `customer_id null`, `contact_name`, `contact_phone`, `address jsonb null` (snapshot: street, floor_apt, postal_code, city), `zone_id null`, `distance_km null`, `courier_comment`, `comment_flags text[]` (leave_at_door/dont_ring/call_on_arrival/no_wasabi), `allergy_note` (snapshot of customer.kitchen_note), `scheduled_for timestamptz null` (null = ASAP), `promised_minutes`, `accepted_at/by`, `preparing_at`, `ready_at`, `driver_id null`, `out_at`, `completed_at`, `cancelled_at`, `cancel_reason`, `subtotal_cents`, `discount_cents`, `delivery_fee_cents`, `tip_cents`, `total_cents`, `vat_cents`, `promo_code text null`, `tracking_token text unique` (16 random bytes hex; guest tracking); **S2-02**: `payment_provider text null` (`stripe`), `payment_intent_id text unique null`, `payment_authorized_cents int null` (the provider's `amount_capturable` — ceiling for operator edits), `payment_captured_at null`, `payment_refunded_cents int default 0` | enums: `order_channel` website/phone/instagram/facebook/lieferando/wolt · `order_type` delivery/pickup · `order_status` new/accepted/preparing/ready/out_for_delivery/delivered/picked_up/cancelled/refunded · `payment_status` pending/authorized/paid/failed/refunded · `payment_method` card/apple_pay/google_pay/paypal/bitcoin/cash |
 | `order_items` | `order_id`, `item_id null`, `name snapshot`, `qty`, `unit_price_cents`, `options jsonb` (snapshot `[{group, option, price_cents}]`), `line_total_cents`, `modified_by_operator bool` | |
-| `order_events` | `order_id`, `at`, `type text` (created/payment_authorized/accepted/preparing/item_changed/ready/handed_to_driver/delivered/picked_up/cancelled/refunded/note), `actor_type` (customer/staff/system), `actor_id null`, `payload jsonb` | the "Verlauf" timeline; written by triggers on status change and by RPC. **Payload per type (S0, 2026-09-26 — S2-03 makes the implementation match):** `created` `{channel, source?}` · `payment_authorized` `{payment_ref, provider, amount_cents}` · `accepted` `{promised_minutes}` · `preparing` `{promised_minutes, station?}` · `item_changed` `{before, after, totals}` · `ready` `{}` · `handed_to_driver` **`{driver_id, driver_name}`** · `delivered` / `picked_up` `{cash_received?}` · `cancelled` **`{reason}`** · `refunded` `{amount_cents}` · `note` **`{text, code?}`**. Consumers must tolerate missing keys on rows written before this was fixed. |
+| `order_events` | `order_id`, `at`, `type text` (created/payment_authorized/accepted/preparing/item_changed/ready/handed_to_driver/delivered/picked_up/cancelled/refunded/note), `actor_type` (customer/staff/system), `actor_id null`, `payload jsonb` | the "Verlauf" timeline; written by triggers on status change and by RPC. **Payload per type (S0, 2026-09-26 — matched by the implementation in S2-03):** `created` `{channel, source?}` · `payment_authorized` `{payment_ref, provider, amount_cents}` · `accepted` `{promised_minutes}` · `preparing` `{promised_minutes, station?}` · `item_changed` `{before, after, totals}` · `ready` `{}` · `handed_to_driver` **`{driver_id, driver_name}`** · `delivered` / `picked_up` `{cash_received?}` · `cancelled` **`{reason}`** · `refunded` `{amount_cents}` · `note` **`{text, code?}`**. Every status event also carries `from` / `to` (extra keys, already consumed). `cancelled` carries `cancel_reason` next to `reason` for one release. Consumers must tolerate missing keys on rows written before 2026-09-27 — there is no backfill. |
 | `payment_events` — S2-02 | `order_id null`, `provider` (`stripe`), `event_id text unique`, `type`, `payload jsonb`, `received_at` | every provider webhook event, once — the idempotency log of `stripe-webhook`. Staff read-only |
 | `payment_jobs` — S2-02 | `order_id`, `action` `capture`/`void`/`refund`/`update_amount`, `amount_cents null`, `status` `queued`/`processing`/`done`/`failed`, `attempts`, `last_error`, `result jsonb`, `started_at`, `finished_at` | provider side effects requested by SQL (`set_order_status`, `update_order_items`) and executed by the `payment-worker` Edge Function. Staff read-only; `failed` rows need a human |
 
@@ -46,7 +48,7 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 | Table | Key columns | Notes |
 |---|---|---|
 | `promo_codes` | `code text unique` (upper), `kind` percent/fixed, `value` (pct or cents), `min_order_cents`, `applies_to jsonb` (`{"scope":"all"|"category"|"first_order", "category_id":…, "days":[…], "until":"15:00"}`), `usage_limit int null`, `used_count`, `valid_from/to`, `active` | |
-| `campaigns`, `automations`, `banners`, `site_publications` | — | later (S2-03) |
+| `campaigns`, `automations`, `banners`, `site_publications` | — | later (S2-04) |
 
 ### 1.6 Sequences / triggers — S2-01
 - `orders.number` from `order_number_seq` starting at 1000.
@@ -58,6 +60,44 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
   expired stoplists is not needed (date compare).
 - Storage — S2-02: bucket `menu`, public read, insert/update/delete for `owner`/`operator`
   (`storage.objects` policies). `menu_items.photos` holds bucket-qualified paths `menu/<item_id>/<n>.jpg`.
+
+### 1.7 Order attempts (rejected / abandoned checkouts) — S2-03
+Answers §6.9 row 5. `quote_order` reports a problem to the guest and a rejected checkout creates no
+order, so the back-office had no signal for the BO · Zustände states *"sold out during checkout"* and
+*"address outside the delivery area"*, and the Berichte funnel had nothing to count. One table serves
+both. (The S2-03 boot called this section §1.5; that number is Promotions, so it was added here
+instead of renumbering.)
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `order_attempts` | `id`, `at`, `source order_channel` (default `website`), `type order_type`, `postal_code null`, `zone_id null`, `subtotal_cents`, `items jsonb` (`[{item_id, qty}]` **only**), `problems jsonb` (the §5.2 `problems[]` array), `promo_code null`, `session_hash null` | **PII-free by construction**: no name, phone, email, street, floor/apt, city, comment, comment flags or `customer_id`. The `items` shape is enforced by a CHECK (`order_attempt_items_ok`), not by convention, and the RPC strips every other key before inserting. `session_hash` is an opaque client-side id (sessionStorage, **not** a cookie) used only for de-duplication and rate limiting. Append-only: no `updated_at`, no trigger. |
+
+RLS: `select` for `owner`/`operator`; the `anon` table grant is revoked entirely, so the anon key
+cannot even attempt a read. There is no insert/update/delete policy — the only writer is the RPC.
+
+`rpc('record_order_attempt', { payload })` — callable by `anon` and by staff:
+```ts
+payload: { type: 'delivery' | 'pickup',      // required
+           session_hash: string,             // required for anon — what the rate limit counts
+           source?: order_channel,           // staff (owner/operator) only; guests are always 'website'
+           postal_code?: string, subtotal_cents?: number,
+           items?: [{ item_id, qty }], problems?: [{ code, item_id?, reason?, field? }],
+           promo_code?: string }
+→ { recorded: true }
+// errors: invalid_input (no type, or no session_hash for anon), rate_limited
+```
+`zone_id` is resolved from `postal_code` server-side. Rate limit:
+`settings.ops.attempt_rate_limit_per_min` rows per `session_hash` per minute, default 20; over that
+the call raises `rate_limited` and writes nothing.
+
+**Who writes the rows.** §6.9 row 5 also asked `place_order` to record a refusal automatically. That
+is **not implementable while `place_order` rejects by raising**: PostgREST runs one transaction per
+request, so a row inserted before `raise exception 'order_rejected'` is rolled back with it, and no
+autonomous-transaction mechanism is available (pg_net, pg_cron and pg_notify are all transactional).
+`place_order` therefore keeps its §5.3 contract and its `order_rejected` error now carries
+`hint = 'problems […]; record it with rpc record_order_attempt'` — the client turns the `problems[]`
+it just received into the attempt row with one extra call. **Until S3 does that (S3-03), the table
+stays empty and the funnel's attempt figures read 0** — see §6.10.
 
 ## 2. RPC (Postgres functions, `security definer`, exposed via PostgREST) — S2-01
 | Function | Caller | Contract |
@@ -72,6 +112,8 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 | `anonymise_silent_customers(months = 24)` — S2-02 | owner / service role | GDPR scrub of customers with no order in `months`; keeps orders, items and totals (GoBD). Returns the number of customers anonymised. Scheduled nightly; never run by the seed. |
 | Edge Function `create-payment-intent` — S2-02 | anon (with `tracking_token`) / staff | Stripe PaymentIntent, manual capture. §5.6. |
 | Edge Functions `stripe-webhook`, `payment-worker` — S2-02 | Stripe / cron | not called by the apps. §5.6, §6.8. |
+| `record_order_attempt(payload)` — S2-03 | anon (web) / operator, owner | records one rejected or abandoned checkout in `order_attempts` (no PII, rate-limited per `session_hash`). Full shape in §1.7. |
+| `report_revenue_by_day` / `report_top_items` / `report_funnel` / `report_delivery_times` — S2-03 | any active staff role | Berichte. Security-definer set-returning functions with one role gate (`reports_guard()`), so every role gets the same numbers. §6.10. |
 
 ## 3. Realtime — S2-01
 - Channel `orders` (postgres_changes on `orders`, `order_items`, `order_events`) for staff — the board and the detail view update live.
@@ -92,6 +134,20 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 | `kitchen` | select (same as anon) | select orders; `preparing`/`ready` only via `set_order_status` (no direct UPDATE) | own `staff` row only |
 | `driver` | select (same as anon) | select own orders (`driver_id = auth.uid()`); `delivered` via `set_order_status` | own `staff` row only |
 | `service_role` (automation, S5) | all | all | all |
+
+S2-03 additions (§6.9 rows 1, 2 and 5):
+- `settings` now has **three** key sets. `settings_public_keys()` (business, opening_hours, site,
+  payments.enabled, kitchen.status) is readable by `anon` and everyone; `settings_staff_keys()` adds
+  **`ops`** and is readable by every authenticated staff role; everything else — `payments` and
+  `kitchen` (paused_by / rush), plus any future credential-bearing key — stays `owner`/`operator`.
+  `business` holds imprint data only (all legally public); billing, payout or credential fields must
+  never be added to it.
+- View **`staff_directory`** (`id, name, role, active`) — readable by every authenticated staff role,
+  empty for `anon` and for non-staff sessions. It runs as its owner (`security_invoker = false`) with
+  the role gate in its `WHERE`, and its column list is explicit, so `staff.phone` and anything added
+  to `staff` later stay behind the base table's `owner`/`operator` policy, which is unchanged.
+- `order_attempts` — `select` for `owner`/`operator`; the `anon` table grant is revoked and there is
+  no insert policy at all (the security-definer RPC is the only writer). §1.7.
 
 S2-02 additions: `customer_events`, `payment_events`, `payment_jobs` — `select` for `owner`/`operator`
 only, no client writes at all (triggers, security-definer RPCs and `service_role` write them).
@@ -235,7 +291,7 @@ Client: `@supabase/supabase-js` with the anon key + a **staff auth session** (Su
 ### 6.1 Orders board (Bestellungen) — operator / owner
 - Initial load: `from('orders').select('*, order_items(*), order_events(*)')` filtered by day (`created_at >= today`) or `status in (...)`; pre-orders = `scheduled_for is not null and status in ('new','accepted')`.
 - Live: `channel('orders').on('postgres_changes', {schema:'public', table:'orders'|'order_items'|'order_events'})` — the publication exists. Re-fetch the row on every event; do not diff locally.
-- Actions → `rpc('set_order_status', {order_id, new_status, payload})`. Transitions: `new→accepted|cancelled`, `accepted→preparing|cancelled`, `preparing→ready|cancelled`, `ready→out_for_delivery|picked_up|cancelled`, `out_for_delivery→delivered|cancelled`, completed+paid → `refunded` (owner/operator). Payload: `{driver_id}` for out_for_delivery, **`{reason}`** for cancelled (S2-03 accepts `reason` and the legacy `cancel_reason`; `reason` is canonical), `{note}` free text, `{cash_received: true|false}` for cash on delivered. Returns the updated row.
+- Actions → `rpc('set_order_status', {order_id, new_status, payload})`. Transitions: `new→accepted|cancelled`, `accepted→preparing|cancelled`, `preparing→ready|cancelled`, `ready→out_for_delivery|picked_up|cancelled`, `out_for_delivery→delivered|cancelled`, completed+paid → `refunded` (owner/operator). Payload: `{driver_id}` for out_for_delivery, **`{reason}`** for cancelled (`reason` is canonical and wins; the legacy `cancel_reason` is accepted for one release — S2-03), `{note}` free text, `{cash_received: true|false}` for cash on delivered. Returns the updated row.
 - Pause intake: `rpc('kitchen_pause', {paused: bool})`. Rush toggle / prep time: `from('settings').update({value})` on keys `kitchen` / `ops` (owner) — operator reads only in v1; S0 may relax in S4-01.
 - Phone order: `rpc('place_order', {...payload, channel: 'phone'})` from a staff session.
 - Kitchen board (role `kitchen`): same reads, only `preparing` / `ready` actions.
@@ -245,13 +301,13 @@ Client: `@supabase/supabase-js` with the anon key + a **staff auth session** (Su
 
 ### 6.3 History (Historie) — `from('orders')` with range/status/payment/type/driver filters + `order_items(count)`; export = client-side CSV/XLSX from the same query.
 
-### 6.4 Customers (Kunden / Profil) — `from('customers').select('*, customer_addresses(*)')` + view `customer_stats` (orders_count, spent_cents, avg_cents, last_order_at, days_silent) for segments and sorting. Tags / kitchen_note / consents: direct `update` (operator, owner). Timeline: `customer_events` (§6.8).
+### 6.4 Customers (Kunden / Profil) — `from('customers').select('*, customer_addresses(*)')` + view `customer_stats` (orders_count, spent_cents, avg_cents, last_order_at, days_silent — **completed orders only** since S2-03 — plus `cancelled_count`) for segments and sorting. Tags / kitchen_note / consents: direct `update` (operator, owner). Timeline: `customer_events` (§6.8).
 
 ### 6.5 Menu (Speisekarte / Artikel) — direct CRUD on `menu_categories`, `menu_items`, `option_groups`, `options`, `menu_item_option_groups` (operator, owner). Stoplist = `menu_items.stoplist_until = today`. Photos: bucket `menu` (public read, operator/owner write) — upload recipe in §6.8.
 
 ### 6.6 Settings (Einstellungen) — `settings` rows by key (owner write). Team = `staff` rows (owner write); inviting a user = Supabase Auth admin — S4-01 documents the manual path, automation later.
 
-### 6.7 Not in v1 (later boots): campaigns, automations, banners/site publish, reports views, devices, payment provider settings (the Stripe keys live in Supabase function secrets, not in `settings`).
+### 6.7 Not in v1 (later boots): campaigns, automations, banners/site publish (S2-04), devices, payment provider settings (the Stripe keys live in Supabase function secrets, not in `settings`). ~~reports views~~ — shipped in S2-03, see §6.10.
 
 ### 6.8 Payments & order edits (backoffice) — S2-02
 **Edit positions** — `rpc('update_order_items', { order_id, items })`, operator/owner, while
@@ -327,16 +383,65 @@ the request and S0 will schedule an RPC for it.
 
 ## 6.9 Role access decisions (S0, 2026-09-26 — answering S4's contract requests from S4-01)
 
-Implemented by S2-03; the back-office already ships the documented workarounds until then.
+**All eight are implemented** (S2-03, PR #34, 2026-09-27) except where a row says otherwise. The
+back-office may drop the S4-01 workarounds.
 
 | # | Request (S4) | Decision | Who |
 |---|---|---|---|
-| 1 | `settings` invisible to kitchen/driver | **Granted.** Every authenticated staff role may read the public keys **plus `ops`** (prep minutes, rush, pre-order window, auto-accept threshold — none of it sensitive) and `kitchen.status`. `payments` (private), `business` billing fields and any future credential-bearing key stay owner/operator. | S2-03 (RLS) |
-| 2 | `staff` invisible to kitchen/driver | **Granted, narrowed.** A view `staff_directory` exposing `id, name, role, active` to every authenticated staff role; the base table keeps its owner/operator policy (phone and any future PII stay there). Timelines resolve actors through the view. | S2-03 |
-| 3 | `order_events.payload` shape undefined | **Fixed in §1.4 above.** S2-03 aligns the triggers/RPC with it, `handed_to_driver` gains `driver_name`. | S2-03 |
-| 4 | `reason` vs `cancel_reason` | **`reason` is canonical**, the RPC accepts both for one release. §6.1 updated. | S2-03 |
-| 5 | No operator signal for rejected checkouts (sold-out / out-of-zone states in BO · Zustände) | **Granted as `order_attempts`.** `quote_order` stays pure; `place_order` records a rejected attempt (problem codes, cart digest, postal code, no PII beyond what the guest typed) and S3 fires one attempt row when a guest abandons at a `problems[]` state. This is also the only source for the funnel figures the Berichte screen needs (menu→cart→paid) — build it once, use it twice. | S2-03 |
-| 6 | Kitchen load has no model | **Granted, simplest form.** `settings.kitchen.capacity` (concurrent orders, default 8) in the public/ops key set; load = `count(accepted, preparing) / capacity`. Per-station capacity is out of scope until a real kitchen says it matters. | S2-03 |
+| 1 | `settings` invisible to kitchen/driver | **Implemented.** Every authenticated staff role may read the public keys **plus `ops`** (prep minutes, rush, pre-order window, auto-accept threshold — none of it sensitive) and `kitchen.status`. `payments` (private), `business` billing fields and any future credential-bearing key stay owner/operator — `settings_staff_keys()` + policy `settings_staff_common_read`. `business` holds imprint data only today, so nothing had to be split — the rule is that billing/credential fields go into a private key, never into `business`. | S2-03 ✅ |
+| 2 | `staff` invisible to kitchen/driver | **Implemented, narrowed.** A view `staff_directory` exposing `id, name, role, active` to every authenticated staff role; the base table keeps its owner/operator policy (phone and any future PII stay there). Timelines resolve actors through the view, whose column list is explicit so nothing added to `staff` later leaks. | S2-03 ✅ |
+| 3 | `order_events.payload` shape undefined | **Implemented.** The status trigger, `set_order_status`, `place_order` and `record_payment_event` all write the §1.4 payload; `handed_to_driver` carries `driver_id` + `driver_name`. RPC-only keys (`station`, `cash_received`, `amount_cents`) reach the trigger through the transaction-local GUC `shosho.status_payload`. **Not backfilled** — rows written before 2026-09-27 keep their old payloads, as §1.4 says consumers must tolerate. | S2-03 ✅ |
+| 4 | `reason` vs `cancel_reason` | **Implemented.** `reason` is canonical and wins when both are sent; `cancel_reason` is accepted for one release and is still the column name and still mirrored into the event payload. | S2-03 ✅ |
+| 5 | No operator signal for rejected checkouts (sold-out / out-of-zone states in BO · Zustände) | **Implemented as `order_attempts` — with one writer instead of two.** `quote_order` stays pure. The table, its RLS and `record_order_attempt` (anon-callable, rate-limited, PII-free) exist (§1.7), and it is the single source of both the sold-out / out-of-zone operator states and the funnel's attempt figures. **`place_order` does not write the row**: PostgREST runs one transaction per request and `place_order` rejects by raising, so the insert would roll back with it and Postgres offers no autonomous transaction here. Its error now carries `hint = '… record it with rpc record_order_attempt'`, so the client records the attempt from the `problems[]` it just received. **S3 must call it (S3-03)**; until then the table is empty and the funnel's attempt figures read 0. | S2-03 ⚠️ + S3-03 |
+| 6 | Kitchen load has no model | **Implemented** as `settings['kitchen.status'].capacity` (int, default 8) — the field lives on the **public** key `kitchen.status` so the kitchen role can read it (the private `kitchen` key stays owner/operator). Load = `count(accepted, preparing) / capacity`, computed by the UI; no RPC. `kitchen_pause()` merges instead of replacing, so the value survives a pause. Per-station capacity is out of scope. | S2-03 ✅ |
 | 7 | "Info" (notify the customer) on the Unterwegs card | **Deferred to S5.** There is no messaging channel in v1 (no push, no SMS, no email sender); the button stays unrendered until the automation layer owns customer messaging. Not a contract change. | S5 |
-| 8 | `customer_stats.orders_count` counts cancelled orders | **Completed only** — see §1.3 above. | S2-03 |
+| 8 | `customer_stats.orders_count` counts cancelled orders | **Implemented.** `delivered` + `picked_up` only for all five original columns; `cancelled_count` added at the end. A `new` order no longer counts. | S2-03 ✅ |
 
+### 6.10 Reports (Berichte) — S2-03
+Four security-definer set-returning functions, not views: a `security_invoker` view would be read
+through the caller's RLS, and `orders` RLS is per-role (a driver sees only their own orders), so a
+driver would have silently got a partial revenue figure instead of an error. Each function calls one
+shared gate, `reports_guard()`, which requires an **active staff role** of any kind; `anon`'s EXECUTE
+grant is revoked. Narrowing them to owner/operator later is a one-line change per function.
+
+`from_date` / `to_date` are **Europe/Berlin calendar dates, both ends inclusive** (`from` and `to` are
+reserved words and cannot be parameter names). Both default to the last 30 days. Money is integer
+cents; percentages are `numeric` with one decimal.
+
+```ts
+rpc('report_revenue_by_day',   { from_date, to_date })
+rpc('report_top_items',        { from_date, to_date, limit_count })   // default 20
+rpc('report_funnel',           { from_date, to_date })
+rpc('report_delivery_times',   { from_date, to_date })
+```
+
+| Function | Rows | Columns |
+|---|---|---|
+| `report_revenue_by_day` | one per Berlin day that has an order | `day`, `orders_count`, `revenue_cents`, `delivery_revenue_cents`, `pickup_revenue_cents`, `upsell_cents`, `delivery_fee_cents`, `tip_cents`, `discount_cents`, `vat_cents`, `avg_basket_cents`, `cancelled_count`, `refunded_cents` |
+| `report_top_items` | one per item, by revenue desc | `item_id`, `sku`, `name`, `name_de`, `qty`, `orders_count`, `revenue_cents`, `cost_cents`, `margin_cents`, `share_pct` |
+| `report_funnel` | exactly one | `attempts`, `attempts_with_problems`, `placed`, `paid`, `cancelled`, `attempts_to_placed_pct`, `placed_to_paid_pct`, `upsell_orders`, `upsell_cents` |
+| `report_delivery_times` | one per zone + one with `zone_id = null` for pickup / unzoned ("Abholung") | `zone_id`, `zone_code`, `zone_name`, `orders_count`, `avg_actual_minutes`, `avg_promised_minutes`, `delta_minutes`, `overdue_count`, `overdue_share_pct` |
+
+Definitions, so the screen and the DB agree:
+- **Revenue is completed orders only** (`delivered`, `picked_up`). `cancelled_count` and
+  `refunded_cents` sit next to it so a sum row reconciles against the bank.
+- **`upsell_cents`** = the option half of every completed line (`line_total − unit_price × qty`) —
+  the design's ZUSATZVERKAUF number.
+- **`report_top_items.revenue_cents`** is gross line revenue (item + its own options) *before* the
+  order-level promo / pickup discount, which is not attributable to a line. `margin_cents` =
+  `revenue − menu_items.cost_cents × qty`; options have no cost in the schema, so their revenue
+  counts as pure margin. A deleted item keeps its `order_items.name` snapshot with a null sku/cost.
+- **Delivery time** = `completed_at − coalesce(accepted_at, created_at)`; **promised** =
+  `orders.promised_minutes` as stamped when the order went to `preparing`; **overdue** = actual >
+  promised.
+
+**What the funnel can honestly support today** (S2-03 boot, task 6):
+| Design tile | Status |
+|---|---|
+| **WARENKORB → BEZAHLT** | **Real.** `placed`, `paid` and `placed_to_paid_pct` come straight from `orders`. |
+| **ZUSATZVERKAUF** | **Real.** `upsell_orders` / `upsell_cents`, and the per-day figure in `report_revenue_by_day`. |
+| **MENÜ → WARENKORB** | **Not computable and deliberately absent.** It needs menu impressions / add-to-cart events, which no table holds. The `site_events` proposal in `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` is the route; it needs an S0 decision (GDPR) before S2 builds it. No column pretends to answer it. |
+| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholders until S3-03.** The query is real; the data is not, because nothing calls `record_order_attempt` yet (§1.7 / §6.9 row 5). They read **0 / null**, which means "nothing recorded" — not "nothing happened". |
+
+`customer_stats` (§1.3) is unchanged in shape apart from the added `cancelled_count`; §6.4's five
+columns still mean what they did, only now counting completed orders only.

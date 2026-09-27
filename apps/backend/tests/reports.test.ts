@@ -37,9 +37,15 @@ async function seedFixture(): Promise<Fixture> {
     .insert({ name: "Report Fixture", phone }).select("id").single();
   if (cErr) throw cErr;
 
+  // PostgREST builds ONE insert from the union of all keys in the array and sends NULL — not
+  // DEFAULT — for a key a row omits, so every row must carry the full column set explicitly.
   const base = {
     channel: "website", payment_method: "card", contact_name: "Report Fixture",
     contact_phone: phone, customer_id: cust!.id as string, promised_minutes: 30,
+    zone_id: null as string | null, subtotal_cents: 0, discount_cents: 0, delivery_fee_cents: 0,
+    tip_cents: 0, total_cents: 0, vat_cents: 0,
+    accepted_at: null as string | null, completed_at: null as string | null,
+    cancelled_at: null as string | null, cancel_reason: null as string | null,
   };
   const rows = [
     { ...base, type: "delivery", status: "delivered", payment_status: "paid", zone_id: zoneA,
@@ -64,17 +70,20 @@ async function seedFixture(): Promise<Fixture> {
   const { error: iErr } = await a.from("order_items").insert([
     { order_id: A, item_id: ITEM.ramen, name: "Tonkotsu Ramen", qty: 2, unit_price_cents: 1350, line_total_cents: 3000,
       options: [{ option: "Extra wasabi", price_cents: 150 }] },
-    { order_id: B, item_id: ITEM.ramen, name: "Tonkotsu Ramen", qty: 1, unit_price_cents: 1350, line_total_cents: 1350 },
-    { order_id: D, item_id: ITEM.udon, name: "Yaki Udon", qty: 1, unit_price_cents: 1100, line_total_cents: 1100 },
+    { order_id: B, item_id: ITEM.ramen, name: "Tonkotsu Ramen", qty: 1, unit_price_cents: 1350, line_total_cents: 1350,
+      options: [] },
+    { order_id: D, item_id: ITEM.udon, name: "Yaki Udon", qty: 1, unit_price_cents: 1100, line_total_cents: 1100,
+      options: [] },
   ] as never);
   if (iErr) throw iErr;
 
   const { error: aErr } = await a.from("order_attempts").insert([
     { at: at("11:30"), type: "delivery", postal_code: "10115", zone_id: zoneA, subtotal_cents: 1200,
       items: [{ item_id: ITEM.ramen, qty: 1 }], problems: [{ code: "unavailable" }], session_hash: "fx-1" },
-    { at: at("11:40"), type: "delivery", postal_code: "99999", subtotal_cents: 900,
+    { at: at("11:40"), type: "delivery", postal_code: "99999", zone_id: null, subtotal_cents: 900,
       items: [], problems: [{ code: "out_of_zone" }], session_hash: "fx-2" },
-    { at: at("11:45"), type: "pickup", subtotal_cents: 500, items: [], problems: [], session_hash: "fx-3" },
+    { at: at("11:45"), type: "pickup", postal_code: null, zone_id: null, subtotal_cents: 500,
+      items: [], problems: [], session_hash: "fx-3" },
   ] as never);
   if (aErr) throw aErr;
 
