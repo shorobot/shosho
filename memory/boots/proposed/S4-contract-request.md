@@ -51,3 +51,53 @@ channel in v1 (no push, no SMS, no email sender) — the button is not rendered.
 The detail screen shows "14. Bestellung" from `customer_stats`. Whether cancelled/refunded orders
 should count is a product question, not a UI one.
 **Request:** state the intent in §6.4 (suggest: completed orders only).
+
+---
+
+## From S4-02 (menu editor + photos, 2026-09-27)
+
+Items 1–8 above are answered in §6.9 and are being implemented by S2-03. The following are new.
+
+## 9. The storefront cannot render an uploaded photo — **blocker for the S4-02 acceptance test**
+§1.2 and §6.8 store `menu_items.photos` as **bucket-qualified paths** (`menu/<item_id>/<n>.jpg`), and
+the back-office now writes exactly that. But `apps/web/components/ui/Photo.tsx` renders an image only
+when `photos[0]` is an absolute URL:
+
+```ts
+return typeof p === "string" && /^https?:\/\//.test(p) ? p : null;
+```
+
+so every card on `https://shos.hellfiresol.com/` falls back to the placeholder stone. Verified on
+staging 2026-09-27: `menu/<id>/1.webp` was uploaded, is public (HTTP 200, `image/webp`), renders in
+the back-office — and the storefront shows zero `<img>` elements.
+
+**Request:** an S3 boot to resolve bucket paths through
+`supabase.storage.from('menu').getPublicUrl(path.replace(/^menu\//, ''))` (keeping the absolute-URL
+branch for the seed). One function, no contract change. Until then "the storefront shows the photo"
+cannot be ticked by anyone. `apps/web` is outside S4's boundary, so S4 did not touch it.
+
+## 10. `photos` as an array of strings cannot carry the two crops the design asks for
+BO · Artikel says *"Zuschnitt getrennt für Karte und Detailseite"* — separate crops for the card and
+the detail page. `photos jsonb` holds one path per photo and nothing else, so there is nowhere to put
+a second rendition or a focal point. S4-02 therefore ships a **focal-point picker** that bakes the
+chosen crop into the uploaded pixels (one asset, dual-frame preview) and says so in the README.
+
+**Request:** decide between
+(a) leave it — one baked asset per photo, the design note is satisfied "well enough"; or
+(b) widen `photos` to `[{path, focal?: {x,y}, card?: string}]`, which is a schema + contract change
+touching `apps/web`, `apps/backoffice` and the seed, and needs S2 + S3 in the same wave.
+S4's recommendation is (a) for v1 and (b) only if the restaurant's own photos turn out to need it.
+
+## 11. No per-item sales figure for the Speisekarte
+The design's items table has a **VERKAUFT** column and the Artikel editor a *"212 verkauft in der
+Woche · 2 078 € Umsatz"* panel. There is no view for it (S2-03 owns the reports views), so S4-02
+leaves the column out rather than filling it with a number the operator would trust.
+**Request:** name the view and its columns in §6.5 when S2-03 lands it (suggest
+`menu_item_sales(item_id, period, qty, revenue_cents)`), and S4 will wire both places.
+
+## 12. `menu_categories` has no documented deletion rule
+S4-02 ships create / rename / deactivate, because nothing states what happens to the items inside a
+deleted category (`menu_items.category_id` is `not null`). Deactivating hides the category from the
+site, which covers the design's intent, but test and retired categories accumulate forever.
+**Request:** either declare deactivate-only as the product rule, or specify the delete (block while
+items remain / move them to a category the operator picks).

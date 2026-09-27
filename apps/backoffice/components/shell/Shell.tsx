@@ -15,7 +15,7 @@ type NavItem = { key: Key; href: string; match: string[]; live: boolean };
 const OPERATOR_NAV: NavItem[] = [
   { key: "nav.orders", href: "/orders", match: ["/orders"], live: true },
   { key: "nav.customers", href: "/customers", match: ["/customers"], live: false },
-  { key: "nav.menu", href: "/menu", match: ["/menu"], live: false },
+  { key: "nav.menu", href: "/menu", match: ["/menu"], live: true },
   { key: "nav.website", href: "/website", match: ["/website"], live: false },
   { key: "nav.marketing", href: "/marketing", match: ["/marketing"], live: false },
   { key: "nav.reports", href: "/reports", match: ["/reports"], live: false },

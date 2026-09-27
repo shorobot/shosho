@@ -1,7 +1,5 @@
-import { ComingSoon } from "@/components/shell/ComingSoon";
-import { requireRole } from "@/lib/auth";
+import { MenuScreen } from "@/components/menu/MenuScreen";
 
-export default async function Page() {
-  await requireRole(["owner", "operator"]);
-  return <ComingSoon section="nav.menu" />;
+export default function Page() {
+  return <MenuScreen />;
 }

@@ -481,3 +481,104 @@ S2-04's brief also lists "the renumber + lint fix that `s2-03` needs": **both ar
 PR** — migrations renumbered to 21–24 per D-014 and the `db lint` 42702 fixed, so S2-04 inherits a
 green branch and can go straight at the payment trust boundary. Also filed, neither executed:
 `boots/proposed/S2-single-customer-erasure.md`, `boots/proposed/S3-record-order-attempt.md`.
+## 2026-09-27 — S4 Back-office — S4-02
+
+**Shipped** — `apps/backoffice`, 4 new routes, one container, no new service.
+
+- **`/menu` (Speisekarte).** Kategorien panel: kana + item count, drag-to-sort persisted as `sort`
+  (renumbered in tens so a later insert needs no rewrite), create/rename/deactivate, and the
+  `schedule` editor as plain weekday chips + a time input (`{days:[1..5],until:"15:00"}`). The design's
+  "Kategorie ist leer" state is wired to the real rule — an empty or inactive category is hidden from
+  the site. Artikelliste: thumb, name + kana + SKU, category, price, cost, **margin %**, availability
+  toggle, **Stoppliste bis Mitternacht** (`stoplist_until = today`) and the "unvollständig" flags
+  (EN name, EN description, photo, allergens). Filters Alle/Aktiv/Stoppliste/Unvollständig + search
+  over name, kana, transliteration and SKU.
+- **Bulk actions** (Preis ±%, Verschieben, Verstecken, Stoppliste, Duplizieren) are each **one
+  confirmed request** — a single `upsert`/`insert` carrying the whole selection, never a per-row loop
+  — and each keeps the rows it replaced, so **Rückgängig** is one `upsert` of that snapshot (or one
+  `delete` of the created ids). Deliberately *not* undone by re-applying the inverse percentage:
+  +10 % then −10 % does not return to the original cent, and a test pins that.
+- **`/menu/item/[id]` and `/new` (Artikel).** Every section of the canvas: Basis (DE/EN, kana,
+  transliteration, descriptions, category, price, cost, SKU), Fotos, Verkauf (available, stoplist,
+  stock, max per order, tags), Küche (prep, station, note), Recht (allergens A–N as the German
+  scheme, weight, kcal, VAT 7/19), Optionen (link shared groups, create item-only ones), Empfohlen
+  dazu, plus the live card/detail Vorschau, the completeness panel and the margin/contribution panel.
+  Unsaved-changes guard (in-app link + `beforeunload`), explicit Save, Duplizieren.
+- **Photos — real uploads.** `file → type/size gate → decode → optional focal crop → ≤1600 px →
+  re-encode ≤~1 MB → storage.from('menu').upload('<item_id>/<n>.<ext>') → menu_items.photos`.
+  Reorder (first = card image), replace, delete — and the delete removes the **object**, not just the
+  reference (§6.8: the bucket does not cascade). `<n>` is always `max+1`, so a replacement can never
+  be served from a stale cache. Photos write through immediately rather than on Save: the object is
+  already in the bucket by then, and deferring would only make orphans.
+- **`/menu/options`.** Shared groups with their linked-item count; saving one shows the design's
+  warning naming that number before it writes. Item-only groups live inside the item.
+- **Guards.** `/menu*` is owner/operator only (route-level redirect + every write control hidden for
+  other roles); RLS is the real guard and a denial surfaces as one German sentence. No service-role
+  key, anon key + staff session only.
+- **Tests.** 50 new vitest cases (`tests/menu.test.ts`) over margin, completeness, option rules,
+  bulk price math, photo paths, schedule parsing, filters, slug/SKU, duplicate and the focal crop
+  window — 82 pass in the app total. `lint`, `typecheck`, `build` clean.
+
+**Staging walk-through (task 7, the acceptance test).** Ran the app locally against
+`shosho-staging` with the operator seed login; `https://shos.hellfiresol.com/` is the real deployed
+storefront.
+
+1. Created category **„Mittagsangebot S4-02"** (kana 定食, Mo–Fr bis 15:00). It appeared in the
+   Kategorien list with the ZEITPLAN line and the ◌ empty marker, and the "Kategorie ist leer" state
+   rendered with the design's exact copy.
+2. Created item **„Bento Mittagsteller"** (12,90 € / 4,30 € → **MARGE 66,7 %, 8,60 €
+   Deckungsbeitrag**), linked the two shared groups **Sojasauce** (Genau eine · Pflicht) and
+   **Wasabi & Ingwer** (Beliebig viele), set allergens A/D/F, and uploaded a real photo.
+   The 119 KB JPEG left the browser as an **82 KB WEBP** at
+   `menu/6cc07bc3-…/1.webp` — HTTP 200, `content-type: image/webp`, public read. The completeness
+   panel flipped from „Foto fehlt · Allergene fehlen" to „Allergene fehlen · zweites Foto empfohlen"
+   live.
+3. The storefront picked both up: category **LUNCH S4-02 (1)** with kana, item **Bento Lunch Plate
+   12.90 €** with its EN description.
+4. Put it on the stoplist from the items table → **it disappeared from the storefront, and so did its
+   category** (its last active item was gone — exactly the design's rule). Took it off the stoplist →
+   **both came back.** The storefront lags by up to **60 s**, because `apps/web` caches its Supabase
+   reads with `next: { revalidate: 60 }` — expected, but worth knowing before someone files it.
+5. Role guards, against staging with a real `kitchen` session: `/menu` redirects to `/kitchen` and the
+   nav never offers the link; a forced `PATCH` on `menu_items` returned `200 []` with the price
+   unchanged (RLS filtered the row out of the UPDATE), a forced `DELETE` likewise, and a forced
+   storage upload returned **400 „new row violates row-level security policy"** — the case the UI
+   renders as „Nicht erlaubt: Fotos dürfen nur Inhaber und Operator hochladen."
+6. The shared-group warning fired with the real count: *„Sojasauce ist mit 9 Artikeln verknüpft."*
+7. Deleting the item removed the row **and** the storage object (photo URL 200 → 400). Cleaned up
+   afterwards: the walkthrough item, its photo and the test category are gone from staging, and the
+   storefront is back to its 14 seeded items.
+
+**Two defects found by the walk-through and fixed here** (both were mine, neither reached `main`):
+the money field turned half-typed input such as `0,0012,90` into a silent **0**; and the item
+editor's chip toggles derived from a captured draft, so several clicks inside one React batch
+overwrote each other (only the last allergen stuck). Both now covered by tests.
+
+**Blocker — the storefront cannot render the photo.** `apps/web/components/ui/Photo.tsx` treats
+`photos[0]` as an image only when it is an absolute URL, but §1.2/§6.8 store **bucket-qualified
+paths**. Verified on staging: the object is public and renders in the back-office, and the storefront
+shows **zero `<img>` elements** — every card falls back to the placeholder. The fix is one
+`getPublicUrl` call in `apps/web`, which is outside this session's boundary, so it is filed as
+contract request **§9** for S3. Until it lands, "the storefront shows the photo" cannot be ticked by
+anyone; everything else in task 7 passed.
+
+**Gaps filed** (`/memory/boots/proposed/S4-contract-request.md` §9–§12): the storefront photo
+blocker; `photos: string[]` cannot carry the two crops BO · Artikel asks for (this boot ships a
+**focal-point picker** that bakes the crop into the uploaded pixels, with live card/detail previews,
+and says so in the README); no per-item sales view, so the **VERKAUFT** column is left out rather
+than faked (S2-03 owns it); and `menu_categories` has no deletion rule, so the UI ships
+create/rename/deactivate only.
+
+**Not done / not mine.** Playwright browsers still refuse to install on this Mac
+(`Playwright does not support chromium on mac12`, re-checked today) — the smoke spec gained four
+menu tests and the local recipe is documented, but it is not shipped as a workflow that only works
+elsewhere, exactly as in S4-01. `S7-02-S4-backoffice-hardening.md` landed on `main` while this boot
+was open (open redirect in `LoginForm`, missing security headers, cookie flags) — untouched here, it
+is a separate boot for S0 to sequence. No container, no service, no fifth colour, no new font, no
+analytics. `apps/backend` and `apps/web` untouched.
+
+**Images/RAM:** unchanged — one `backoffice` container, no new dependency (the photo pipeline is
+`canvas` + `createImageBitmap`, no image library). `/menu` is 7.1 kB / 205 kB first load.
+
+**Next:** S4-03 (CRM) and S4-04 (Einstellungen + Website) proposals refreshed for what S2-02/S2-03
+changed and for the components this boot leaves behind. Not executed — waiting for S0.
