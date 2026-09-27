@@ -1193,11 +1193,11 @@ export type Database = {
         Returns: {
           cmd: string
           policyname: string
-          qual: string | null
+          qual: string
           roles: string[]
           schemaname: string
           tablename: string
-          with_check: string | null
+          with_check: string
         }[]
       }
       security_audit_table_grants: {
