@@ -86,3 +86,10 @@ Status: accepted 2026-09-27 (S0, on S1's recommendation in S1-04; TETA+PI left t
 Decision: remove the `api` service from `docker-compose.staging.yml` (and its image build) until S5 Automation actually ships a FastAPI service. Implemented in S1-05.
 Why: it is an idle placeholder at 33 MiB RSS holding a 160 MiB limit. Removing it takes the slice's worst case from ~494 MiB to ~334 MiB of a 512 MiB cap — ~178 MiB of real margin — at zero cost. Cheaper and more honest than asking TETA+PI to raise a cap shared with tetapi.dev.
 Consequences: S5-01 re-adds an `api` service when it has one, sized from measurement, and asks TETA+PI for headroom only if the numbers require it. `_deploy.yml` keeps the pattern so re-adding is mechanical. The health check that probes `:8201` goes with it.
+
+
+## D-014 — Migration filenames are claimed before they are written
+Status: accepted 2026-09-27 (S0, after S2-03 and S7-01 both created `20260926000019` and `...020`)
+Decision: a session that will add migrations picks its numbers from `main` **at branch time** and immediately records the range it is claiming in its boot's log entry or, if it needs them mid-flight, in `/memory/state.md`'s open list via S0. Before opening a PR, re-check `main` and renumber if someone else's migrations landed first. The session whose PR merges second always renumbers.
+Why: two sessions running in parallel both numbered from the same `main` and produced colliding version prefixes. Supabase keys `schema_migrations` on the numeric prefix, so the second file to be applied is silently treated as already applied and **never runs** — a schema that looks migrated and is not. S1's `plan` job catches edited/renamed/out-of-order migrations but not a same-prefix collision.
+Consequences: S1 should extend the `plan` job to fail on a duplicate version prefix against `main` (proposal, not this boot). Until then it is a human rule enforced at review by S0.
