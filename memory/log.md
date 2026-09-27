@@ -349,3 +349,126 @@ probe TETA+PI's or hellfire's ports/services.
 **Boundaries respected:** no other session's application code touched (Edge Functions, Next.js apps,
 GitHub/Cloudflare settings all filed as proposals, not changed); `api-contracts.md` and
 `decisions.md` untouched (the payment_status fix needs a contract change — proposed to S2, not made).
+
+## 2026-09-27 — S2 Backend — S2-03
+
+Closed all eight §6.9 contract gaps S4-01 hit, added the rejected-checkout feed, shipped the Berichte
+reports. PR #34 → `main`. Migrations **21–24** (19/20 went to S7-01 in the same hour — see the clash
+below). `backend` CI green.
+
+**Role access (§6.9 rows 1–2, 6).** `settings` now has three tiers instead of two:
+`settings_public_keys()` (anon), `settings_staff_keys()` = that **plus `ops`** for every authenticated
+staff role, and `payments` / `kitchen` staying owner/operator. The kitchen board finally reads
+`prep_default_min`, `rush_extra_min` and `preorder_max_days` directly instead of inferring them.
+`business` needed **no split** — it holds imprint data only (name, address, phone, email, impressum,
+ust_id), all of it legally public, which is why it is anon-readable in the first place; what S0's "the
+private half of `business`" really needs is the *rule*, now written in the README and the contract:
+billing, payout or credential fields go into `payments` or a new private key, never into `business`.
+View `staff_directory` (`id, name, role, active`) for every staff role, explicit column list, base
+table untouched — so `staff.phone` stays owner/operator and a column added to `staff` later cannot
+leak through the view. `settings.kitchen.capacity` landed as field `capacity` on the **public** key
+`kitchen.status` (default 8), because the kitchen role has to read it and the private `kitchen` key
+does not qualify; `kitchen_pause()` now merges that value instead of replacing the whole row.
+
+**Event payloads (§1.4, §6.9 rows 3–4).** Every type writes what §1.4 documents.
+`handed_to_driver` resolves `driver_name` from `staff`; `cancelled` carries `reason`; `refunded` an
+`amount_cents` that is never null; `created {channel}`; `payment_authorized {payment_ref, provider,
+amount_cents}` in all three writers (`place_order`, `record_payment_event`, the trigger path).
+The keys the trigger cannot see — `station`, `cash_received`, `amount_cents` — are handed over by
+`set_order_status` in the transaction-local GUC `shosho.status_payload`, which the trigger consumes
+**and clears**, so a second status change in one transaction cannot inherit them (there is a test for
+exactly that). `reason` is canonical and wins when a client sends both; `cancel_reason` is still
+accepted, is still the column name, and is still mirrored into the payload for one release.
+**No backfill** — rows written before today keep their old payloads, which §1.4 already requires
+consumers to tolerate and the back-office already does.
+
+**`order_attempts` (§6.9 row 5) — one writer, not two.** Table + RLS + `record_order_attempt(payload)`
+for `anon`, rate-limited to `settings.ops.attempt_rate_limit_per_min` (default 20) per `session_hash`
+per minute. PII-free **by construction**: no PII column exists, `items` is `[{item_id, qty}]` enforced
+by a CHECK constraint (`order_attempt_items_ok`) and not merely by convention, `problems` is filtered
+to the §5.2 keys, and the RPC rebuilds both arrays from scratch so anything extra a client sends is
+dropped before the insert runs. `anon`'s table grant is revoked outright and there is no insert
+policy at all.
+
+> **The one thing in this boot that is not implementable as specified.** §6.9 row 5 (a) asks
+> `place_order` to record a refusal *automatically*. It cannot: PostgREST runs one transaction per
+> request and `place_order` rejects with `raise exception 'order_rejected'`, so any row it inserted
+> first is rolled back with the error. Postgres offers no autonomous transaction on this stack —
+> `pg_net`, `pg_cron` and `pg_notify` all enqueue transactionally, and `dblink` would mean storing a
+> DB password in Vault for one insert. The alternative was changing `place_order` to return
+> `{ok:false, problems}` instead of raising, which is a §5.3 contract change that would break the
+> live guest site — S0's call, not mine. **Shipped instead:** the RPC is the single writer and
+> `place_order`'s error now carries `hint = '… record it with rpc record_order_attempt'`, so the
+> client turns the `problems[]` it just received into the row with one extra call. I deliberately did
+> not ship a code path that provably never persists. Filed
+> `boots/proposed/S3-record-order-attempt.md` with the two exact call sites for S3.
+
+**Reports (§6.10).** `report_revenue_by_day`, `report_top_items`, `report_funnel`,
+`report_delivery_times` — security-definer set-returning functions, not views, because a
+`security_invoker` view is read through the caller's RLS and `orders` RLS is per-role: a **driver
+would have silently received a partial revenue figure** instead of an error. One shared gate
+(`reports_guard()`) admits any active staff role, `anon` revoked. `from_date`/`to_date` are Berlin
+calendar dates, both ends inclusive (`from`/`to` are reserved words). Revenue is completed orders
+only, with `cancelled_count` and `refunded_cents` alongside so a sum row reconciles against the bank.
+`customer_stats` rebuilt per §1.3 — `delivered` + `picked_up` only, `cancelled_count` appended at the
+end; all three existing consumers (§6.4, the CRM list, the detail screen's "14. Bestellung") keep
+reading the same five columns, and a `new` order no longer inflates the count as it used to.
+
+**Which funnel numbers are honest, which are placeholders** — asked for explicitly, so plainly:
+- **WARENKORB → BEZAHLT: real.** `placed`, `paid`, `placed_to_paid_pct` come straight from `orders`.
+- **ZUSATZVERKAUF: real.** The option half of every completed line, per period and per day.
+- **MENÜ → WARENKORB: not computable, and deliberately absent.** It needs menu impressions /
+  add-to-cart events and no table holds them. No column pretends to answer it. The route is the
+  `site_events` sketch in my own S2-03 proposal file and it needs an S0 GDPR ruling first.
+- **`attempts`, `attempts_with_problems`, `attempts_to_placed_pct`: placeholders.** The queries are
+  real; the data is not, because nothing calls `record_order_attempt` yet. They read `0` / `null`,
+  which means "nothing recorded", not "nothing happened" — the Berichte screen should label it so.
+
+**Flaky test — fixed, root cause named.** `guest_realtime` assumed `status === "SUBSCRIBED"` means the
+Realtime server's broadcast fan-out for that topic is ready to deliver the *next* `realtime.send()`.
+It usually is; under load it is not, and a single update plus a fixed 10 s wait is then a coin flip
+(`partitions_created: []` in the failure message was a red herring — it means the partitions already
+existed). It now waits on a **real signal**: it nudges the order through the same trigger until a
+message actually lands, proving the path is live, and only then performs the status change it asserts
+on, matching by `status === 'accepted'` so a straggler cannot satisfy it. If the stack cannot
+broadcast at all it skips with the capability JSON rather than failing a required check. Passed on
+every run since.
+
+**Collision with S7-01, and one of its assertions amended.** S7-01 merged migrations `…19` and `…20`
+with the same timestamps as mine while this boot was running; mine renumbered to 21–24 and now run
+after S7's. Two consequences worth recording:
+- S7-01 independently found and fixed the same `kitchen_pause` NULL-role hole I had fixed (`NULL NOT
+  IN (...)` is NULL, and plpgsql treats `IF NULL` as false, so the gate never fired). My migration
+  replaces that function again to make `kitchen.status` merge — it **carries S7's guard over
+  verbatim**; a future edit must not regress it. Credit is S7's, the audit found it first.
+- S7-01's `security.test.ts` asserted *"kitchen/driver see only the public keys, never `ops`"* — the
+  state before §6.9 row 1 was decided. That decision (S0, 2026-09-26) is what this boot implements,
+  so the assertion is now stale and I amended it to guard what still matters: the private `payments`
+  and `kitchen` keys staying out. Its grants sweep also needed the new functions added to its
+  allow-lists on purpose (`record_order_attempt`, `settings_staff_keys`, `order_attempt_items_ok` →
+  anon-callable; the four `report_*` + `reports_guard` → authenticated-only), which is the sweep
+  working as designed. `docs/security.md` updated to match. **S7 should sanity-check both edits.**
+
+**Also fixed in passing:** `db lint` caught `e` used as both a declared variable and a table alias in
+`record_order_attempt` (42702) — the kind of thing only a real Postgres catches.
+
+**Working conditions, for the record:** no Docker on this machine (colima needs `qemu`, not
+installed, and installing it is not mine to decide), so the Supabase stack could not run locally at
+all. Every SQL and test iteration went through the `backend` CI job, and `types/database.ts` was
+regenerated from the job's `backend-types` artifact rather than locally. It worked, but each cycle
+cost ~4 minutes instead of ~40 seconds — worth knowing before the next backend boot is planned.
+
+**Blockers:** none new for S2. Still open from S2-02: owner's Stripe account + keys, without which no
+live payment has been walked through. S7-01 filed a CRITICAL against `place_order`
+(client-supplied `payment_status` — `S7-02-S2-payment-security-fixes.md`); **not touched here**, it
+needs a §5.3 contract change and is its own boot.
+
+**Boundaries:** no `apps/web`, `apps/backoffice`, `apps/infra` or workflow files touched; no applied
+migration edited; `decisions.md`, `sessions.md` and `docs/design/*` untouched; §1–§6 edited only in
+the sections task 9 named (plus the §1.1/§1.3/§1.4/§6.1/§6.4 pointer lines those changes made wrong,
+and S7's two files above). `order_attempts` is documented as **§1.7**, not §1.5 — §1.5 is Promotions,
+and renumbering would have broken cross-references.
+
+**Next:** S2-04 (campaigns, automations, banners/site publish — S0 renames
+`boots/proposed/S2-03-reports-campaigns-cms.md`); `boots/proposed/S2-single-customer-erasure.md` and
+`boots/proposed/S3-record-order-attempt.md` filed, neither executed.
