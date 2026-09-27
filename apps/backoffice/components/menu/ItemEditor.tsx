@@ -110,7 +110,13 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const set = useCallback((patch: Partial<Draft>) => setD((x) => (x ? { ...x, ...patch } : x)), []);
+  // Accepts an updater so toggles derive from the *current* draft: three chip clicks inside one
+  // React batch would otherwise each read the same stale draft and only the last would survive.
+  const set = useCallback(
+    (patch: Partial<Draft> | ((current: Draft) => Partial<Draft>)) =>
+      setD((x) => (x ? { ...x, ...(typeof patch === "function" ? patch(x) : patch) } : x)),
+    [],
+  );
 
   if (loading && !d) return <span className="text-[12px] text-muted">{t("misc.loading")}</span>;
   if (itemId && !item && !loading) {
@@ -287,7 +293,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
             </Row>
             <div className="flex flex-col gap-1.5">
               <Label>{t("ie.tags")}</Label>
-              <Chips values={ITEM_TAGS} selected={d.tags} disabled={!canWrite} onToggle={(tag) => set({ tags: d.tags.includes(tag) ? d.tags.filter((x) => x !== tag) : [...d.tags, tag] })} render={(tag) => t(`tag.${tag}` as Key)} />
+              <Chips values={ITEM_TAGS} selected={d.tags} disabled={!canWrite} onToggle={(tag) => set((c) => ({ tags: c.tags.includes(tag) ? c.tags.filter((x) => x !== tag) : [...c.tags, tag] }))} render={(tag) => t(`tag.${tag}` as Key)} />
             </div>
           </Section>
 
@@ -304,7 +310,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
           <Section title={t("ie.sec.legal")}>
             <div className="flex flex-col gap-1.5">
               <Label>{t("ie.allergens")}</Label>
-              <Chips values={ALLERGENS} selected={d.allergens} disabled={!canWrite} onToggle={(a) => set({ allergens: d.allergens.includes(a) ? d.allergens.filter((x) => x !== a) : [...d.allergens, a] })} render={(a) => t(`al.${a}` as Key)} />
+              <Chips values={ALLERGENS} selected={d.allergens} disabled={!canWrite} onToggle={(a) => set((c) => ({ allergens: c.allergens.includes(a) ? c.allergens.filter((x) => x !== a) : [...c.allergens, a] }))} render={(a) => t(`al.${a}` as Key)} />
             </div>
             <Row cols={4}>
               <NumberField label={t("ie.weight")} value={d.weight_g} onChange={(v) => set({ weight_g: v })} suffix="g" disabled={!canWrite} />
@@ -328,7 +334,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
                     <button type="button" aria-label={t("mi.edit")} onClick={() => setGroupDialog(g)} className="px-1 text-[12px] text-muted transition-micro hover:text-ink">
                       ✎
                     </button>
-                    <button type="button" aria-label={t("ie.groupUnlink")} onClick={() => set({ groupIds: d.groupIds.filter((x) => x !== g.id) })} className="px-1 text-[12px] text-muted transition-micro hover:text-alert">
+                    <button type="button" aria-label={t("ie.groupUnlink")} onClick={() => set((c) => ({ groupIds: c.groupIds.filter((x) => x !== g.id) }))} className="px-1 text-[12px] text-muted transition-micro hover:text-alert">
                       ✕
                     </button>
                   </>
@@ -350,7 +356,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
                 <span key={r.id} className="flex items-center gap-2 rounded-full bg-field px-3 py-1.5 text-[12px] font-extrabold">
                   {lang === "de" ? r.name_de : r.name_en || r.name_de}
                   {canWrite && (
-                    <button type="button" aria-label={t("ph.remove")} onClick={() => set({ recommended_item_ids: d.recommended_item_ids.filter((x) => x !== r.id) })} className="text-muted transition-micro hover:text-alert">
+                    <button type="button" aria-label={t("ph.remove")} onClick={() => set((c) => ({ recommended_item_ids: c.recommended_item_ids.filter((x) => x !== r.id) }))} className="text-muted transition-micro hover:text-alert">
                       ✕
                     </button>
                   )}
@@ -437,7 +443,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
             {groups
               .filter((g) => g.shared && !d.groupIds.includes(g.id))
               .map((g) => (
-                <button key={g.id} type="button" onClick={() => { set({ groupIds: [...d.groupIds, g.id] }); setLinking(false); }} className="flex items-center gap-2 rounded-[14px] bg-field-2 px-3.5 py-2.5 text-left transition-micro hover:bg-field">
+                <button key={g.id} type="button" onClick={() => { set((c) => ({ groupIds: c.groupIds.includes(g.id) ? c.groupIds : [...c.groupIds, g.id] })); setLinking(false); }} className="flex items-center gap-2 rounded-[14px] bg-field-2 px-3.5 py-2.5 text-left transition-micro hover:bg-field">
                   <GroupSummary group={g} />
                   <span className="ml-auto text-[11px] font-extrabold text-orange">{t("og.link")}</span>
                 </button>
@@ -454,7 +460,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
           group={groupDialog === "new-own" ? null : groupDialog}
           forceOwn={groupDialog === "new-own"}
           onClose={() => setGroupDialog(null)}
-          onSaved={(id) => set({ groupIds: d.groupIds.includes(id) ? d.groupIds : [...d.groupIds, id] })}
+          onSaved={(id) => set((c) => ({ groupIds: c.groupIds.includes(id) ? c.groupIds : [...c.groupIds, id] }))}
         />
       )}
 
@@ -465,7 +471,7 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
               .filter((i) => i.id !== itemId && !d.recommended_item_ids.includes(i.id))
               .map((i) => (
                 <li key={i.id}>
-                  <button type="button" onClick={() => { set({ recommended_item_ids: [...d.recommended_item_ids, i.id] }); setRecPicker(false); }} className="flex w-full items-center gap-2.5 rounded-[12px] px-2 py-2 text-left transition-micro hover:bg-field-2">
+                  <button type="button" onClick={() => { set((c) => ({ recommended_item_ids: c.recommended_item_ids.includes(i.id) ? c.recommended_item_ids : [...c.recommended_item_ids, i.id] })); setRecPicker(false); }} className="flex w-full items-center gap-2.5 rounded-[12px] px-2 py-2 text-left transition-micro hover:bg-field-2">
                     <Thumb photos={i.photos} alt={i.name_de} size={32} />
                     <span className="truncate text-[13px] font-extrabold">{lang === "de" ? i.name_de : i.name_en || i.name_de}</span>
                     <span className="ml-auto flex-none text-[12px] text-muted">{euro(i.base_price_cents, lang)}</span>

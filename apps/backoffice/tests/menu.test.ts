@@ -363,3 +363,16 @@ describe("allergens", () => {
     expect(ALLERGENS[13]).toBe("N");
   });
 });
+
+describe("money field parsing", () => {
+  it("reads the German decimal comma and rejects nonsense", async () => {
+    const { centsToText, textToCents } = await import("@/components/menu/Fields");
+    expect(textToCents("14,90")).toBe(1490);
+    expect(textToCents("14.90")).toBe(1490);
+    expect(textToCents(" 5 ")).toBe(500);
+    expect(textToCents("")).toBeNull();
+    expect(textToCents("0,0012,90")).toBeNull(); // the half-typed state that must not become 0
+    expect(centsToText(1490)).toBe("14,90");
+    expect(centsToText(null)).toBe("");
+  });
+});

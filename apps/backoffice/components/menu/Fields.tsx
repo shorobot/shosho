@@ -114,11 +114,15 @@ export function MoneyField({ label, cents, onChange, nullable = false, disabled 
           value={text}
           disabled={disabled}
           placeholder={nullable ? "—" : "0,00"}
+          onFocus={(e) => e.currentTarget.select()}
           onChange={(e) => {
             const raw = e.target.value.replace(/[^0-9.,]/g, "");
             setText(raw);
             const parsed = textToCents(raw);
-            onChange(parsed == null && nullable ? null : (parsed ?? 0));
+            // An empty field means "no price" / 0; half-typed nonsense keeps the last good value
+            // rather than silently writing a 0 the operator never meant.
+            if (raw.trim() === "") onChange(nullable ? null : 0);
+            else if (parsed != null) onChange(parsed);
           }}
         />
         <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-[12px] text-muted">€</span>

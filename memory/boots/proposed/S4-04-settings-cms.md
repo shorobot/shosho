@@ -16,3 +16,14 @@ boot ships without them.
 
 Depends on: an owner-only UI is easy; the **invite** flow needs a service-role path (Edge Function),
 which must not live in this app (anon key only). Coordinate with S2.
+
+Refreshed after S4-02 (2026-09-27):
+- §6.9 grants every authenticated staff role read access to the public settings keys **plus `ops`**,
+  and adds a `staff_directory` view (`id, name, role, active`) — both implemented by S2-03. The
+  Einstellungen screen should read team members through the view and keep the base `staff` table
+  (phone, PII) owner/operator.
+- `settings.kitchen.capacity` (default 8) arrives with S2-03; the shell's kitchen-load placeholder
+  becomes real once it exists, and Einstellungen is where it is edited.
+- Reuse `components/menu/Fields.tsx` for the forms and `lib/menuStore.tsx`'s `run()` for the RLS
+  denial message — settings are owner-write, so an operator opening the screen must see it read-only
+  rather than a Postgres error.
