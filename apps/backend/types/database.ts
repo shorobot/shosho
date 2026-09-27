@@ -477,6 +477,56 @@ export type Database = {
           },
         ]
       }
+      order_attempts: {
+        Row: {
+          at: string
+          id: string
+          items: Json
+          postal_code: string | null
+          problems: Json
+          promo_code: string | null
+          session_hash: string | null
+          source: Database["public"]["Enums"]["order_channel"]
+          subtotal_cents: number
+          type: Database["public"]["Enums"]["order_type"]
+          zone_id: string | null
+        }
+        Insert: {
+          at?: string
+          id?: string
+          items?: Json
+          postal_code?: string | null
+          problems?: Json
+          promo_code?: string | null
+          session_hash?: string | null
+          source?: Database["public"]["Enums"]["order_channel"]
+          subtotal_cents?: number
+          type: Database["public"]["Enums"]["order_type"]
+          zone_id?: string | null
+        }
+        Update: {
+          at?: string
+          id?: string
+          items?: Json
+          postal_code?: string | null
+          problems?: Json
+          promo_code?: string | null
+          session_hash?: string | null
+          source?: Database["public"]["Enums"]["order_channel"]
+          subtotal_cents?: number
+          type?: Database["public"]["Enums"]["order_type"]
+          zone_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_attempts_zone_id_fkey"
+            columns: ["zone_id"]
+            isOneToOne: false
+            referencedRelation: "delivery_zones"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       order_events: {
         Row: {
           actor_id: string | null
@@ -724,6 +774,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "orders_accepted_by_fkey"
+            columns: ["accepted_by"]
+            isOneToOne: false
+            referencedRelation: "staff_directory"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "orders_customer_id_fkey"
             columns: ["customer_id"]
             isOneToOne: false
@@ -742,6 +799,13 @@ export type Database = {
             columns: ["driver_id"]
             isOneToOne: false
             referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "orders_driver_id_fkey"
+            columns: ["driver_id"]
+            isOneToOne: false
+            referencedRelation: "staff_directory"
             referencedColumns: ["id"]
           },
           {
@@ -948,6 +1012,7 @@ export type Database = {
       customer_stats: {
         Row: {
           avg_cents: number | null
+          cancelled_count: number | null
           customer_id: string | null
           days_silent: number | null
           last_order_at: string | null
@@ -1060,6 +1125,27 @@ export type Database = {
           },
         ]
       }
+      staff_directory: {
+        Row: {
+          active: boolean | null
+          id: string | null
+          name: string | null
+          role: Database["public"]["Enums"]["staff_role"] | null
+        }
+        Insert: {
+          active?: boolean | null
+          id?: string | null
+          name?: string | null
+          role?: Database["public"]["Enums"]["staff_role"] | null
+        }
+        Update: {
+          active?: boolean | null
+          id?: string | null
+          name?: string | null
+          role?: Database["public"]["Enums"]["staff_role"] | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       add_customer_event: {
@@ -1146,6 +1232,7 @@ export type Database = {
         Returns: boolean
       }
       normalize_phone: { Args: { raw: string }; Returns: string }
+      order_attempt_items_ok: { Args: { items: Json }; Returns: boolean }
       order_transition_allowed: {
         Args: {
           from_status: Database["public"]["Enums"]["order_status"]
@@ -1157,6 +1244,7 @@ export type Database = {
       }
       place_order: { Args: { payload: Json }; Returns: Json }
       quote_order: { Args: { payload: Json }; Returns: Json }
+      record_order_attempt: { Args: { payload: Json }; Returns: Json }
       record_payment_event: {
         Args: {
           p_event_id: string
@@ -1170,6 +1258,68 @@ export type Database = {
         }
         Returns: Json
       }
+      report_delivery_times: {
+        Args: { from_date?: string; to_date?: string }
+        Returns: {
+          avg_actual_minutes: number
+          avg_promised_minutes: number
+          delta_minutes: number
+          orders_count: number
+          overdue_count: number
+          overdue_share_pct: number
+          zone_code: string
+          zone_id: string
+          zone_name: string
+        }[]
+      }
+      report_funnel: {
+        Args: { from_date?: string; to_date?: string }
+        Returns: {
+          attempts: number
+          attempts_to_placed_pct: number
+          attempts_with_problems: number
+          cancelled: number
+          paid: number
+          placed: number
+          placed_to_paid_pct: number
+          upsell_cents: number
+          upsell_orders: number
+        }[]
+      }
+      report_revenue_by_day: {
+        Args: { from_date?: string; to_date?: string }
+        Returns: {
+          avg_basket_cents: number
+          cancelled_count: number
+          day: string
+          delivery_fee_cents: number
+          delivery_revenue_cents: number
+          discount_cents: number
+          orders_count: number
+          pickup_revenue_cents: number
+          refunded_cents: number
+          revenue_cents: number
+          tip_cents: number
+          upsell_cents: number
+          vat_cents: number
+        }[]
+      }
+      report_top_items: {
+        Args: { from_date?: string; limit_count?: number; to_date?: string }
+        Returns: {
+          cost_cents: number
+          item_id: string
+          margin_cents: number
+          name: string
+          name_de: string
+          orders_count: number
+          qty: number
+          revenue_cents: number
+          share_pct: number
+          sku: string
+        }[]
+      }
+      reports_guard: { Args: never; Returns: undefined }
       run_payment_worker: { Args: never; Returns: undefined }
       schedule_payment_worker: {
         Args: { p_anon_key: string; p_url: string }
@@ -1220,6 +1370,7 @@ export type Database = {
         Returns: Json
       }
       settings_public_keys: { Args: never; Returns: string[] }
+      settings_staff_keys: { Args: never; Returns: string[] }
       shop_open_at: { Args: { ts: string }; Returns: boolean }
       update_order_items: {
         Args: { items: Json; order_id: string }

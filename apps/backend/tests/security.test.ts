@@ -30,17 +30,20 @@ type FnGrant = {
 };
 
 // Callable by anon (guest checkout) per api-contracts §2/§5 — and, transitively, by authenticated
-// staff too (all nine are granted to anon+authenticated+service_role together).
+// staff too (all of these are granted to anon+authenticated+service_role together).
 const ANON_CALLABLE = new Set([
   "auth_role",
   "is_staff",
   "menu_item_on_sale",
   "settings_public_keys",
+  "settings_staff_keys",       // S2-03: pure key-set helper, read by the settings RLS policies
   "shop_open_at",
   "normalize_phone",
   "quote_order",
   "place_order",
   "get_order_by_token",
+  "record_order_attempt",      // S2-03 §1.7: anon writes a rejected checkout through this RPC only
+  "order_attempt_items_ok",    // S2-03: immutable CHECK helper on order_attempts.items; pure
 ]);
 
 // Staff-only (authenticated, never anon) per api-contracts §2/§6.
@@ -51,6 +54,12 @@ const AUTHENTICATED_ONLY = new Set([
   "add_customer_event",
   "anonymise_silent_customers",
   "order_transition_allowed", // internal helper the staff RPCs above need; pure, no side effect
+  // S2-03 §6.10 Berichte — read-only, gated by reports_guard() (any active staff role, never anon)
+  "reports_guard",
+  "report_revenue_by_day",
+  "report_top_items",
+  "report_funnel",
+  "report_delivery_times",
 ]);
 
 // service_role only (Edge Functions, cron, one-time bootstrap) — never anon, never authenticated.
@@ -284,12 +293,17 @@ describe("authorisation matrix: kitchen / driver must not see staff-or-owner-onl
     expect((await driver.from("customer_addresses").select("id").limit(1)).data).toEqual([]);
   });
 
-  it("settings: kitchen/driver see only the public keys, never `ops` or private `payments`/`kitchen`", async () => {
+  // Amended by S2-03: api-contracts §6.9 row 1 (S0, 2026-09-26) ratified `ops` as readable by every
+  // staff role — the kitchen board needs prep_default_min / rush_extra_min / preorder_max_days, none
+  // of which is sensitive. S7-01 asserted the pre-decision state (public keys only). What still
+  // matters, and is what this test now guards, is that the **private** keys stay out: `payments`
+  // (provider + payout) and `kitchen` (paused_by uuid, rush). See README "Settings key sets".
+  it("settings: kitchen/driver see the public keys plus `ops`, never private `payments`/`kitchen`", async () => {
     for (const c of [kitchen, driver]) {
       const { data } = await c.from("settings").select("key");
       const keys = (data ?? []).map((r: { key: string }) => r.key).sort();
-      expect(keys, "kitchen/driver must fall back to the anon-equivalent public_read policy").toEqual(
-        ["business", "kitchen.status", "opening_hours", "payments.enabled", "site"],
+      expect(keys, "kitchen/driver read settings_staff_keys() = the public set + `ops`").toEqual(
+        ["business", "kitchen.status", "opening_hours", "ops", "payments.enabled", "site"],
       );
     }
   });

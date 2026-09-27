@@ -120,13 +120,20 @@ jobs:
       - name: Staging compose respects co-tenant terms (127.0.0.1:8200-8299 only, no 0.0.0.0)
         working-directory: apps/infra
         run: |
+          # S1-05 pipefail sweep: `grep … | grep -oE … | while read` reported only the while-loop's
+          # status (and ran the loop in a subshell), so a compose file that published NO ports at all
+          # walked through this guard green. Collect the ports with awk (exit 0 on no match), then
+          # assert on them — an empty list is now an explicit failure.
+          set -euo pipefail
           cfg=$(docker compose -f docker-compose.staging.yml config)
           echo "$cfg" | grep -E 'host_ip|published' || true
           ! echo "$cfg" | grep -E 'host_ip: *"?0\.0\.0\.0' || { echo "::error::0.0.0.0 bind in staging compose"; exit 1; }
-          echo "$cfg" | grep -E 'published:' | grep -oE '[0-9]+' | while read -r p; do
+          ports=$(printf '%s\n' "$cfg" | awk '/published:/ { gsub(/[^0-9]/, "", $2); if ($2 != "") print $2 }')
+          [ -n "$ports" ] || { echo "::error::staging compose publishes no ports at all — the co-tenant guard has nothing to check"; exit 1; }
+          for p in $ports; do
             [ "$p" -ge 8200 ] && [ "$p" -le 8299 ] || { echo "::error::published port $p outside 8200-8299"; exit 1; }
           done
-          echo "$cfg" | grep -E 'published:' | grep -qE '"?8200"?$' || { echo "::error::web must publish 8200"; exit 1; }
+          echo "$ports" | grep -qx 8200 || { echo "::error::web must publish 8200"; exit 1; }
 
       - name: Ruff (placeholder-api)
         run: pipx run ruff check apps/infra/placeholder-api
@@ -189,7 +196,13 @@ jobs:
 
       - name: Seed is idempotent (apply a second time)
         run: |
-          eval "$(pnpm exec supabase status -o env | sed 's/^/export /')"
+          # S1-05 pipefail sweep: `eval "$(cmd | sed …)"` reports *eval's* status — a failed
+          # `supabase status` produced an empty eval that exited 0, and the step ran on with DB_URL
+          # unset. pipefail alone does not fix it (eval discards the substitution's status): assign
+          # first so `set -e` sees the failure, and let `set -u` catch a missing DB_URL.
+          set -euo pipefail
+          status_env=$(pnpm exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
           psql "$DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/seed.sql
 
       - name: Typecheck tests
@@ -197,7 +210,10 @@ jobs:
 
       - name: Integration tests (vitest against local Supabase)
         run: |
-          eval "$(pnpm exec supabase status -o env | sed 's/^/export /')"
+          # Same shape as the step above — see the note there.
+          set -euo pipefail
+          status_env=$(pnpm exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
           export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
           pnpm test
 

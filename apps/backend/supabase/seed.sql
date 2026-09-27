@@ -26,7 +26,8 @@ insert into public.settings (key, value) values
     "preorder_max_days": 7,
     "auto_accept_paid_under_cents": 5000,
     "pause_allowed": true,
-    "pickup_discount_pct": 10
+    "pickup_discount_pct": 10,
+    "attempt_rate_limit_per_min": 20
   }'),
   ('payments', '{
     "provider": "stripe",
@@ -39,7 +40,7 @@ insert into public.settings (key, value) values
     "capture": "on_delivery"
   }'),
   ('kitchen', '{"paused": false, "paused_by": null, "paused_at": null, "rush": false}'),
-  ('kitchen.status', '{"paused": false, "since": null}'),
+  ('kitchen.status', '{"paused": false, "since": null, "capacity": 8}'),
   ('site', '{
     "seo": {"title": "SHOSHO — Sushi, Ramen & Bowls in Berlin", "description": "Fresh sushi, ramen and bowls, delivered in 60 minutes in Mitte, Prenzlauer Berg, Friedrichshain and Kreuzberg."},
     "cookie_banner": true,
