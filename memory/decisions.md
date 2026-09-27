@@ -74,3 +74,15 @@ Status: accepted 2026-09-21 (owner)
 Decision: one provider in v1 — **Stripe** (cards, Apple Pay, Google Pay, PayPal via Stripe's EU PayPal method). Flow: PaymentIntent with `capture_method: manual` created at checkout → `authorized` → captured when the order reaches `delivered` / `picked_up`, voided on `cancelled`, refunded on `refunded`. Cash on delivery stays as is (driver confirms). Stripe webhooks are received by a **Supabase Edge Function** (`supabase/functions/stripe-webhook`), deployed by the same `migrate-staging` pipeline. Bitcoin is not implemented in v1 (needs a separate service — BTCPay — or a processor; revisit after launch).
 Why: Stripe covers every method in the design except Bitcoin with one integration; manual capture matches the design copy "Payment is captured on delivery confirmation"; an Edge Function keeps payment logic next to the DB, costs zero RAM on the 512M droplet and needs no new host. FastAPI (D-001) remains for Lieferando/Wolt/social webhooks (S5).
 Consequences: owner creates a Stripe account for Shosho Sushi GmbH and provides `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (test mode first) as staging secrets; S2 builds against Stripe test keys of its own until then. `payment_method` enum keeps `bitcoin` for schema stability but the UI hides it (`settings.payments.enabled.methods`).
+
+## D-012 — Security findings go straight to S7; S0 is told, not asked
+Status: accepted 2026-09-27 (S0, ratifying what S1 did in S1-04)
+Decision: a session that finds a security issue outside its own boundary sends it directly to S7 (or, if S7 is not running, files `/memory/boots/proposed/S7-<slug>.md` and says so in its report) and mentions it to S0 — it does not wait for S0 to route it. Everything else (contracts, scope, priorities, cross-session work) still goes through S0 (D-003).
+Why: S1 found that `payment-worker` accepts the public anon key while acting with the service role, and sent it to S7 mid-audit instead of parking it for S0. Routing latency on a live security finding is a cost with no upside; S7's audit was already in flight and would otherwise have shipped without it.
+Consequences: S0 tracks such findings from the log rather than gating them. A finding that also changes a contract still needs S0 for the contract part.
+
+## D-013 — Drop the `api` placeholder from staging until S5 needs it
+Status: accepted 2026-09-27 (S0, on S1's recommendation in S1-04; TETA+PI left the timing to us)
+Decision: remove the `api` service from `docker-compose.staging.yml` (and its image build) until S5 Automation actually ships a FastAPI service. Implemented in S1-05.
+Why: it is an idle placeholder at 33 MiB RSS holding a 160 MiB limit. Removing it takes the slice's worst case from ~494 MiB to ~334 MiB of a 512 MiB cap — ~178 MiB of real margin — at zero cost. Cheaper and more honest than asking TETA+PI to raise a cap shared with tetapi.dev.
+Consequences: S5-01 re-adds an `api` service when it has one, sized from measurement, and asks TETA+PI for headroom only if the numbers require it. `_deploy.yml` keeps the pattern so re-adding is mechanical. The health check that probes `:8201` goes with it.
