@@ -160,10 +160,15 @@ that page, not a one-time check.
 - **Medium/High — no rate limiting anywhere** on `place_order`, `quote_order`,
   `create-payment-intent`, or back-office `/login` beyond Supabase Auth's generic default. The only
   place this can live given our co-tenant terms (no nginx access) is a Cloudflare rule. Filed to S1.
-- **High — GitHub branch protection on `main` is currently OFF** (`gh api
-  repos/shorobot/shosho/branches/main/protection` → 404), contradicting `/memory/state.md`'s
-  description of it. A public repo with an unprotected default branch and required-status-check CI
-  that nobody is actually forced to pass. Filed to S1/owner.
+- ~~GitHub branch protection on `main` is off~~ — **false positive, corrected 2026-09-27.** The
+  classic `/branches/main/protection` endpoint 404s for repos protected via the newer Rulesets API,
+  which this repo uses: `gh api repos/shorobot/shosho/rulesets` shows ruleset `main-protection`
+  (id `23652140`, `enforcement: active`, `bypass_actors: []`) enforcing `pull_request` +
+  `required_status_checks: [CI]` + `deletion` + `non_fast_forward` on the default branch —
+  confirmed independently (an earlier finding here was corrected after a peer session pointed at
+  the right endpoint; verified against the live ruleset, not taken on trust). `/memory/state.md`'s
+  description was correct all along. Check `/rulesets`, not `/branches/<b>/protection`, when
+  re-verifying this later.
 - **High — the four staff seed accounts share one password, published in a public repo's
   README** (`apps/backend/README.md`), and will soon sit behind a public URL
   (`bo.shos.hellfiresol.com`, S1-04). Rotate before that URL is announced; see S1-04's own

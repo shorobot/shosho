@@ -1,25 +1,17 @@
-# Proposal → S1 DevOps: branch protection, rate limiting, staff password rotation
+# Proposal → S1 DevOps: rate limiting, staff password rotation
 
 From S7 Security. Full context: `/docs/security.md` §5, `/memory/log.md` S7-01 entry. None of this is
 S7's to change (owner/org settings, Cloudflare config, and a cross-session coordination item) —
 filing so S1 (or the owner directly, via S1's next boot) can act.
 
-## Task 1 (High) — GitHub branch protection on `main` is OFF
+**Correction (2026-09-27):** an earlier draft of this proposal flagged branch protection on `main` as
+off, based on `gh api repos/shorobot/shosho/branches/main/protection` → 404. That endpoint 404s for
+repos protected via the newer Rulesets API, which this repo actually uses — `gh api
+repos/shorobot/shosho/rulesets` shows ruleset `main-protection` (enforcement active, PR +
+`required_status_checks: [CI]` + no deletion + no force-push, `bypass_actors: []`), confirmed
+independently. `/memory/state.md` was correct; no action needed here. Dropped from this proposal.
 
-`gh api repos/shorobot/shosho/branches/main/protection` → `404 Branch not protected` (verified
-2026-09-26). This contradicts `/memory/state.md`'s "Branch protection: PR + green `CI`, no
-force-push" line — either it was never actually applied, or it was removed at some point. The repo is
-public, has one collaborator (`tetakta`, admin) per `gh api repos/shorobot/shosho/collaborators`, and
-`allow_forking: true`. Practically: right now nothing stops a direct push to `main` (bypassing CI and
-review), a force-push, or branch deletion.
-
-**Fix:** enable branch protection on `main` — required status check `CI` (the single aggregate job
-already defined in `.github/workflows/ci.yml`), require a PR before merging, disallow force-pushes,
-disallow deletion. This is a `gh api` call or a repo-settings UI action; needs admin (owner or
-`tetakta`). Coordinate with S0 to correct `/memory/state.md`'s line once actually applied (S1 doesn't
-own that file directly — flag it to S0).
-
-## Task 2 (Medium/High) — no rate limiting anywhere on order-creation / payment endpoints
+## Task 1 (Medium/High) — no rate limiting anywhere on order-creation / payment endpoints
 
 Confirmed by full-repo search: nothing in the workflows, Edge Functions, Next.js middleware, or
 compose configs rate-limits `place_order`, `quote_order`, `create-payment-intent`, or the
@@ -38,7 +30,7 @@ outside this repo and needs the owner's Cloudflare access. Suggested starting ru
 - Rate-limit `POST /auth/v1/token` (the back-office `/login` path) beyond Supabase's own default,
   once `bo.shos.hellfiresol.com` exists (S1-04).
 
-## Task 3 (High, coordinate with S1-04) — rotate the shared staff seed password before the back-office gets a public URL
+## Task 2 (High, coordinate with S1-04) — rotate the shared staff seed password before the back-office gets a public URL
 
 The four seed staff logins (`owner@shosho.test` / `operator@shosho.test` / `kitchen@shosho.test` /
 `driver@shosho.test`) share one password, **published in this public repo's**
@@ -62,7 +54,7 @@ in front, the back-office's own Supabase Auth accounts still have one published,
 — worth fixing regardless of how the outer gate turns out, since an access-gate misconfiguration or a
 future second entry point (e.g. a direct Supabase Auth API call) would fall back on it entirely.
 
-## Task 4 (Low) — GitHub Actions supply-chain hygiene
+## Task 3 (Low) — GitHub Actions supply-chain hygiene
 
 All third-party `uses:` actions are pinned to a mutable major-version tag (`@v7`, `@v6`, `@v4`), not a
 full commit SHA — common practice, but a tag can be moved by the action's maintainer (or, if their
