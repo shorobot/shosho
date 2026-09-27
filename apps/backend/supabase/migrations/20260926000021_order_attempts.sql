@@ -115,7 +115,6 @@ declare
   v_zone     uuid;
   v_limit    integer;
   v_recent   integer;
-  e          jsonb;
 begin
   -- `type` is the one required field: an attempt with no type tells the operator nothing
   begin
@@ -158,25 +157,25 @@ begin
 
   -- items: item ids + quantities only, whatever else the client sent is dropped here
   select coalesce(jsonb_agg(jsonb_build_object(
-           'item_id', e->>'item_id',
-           'qty', greatest(coalesce((e->>'qty')::integer, 1), 1))), '[]'::jsonb)
+           'item_id', el->>'item_id',
+           'qty', greatest(coalesce((el->>'qty')::integer, 1), 1))), '[]'::jsonb)
     into v_items
     from jsonb_array_elements(case when jsonb_typeof(payload->'items') = 'array'
-                                   then payload->'items' else '[]'::jsonb end) e
-   where nullif(e->>'item_id', '') is not null;
+                                   then payload->'items' else '[]'::jsonb end) as el
+   where nullif(el->>'item_id', '') is not null;
   v_items := coalesce(v_items, '[]'::jsonb);
 
   -- problems: keep only the keys §5.2 defines, so no free text can ride along
   select coalesce(jsonb_agg(jsonb_strip_nulls(jsonb_build_object(
-           'code', e->>'code',
-           'item_id', e->>'item_id',
-           'reason', e->>'reason',
-           'field', e->>'field',
-           'promo_code', e->>'promo_code'))), '[]'::jsonb)
+           'code', pr->>'code',
+           'item_id', pr->>'item_id',
+           'reason', pr->>'reason',
+           'field', pr->>'field',
+           'promo_code', pr->>'promo_code'))), '[]'::jsonb)
     into v_problems
     from jsonb_array_elements(case when jsonb_typeof(payload->'problems') = 'array'
-                                   then payload->'problems' else '[]'::jsonb end) e
-   where nullif(e->>'code', '') is not null;
+                                   then payload->'problems' else '[]'::jsonb end) as pr
+   where nullif(pr->>'code', '') is not null;
   v_problems := coalesce(v_problems, '[]'::jsonb);
 
   if v_postal is not null then
