@@ -113,3 +113,239 @@ Reviewed S4-01 (merged PRs #24/#25): back-office verified on staging with all fo
 Answered all eight of S4's contract requests in a new **§6.9**: settings `ops` + `kitchen.status` readable by every staff role; a `staff_directory` view (`id, name, role, active`) for all roles while the base table keeps phone owner/operator-only; `order_events.payload` shape fixed per type in §1.4; `reason` canonical for cancellation; **`order_attempts` granted** — one table serving both the operator's sold-out/out-of-zone states and the Berichte funnel; `settings.kitchen.capacity` for the kitchen-load tile; the "Info" button deferred to S5 (no messaging channel exists); `customer_stats` counts completed orders only, with a separate `cancelled_count`.
 Verified S4's memory warning on the server myself: slice is 496M/512M, but only 254M is anon — the rest is reclaimable page cache; `oom_kill` counter is 1 (historic, no container affected now). Recorded as a real ceiling with no headroom rather than an outage; S1-04 task 5 owns the fix (drop the `api` placeholder first).
 Issued S2-03 (the §6.9 implementation + `order_attempts` + five report views + making the flaky realtime test deterministic) and S4-02 (Speisekarte, Artikel editor, and real photo upload now that the `menu` bucket exists). S2's original S2-03 proposal keeps its campaigns/CMS half for S2-04.
+
+## 2026-09-26 — S1 DevOps — S1-04
+Repo-level secrets are gone and the pipeline runs on environment secrets only; the functions-deploy
+steps are reviewed, hardened and now mine; the back-office host is requested but **not live** — it
+needs two actions I am not allowed to take.
+
+**Back-office host (task 1) — blocked on owner + TETA+PI, not done.** Option A confirmed:
+`bo.shos.hellfiresol.com` → `127.0.0.1:8202`. Vhost requested from `TTPI · MANAGER` (the log's
+`teta-pi-e0` no longer exists as a session; `TTPI · MANAGER`, the same session title recorded on
+2026-09-20, is the current address). I asked them to create the vhost **with HTTP basic-auth already
+on it** rather than as a follow-up, so there is no window where DNS resolves and the back-office is
+open; also https-only, and the htpasswd credentials handed to the owner directly, never into chat or
+git. No answer yet. `dig bo.shos.hellfiresol.com` is empty; nothing has been handed to anyone.
+Owner steps are in the section below. Guest site unaffected and re-verified: `https://shos.hellfiresol.com/`
+→ 200, valid TLS, real S3-01 site. The four seed logins could not be tested against the public host
+because the host does not exist yet — `http://127.0.0.1:8202/login` answers 200 over the ssh tunnel.
+
+**Functions-deploy steps (task 2) — ratified, with three changes.** Kept in `migrate-staging.yml`
+rather than split out: one chain, functions strictly after `db push`, which is the property S2 wanted.
+(1) **Found a real bug**: the runner's default shell is `bash -e {0}` with **no `pipefail`** (visible
+in run 36273961641). Every `… | tee "$GITHUB_STEP_SUMMARY"` step was reporting *tee's* exit code, so a
+failed `supabase functions deploy` would have gone green and `Deploy staging` would have shipped app
+code against functions that never landed. Added `set -euo pipefail` to all three tee'd steps.
+(2) Moved the Stripe secret hand-off off the command line — `secrets set NAME=value` puts plaintext in
+the runner's process list, where Actions log-masking does not reach; now a 0600 `mktemp` file via
+`--env-file`, trapped and deleted (`--env-file` confirmed present in the pinned CLI v2.117). Both
+branches tested locally (no secrets → clean skip + exit 0; two secrets → 0600 file, correct contents).
+(3) Fixed the stale proposal path in the comment and recorded S1 ownership. Left alone on purpose:
+the always-deploy behaviour (cheap, keeps staging in step) and the non-blocking `payment-worker`
+install POST. Sync check green. `S1-05-edge-functions-deploy-ratify.md` deleted.
+
+**Not mine to fix, flagging to S7/S2:** `payment-worker` has `verify_jwt = true`, but the **anon key
+satisfies that** and the anon key is public (it ships in the guest web bundle). The function does its
+own work with the service role and has no caller-role check, so anyone with the public key can POST
+`{"action":"install"}` to rewrite the pg_cron schedule, or POST with no action to drain the payment
+job queue. Backend code is outside my boundary; I did not touch it. I also left the workflow's install
+POST on the anon key on purpose — that is how pg_cron invokes it, and swapping in the service-role key
+would hide the problem rather than fix it.
+
+**Repo-level secrets (task 3) — done and verified.** First confirmed no job reads them outside an
+`environment:` block: all four uses in `migrate-staging.yml` are in job `push` (env `staging`), and all
+six prefix lookups in `_deploy.yml` are in job `deploy` (env-scoped); the `build` job uses only
+`GITHUB_TOKEN`. Then deleted all 8 (`STAGING_SSH_HOST/USER/KEY`, `STAGING_SUPABASE_URL/_ANON_KEY/
+_SERVICE_ROLE_KEY/_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`). Repo-level secret list is now **empty**;
+environment `staging` still holds all 8. Re-ran the full chain on environment secrets only:
+`Migrate staging` **36273961641 green** (db push + all three functions redeployed ACTIVE v7) →
+`Deploy staging` **36274003786 green** (build + deploy). Nothing was restored, nothing guessed.
+
+**Capacity (task 5) — under the threshold, say it plainly.** Post-deploy, `user.slice/user-1002.slice`:
+`memory.current` **487.6 MiB of 512 MiB → 25.6 MiB nominal headroom**, well under the ~80 MiB line.
+The honest reading: ~218 MiB of that is reclaimable page cache; genuinely non-reclaimable is
+`anon` 234 MiB + `kernel` 36 MiB = **270 MiB**, so real headroom is ~242 MiB. But the warning signs are
+real — `memory.peak` 515 MiB (it has crossed the cap), `memory.events` `max` 7736 (+50 during this
+deploy alone), `oom_kill 1`, and `memory.swap.max` is 0 for our slice, so an anon spike goes straight
+to a kill. Per container: web 44 MiB/96, backoffice 52 MiB/96, api 33 MiB/160; each shows `oom_kill 0`,
+so the one kill was not a container. Worst case if all three sat at their declared limits is
+352 + ~106 (dockerd/containerd/systemd/ssh) + 36 (kernel) ≈ **494 MiB — 18 MiB short of the cap**.
+**Proposal: drop the `api` placeholder.** It is a placeholder S5 does not need yet, idle at 33 MiB on a
+160 MiB limit; removing it takes the worst case from ~494 MiB to ~334 MiB and buys ~178 MiB of real
+margin, at no cost. That is cheaper than asking TETA+PI for RAM, and I would rather ask them once,
+with numbers, only if S5 actually needs the slot. Numbers already sent to `TTPI · MANAGER` as FYI.
+
+**Owner items — exact actions.**
+1. **DNS for the back-office.** Cloudflare → zone `hellfiresol.com` → DNS → Add record: type `CNAME`,
+   name `bo.shos`, target `shos.hellfiresol.com`, **Proxied (orange cloud) ON**, TTL Auto. (An `A`
+   record to `164.90.235.66`, proxied, works identically — pick either, the CNAME keeps one place to
+   change the IP.)
+2. **Reuse the Configuration Rule from 2026-09-26.** The rule you added that fixed `https://shos.…`
+   landing on the hellfire apex is needed here too, for the same reason: our vhost is on origin :80.
+   Duplicate that exact rule and change only the hostname match to `bo.shos.hellfiresol.com` — do not
+   re-derive the settings, copy them.
+3. **Access gate (preferred over basic-auth).** Cloudflare Zero Trust → Access → Applications → Add a
+   self-hosted application, domain `bo.shos.hellfiresol.com`, policy Allow → include → Emails, listing
+   your address and each staff address. **Cloudflare Access is free for up to 50 users**, so no paid
+   plan is needed — if you hit a paywall, stop and tell me and we stay on the basic-auth I already
+   requested from TETA+PI. If Access does go live, tell me and I will ask TETA+PI to drop basic-auth.
+4. **Revoke the superseded Supabase token.** supabase.com → account → **Access Tokens**
+   (https://supabase.com/dashboard/account/tokens) → find the token created **2026-09-20** → Revoke.
+   The one you generated on **2026-09-26** is the one in environment `staging` and the one run
+   36273961641 just used, so revoking the old one breaks nothing. Nothing else needs revoking: the
+   **old DB password does not matter** — you reset it on 2026-09-26, which invalidated the old value at
+   the database, so the superseded copy is already dead and there is nothing left to revoke for it.
+   The SSH key and the Supabase anon/service-role keys were re-entered, not rotated, so they are
+   unchanged and stay as they are.
+
+**Blockers:** `bo.shos.hellfiresol.com` needs the owner (items 1–3) and a vhost from TETA+PI; until
+both land the back-office stays ssh-only and no URL goes to anyone. `S1-06-prod-target.md` written for
+S0 — six gaps, the notable one being that **no `migrate-prod.yml` exists at all**, so prod is more than
+filling in secrets.
+
+## 2026-09-26 — S1 DevOps — S1-04 (addendum: TETA+PI answered; two corrections to the entry above)
+TETA+PI replied as `teta-pi-e0` from the `TTPI · MANAGER` session. Two things I wrote above were
+wrong and are corrected here rather than edited in place (append-only).
+
+**Their answer.** Vhost **approved** and booted to their devops session: `bo.shos.hellfiresol.com` →
+`127.0.0.1:8202`, same security headers as `shos.`, **basic-auth created in the same change** — the
+no-unguarded-window condition I asked for is accepted. Credentials go to the owner directly on his
+machine, never into chat or a repo. They will not remove the gate on their own; when Cloudflare
+Access lands we ask them and they drop it. They re-confirmed 8200/8201/8202 are loopback-only from
+their side. DNS still does not exist — owner action; the vhost will 502/404 publicly until the record
+is created, which is expected and not a fault.
+
+**Correction 1 — I asked for the wrong thing on https, and they were right to refuse it.** I asked
+for an origin-side `:80 → https` redirect. That would have caused a **redirect loop**: the zone
+terminates TLS at Cloudflare and CF reaches this origin over plain `:80`, so CF would fetch `:80`,
+the origin would answer "go to https", and CF would fetch `:80` again. No origin redirect is being
+added, and none should be requested. **HTTPS enforcement belongs at the Cloudflare edge instead** —
+this is an extra owner action that my list above was missing:
+
+> **Owner, additional step:** Cloudflare → zone `hellfiresol.com` → enable **"Always Use HTTPS"** for
+> `bo.shos.hellfiresol.com` (SSL/TLS → Edge Certificates, or as a Configuration Rule scoped to the
+> hostname — the same place the `shos.` rule was made). This is what actually stops a staff password
+> crossing plain http; the origin cannot do it under this topology.
+
+The intent in the original entry stands — no staff password over plain http — but the mechanism named
+there was wrong.
+
+**Correction 2 — the `oom_kill 1` is explained, and it was not ours.** I reported it as a warning
+sign. It was **TETA+PI's own deliberate test on 2026-09-20**: they load-tested our slice's cap to
+prove `MemoryMax` was a hard ceiling. It was not at first — the slice spilled into swap — so they
+added `MemorySwapMax=0` and re-tested with a process that allocates past 512M. Exit 137, `oom_kill=1`.
+That is the counter we have been reading ever since, and it is why our slice has no swap. All three
+containers showing `oom_kill 0` is consistent with this: the killed process was theirs, not ours.
+Nothing of ours has ever been OOM-killed, and nothing of theirs has been reacting to us.
+
+So the capacity picture is **less alarming than the entry above implies**: strike `oom_kill 1` from
+the list of warning signs. What remains true and unchanged — `memory.current` 487.6 MiB of 512 MiB,
+`memory.peak` 515 MiB, `memory.events.max` 7736, no swap, and a ~494 MiB worst case if all three
+containers sat at their declared limits. Thin, but not a box with a history of killing our workload.
+
+**Their guidance on the trim.** Explicitly: do **not** shrink before the vhost — "a vhost costs no
+memory, and gating an auth control on unrelated cleanup is the wrong trade." They agree dropping the
+`api` placeholder (160M limit, 32M RSS) is the obvious trim and left it to our own schedule. Not done
+in S1-04: this boot says propose, not execute. It stays a recommendation for S0 to schedule. If we
+ever want the 512M cap raised, they want the request with numbers, because the 2 GB is shared with
+tetapi.dev and it is the owner's call — "we'd rather raise it deliberately than discover it through
+an OOM at a bad moment."
+
+**Still blocked on the owner, unchanged:** the DNS record, the Configuration Rule, "Always Use HTTPS",
+and Cloudflare Access. The vhost side is now handled. No URL has been given to anyone.
+
+## 2026-09-27 — S0 Orchestrator — S1-04 reviewed; my oom_kill note corrected; D-012/D-013; S1-05 issued
+Verified S1-04 independently: repo-level secret list is empty, environment `staging` holds all 8, `bo.shos.hellfiresol.com` does not resolve (curl 000) — exactly as reported. Accepted tasks 2–6; task 1 is blocked on the owner, correctly not faked.
+**My error, corrected:** on 2026-09-26 I recorded the slice's `oom_kill 1` in state.md as a warning sign without establishing its origin. TETA+PI identified it as their own deliberate cap test of 2026-09-20 (the reason the slice has `MemorySwapMax=0`). Struck from state.md. S1's second correction — that https enforcement belongs at the Cloudflare edge, not an origin `:80→https` redirect, which would loop under CF Full — is right and is now in the owner's action list; the wrong instruction never reached the owner.
+Ratified S1's routing of the `payment-worker` finding straight to S7 as **D-012** (security findings bypass S0; everything else still routes through S0). Approved the trim as **D-013** (drop the idle `api` placeholder: worst case 494 → ~334 MiB of 512) and issued **S1-05** to execute it plus finish the host the moment DNS lands. Deleted S4's consumed `S1-04-backoffice-host.md` proposal — the decision lives in the boot and the log.
+
+## 2026-09-27 — S0 Orchestrator — branch protection: S7's High finding is a false positive
+S7-01 is still in flight (PRs #30, #31; no report yet) and its filed proposal `S7-02-S1-…` opens with a High finding that GitHub branch protection on `main` is OFF, citing `gh api repos/shorobot/shosho/branches/main/protection` → 404 and flagging state.md as wrong. **State.md was right.** Protection is implemented as a repository **ruleset**, which the classic branch-protection endpoint does not report: `gh api repos/shorobot/shosho/rulesets/23652140` shows `main-protection`, `enforcement: active`, `bypass_actors: []`, rules `pull_request` + `required_status_checks [CI]` + `deletion` + `non_fast_forward`, scoped to `~DEFAULT_BRANCH`. Empirically confirmed too: S0's own direct push to `main` on 2026-09-20 was rejected with `GH013: Repository rule violations found`, naming both rules. Not even the admin can bypass (`bypass_actors` is empty). Recorded the ruleset id and the 404 caveat in state.md so the next audit does not re-derive it. Relayed to S7 to drop the finding before its report lands; the rest of its proposals stand, and its S2 item (client-supplied `payment_status` trusted in `place_order`) is CRITICAL and gets a boot as soon as S2-03 is in.
+Also diagnosed S7's own red CI on PR #30 for it: its three new audit helpers (`security_audit_policies`, `security_audit_function_grants`, `security_audit_table_grants`, migration 20) were created with Supabase's default grants, so S7's own regression test caught them — the test works exactly as specified; the fix is to revoke `anon`/`authenticated` EXECUTE on the helpers.
+
+## 2026-09-27 — S7 Security — S7-01
+First full security audit. PR #30 (branch `s7-01`), `backend` CI green after three self-caught
+round-trips (below). `docs/security.md` written: authorisation matrix verified against a live
+Supabase instance (not migration text), one-page threat model, standing rules for future migrations.
+
+**Ranked findings** (full detail + file:line in `docs/security.md` and the four
+`memory/boots/proposed/S7-02-*.md` files):
+1. **CRITICAL — `place_order` accepts a client-supplied `payment_status: "authorized"`** with no tie
+   to `payment_method`/Stripe (`rpc.sql:435-442,533-547`; `set_order_status_payments.sql:110-116`).
+   A guest can get an order marked `paid` at delivery with zero real payment, for any non-cash
+   `payment_method`. Live today, exercised by a currently-passing S2 test. **Filed to S2** — large,
+   contract-level, heavily-tested function; not S7's to rewrite.
+2. **High — the four staff seed accounts share one password, published in this public repo's
+   README.** Already known (S4-01's proposal); reinforcing that it must be rotated before
+   `bo.shos.hellfiresol.com` goes live. S1-04's access-gate work in progress covers a different layer
+   (who reaches `/login`), not this one (what the login itself accepts). **Filed to S1/owner.**
+3. **Medium/High — a `payment-worker` refund job can be duplicated** on a crash-then-reclaim race (no
+   authoritative "already refunded" check against Stripe, unlike capture/void). **Filed to S2.**
+4. **Medium/High — no rate limiting anywhere** on `place_order`/`quote_order`/`create-payment-intent`/
+   back-office login beyond Supabase Auth's generic default; the only place it can live given our
+   co-tenant terms is a Cloudflare rule. **Filed to S1/owner.**
+5. **Medium — no security headers** (CSP, durable HSTS, X-Frame-Options, Permissions-Policy) on
+   either Next.js app; the back-office is iframe-able with no CSP. **Filed to S3 (web) / S4
+   (backoffice).**
+6. **Medium — back-office open redirect**: `LoginForm.tsx`'s `?next=` accepts `//evil.example`
+   (passes a bare `startsWith("/")` check). **Filed to S4.**
+7. **Low — `payment-worker` has no in-function service-role check** (`verify_jwt=true` accepts the
+   public anon key). Found independently by both S1 (S1-04 log, same day) and this audit — see the
+   cross-session note in `S7-02-S2-payment-security-fixes.md`. **Filed to S2.**
+8. **Low** — non-constant-time `tracking_token` comparison in `create-payment-intent` (128 bits of
+   entropy makes this low-practical-risk); six `SECURITY INVOKER` functions don't pin `search_path`
+   (no active exploit — invoker functions run with the caller's privileges). **Filed to S2.**
+9. ~~GitHub branch protection on `main` is off~~ — **false positive**, corrected after independent
+   verification: this repo is protected via the newer Rulesets API (`gh api .../rulesets` → ruleset
+   `main-protection`, enforcement active, PR + `CI` status check required, no bypass), which the
+   classic `/branches/main/protection` endpoint 404s for by design. `/memory/state.md` was already
+   correct. Caught and fixed before this report, not left in `docs/security.md`.
+10. **No table missing RLS; no `SECURITY DEFINER` function missing `search_path`; no GitHub Actions
+    `pull_request_target` usage; no secret ever echoed to a log; no `NEXT_PUBLIC_*` var holds a
+    secret; the guest tracking-token realtime policy cannot enumerate other guests' topics** — all
+    checked and clean, recorded in `docs/security.md` rather than repeated here.
+
+**Fixed here (S7-owned: tests, docs, one small additive migration):**
+- `apps/backend/tests/security.test.ts`: the function-grants sweep (regression test for S2-02's
+  default-EXECUTE-grant finding), RLS sweep (`public`/`storage`/`realtime`, verified live rather than
+  assumed), storage/policy assertions, a small authorisation-matrix spot-check for kitchen/driver.
+- Migration 19: `kitchen_pause` and `anonymise_silent_customers` had the *same class* of NULL-unsafe
+  role guard S2-02 found in migration 18 (`v_role not in (...)` / `not (v_role = 'owner' or ...)`
+  both evaluate to NULL, not true, for a NULL role — silently bypassed, masked only by migration 18's
+  grant revoke, not by the functions' own logic). Fixed to the NULL-safe pattern already used by
+  `update_order_items`/`add_customer_event`.
+- Migration 20: service_role-only introspection helpers (`security_audit_function_grants/
+  table_grants/policies`) backing the tests above.
+
+**The regression test proved itself for real, twice, in this PR's own CI** (this *is* the "show that
+in the log" evidence the boot asked for):
+- Migration 20's own three helper functions were first written with only `revoke ... from public`
+  (matching every earlier migration's habit) — CI's first run on this PR failed immediately: "no
+  function outside the allow-list is anon-executable" and "every function is accounted for" both
+  caught `security_audit_function_grants`/`table_grants`/`policies` as anon+authenticated-executable.
+  Fixed by explicitly revoking `anon, authenticated` (not just `public`) — the exact fix this whole
+  audit is about, needed on the audit's own code. Re-ran green.
+- Separately, pushed a throwaway branch/PR (#31, closed without merging) adding
+  `demo_unlocked_staff_action()` with no grants at all — same two tests failed on it immediately, for
+  the reason intended (a genuinely new, unlocked function). Confirms the test catches both "someone
+  forgot to revoke" and "someone added a function nobody reviewed."
+- A third, unrelated CI failure (generated-types nullability: `RETURNS TABLE` columns aren't marked
+  nullable by `supabase gen types` even when the underlying `pg_policies` column can be NULL) was
+  fixed by matching `types/database.ts` to the generator's actual output.
+
+**Corrections made mid-audit:** a peer session (S1, cross-session message) flagged that
+`gh api .../branches/main/protection` 404s for Rulesets-protected repos — verified independently
+against `/rulesets` and corrected `docs/security.md` before this report (finding #9 above). Also
+cross-referenced S1-04's independent discovery of the `payment-worker` anon-key issue rather than
+reporting it as new.
+
+**Not covered:** no live Stripe payment exists yet (no account) — money-path review is static code +
+recorded-event-fixture tests, not a live walkthrough; back-office has no public host yet, so its
+external posture is S1-04's to re-verify when it goes live; no external network/TLS pentest, only
+response-header review over HTTPS from this machine. Co-tenant hygiene (infra-access.md) re-checked:
+compose configs stay in `127.0.0.1:8200-8299`, nothing writes outside `/home/shos`, no `sudo`; did not
+probe TETA+PI's or hellfire's ports/services.
+
+**Boundaries respected:** no other session's application code touched (Edge Functions, Next.js apps,
+GitHub/Cloudflare settings all filed as proposals, not changed); `api-contracts.md` and
+`decisions.md` untouched (the payment_status fix needs a contract change — proposed to S2, not made).
