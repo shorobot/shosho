@@ -262,3 +262,90 @@ Ratified S1's routing of the `payment-worker` finding straight to S7 as **D-012*
 ## 2026-09-27 — S0 Orchestrator — branch protection: S7's High finding is a false positive
 S7-01 is still in flight (PRs #30, #31; no report yet) and its filed proposal `S7-02-S1-…` opens with a High finding that GitHub branch protection on `main` is OFF, citing `gh api repos/shorobot/shosho/branches/main/protection` → 404 and flagging state.md as wrong. **State.md was right.** Protection is implemented as a repository **ruleset**, which the classic branch-protection endpoint does not report: `gh api repos/shorobot/shosho/rulesets/23652140` shows `main-protection`, `enforcement: active`, `bypass_actors: []`, rules `pull_request` + `required_status_checks [CI]` + `deletion` + `non_fast_forward`, scoped to `~DEFAULT_BRANCH`. Empirically confirmed too: S0's own direct push to `main` on 2026-09-20 was rejected with `GH013: Repository rule violations found`, naming both rules. Not even the admin can bypass (`bypass_actors` is empty). Recorded the ruleset id and the 404 caveat in state.md so the next audit does not re-derive it. Relayed to S7 to drop the finding before its report lands; the rest of its proposals stand, and its S2 item (client-supplied `payment_status` trusted in `place_order`) is CRITICAL and gets a boot as soon as S2-03 is in.
 Also diagnosed S7's own red CI on PR #30 for it: its three new audit helpers (`security_audit_policies`, `security_audit_function_grants`, `security_audit_table_grants`, migration 20) were created with Supabase's default grants, so S7's own regression test caught them — the test works exactly as specified; the fix is to revoke `anon`/`authenticated` EXECUTE on the helpers.
+
+## 2026-09-27 — S7 Security — S7-01
+First full security audit. PR #30 (branch `s7-01`), `backend` CI green after three self-caught
+round-trips (below). `docs/security.md` written: authorisation matrix verified against a live
+Supabase instance (not migration text), one-page threat model, standing rules for future migrations.
+
+**Ranked findings** (full detail + file:line in `docs/security.md` and the four
+`memory/boots/proposed/S7-02-*.md` files):
+1. **CRITICAL — `place_order` accepts a client-supplied `payment_status: "authorized"`** with no tie
+   to `payment_method`/Stripe (`rpc.sql:435-442,533-547`; `set_order_status_payments.sql:110-116`).
+   A guest can get an order marked `paid` at delivery with zero real payment, for any non-cash
+   `payment_method`. Live today, exercised by a currently-passing S2 test. **Filed to S2** — large,
+   contract-level, heavily-tested function; not S7's to rewrite.
+2. **High — the four staff seed accounts share one password, published in this public repo's
+   README.** Already known (S4-01's proposal); reinforcing that it must be rotated before
+   `bo.shos.hellfiresol.com` goes live. S1-04's access-gate work in progress covers a different layer
+   (who reaches `/login`), not this one (what the login itself accepts). **Filed to S1/owner.**
+3. **Medium/High — a `payment-worker` refund job can be duplicated** on a crash-then-reclaim race (no
+   authoritative "already refunded" check against Stripe, unlike capture/void). **Filed to S2.**
+4. **Medium/High — no rate limiting anywhere** on `place_order`/`quote_order`/`create-payment-intent`/
+   back-office login beyond Supabase Auth's generic default; the only place it can live given our
+   co-tenant terms is a Cloudflare rule. **Filed to S1/owner.**
+5. **Medium — no security headers** (CSP, durable HSTS, X-Frame-Options, Permissions-Policy) on
+   either Next.js app; the back-office is iframe-able with no CSP. **Filed to S3 (web) / S4
+   (backoffice).**
+6. **Medium — back-office open redirect**: `LoginForm.tsx`'s `?next=` accepts `//evil.example`
+   (passes a bare `startsWith("/")` check). **Filed to S4.**
+7. **Low — `payment-worker` has no in-function service-role check** (`verify_jwt=true` accepts the
+   public anon key). Found independently by both S1 (S1-04 log, same day) and this audit — see the
+   cross-session note in `S7-02-S2-payment-security-fixes.md`. **Filed to S2.**
+8. **Low** — non-constant-time `tracking_token` comparison in `create-payment-intent` (128 bits of
+   entropy makes this low-practical-risk); six `SECURITY INVOKER` functions don't pin `search_path`
+   (no active exploit — invoker functions run with the caller's privileges). **Filed to S2.**
+9. ~~GitHub branch protection on `main` is off~~ — **false positive**, corrected after independent
+   verification: this repo is protected via the newer Rulesets API (`gh api .../rulesets` → ruleset
+   `main-protection`, enforcement active, PR + `CI` status check required, no bypass), which the
+   classic `/branches/main/protection` endpoint 404s for by design. `/memory/state.md` was already
+   correct. Caught and fixed before this report, not left in `docs/security.md`.
+10. **No table missing RLS; no `SECURITY DEFINER` function missing `search_path`; no GitHub Actions
+    `pull_request_target` usage; no secret ever echoed to a log; no `NEXT_PUBLIC_*` var holds a
+    secret; the guest tracking-token realtime policy cannot enumerate other guests' topics** — all
+    checked and clean, recorded in `docs/security.md` rather than repeated here.
+
+**Fixed here (S7-owned: tests, docs, one small additive migration):**
+- `apps/backend/tests/security.test.ts`: the function-grants sweep (regression test for S2-02's
+  default-EXECUTE-grant finding), RLS sweep (`public`/`storage`/`realtime`, verified live rather than
+  assumed), storage/policy assertions, a small authorisation-matrix spot-check for kitchen/driver.
+- Migration 19: `kitchen_pause` and `anonymise_silent_customers` had the *same class* of NULL-unsafe
+  role guard S2-02 found in migration 18 (`v_role not in (...)` / `not (v_role = 'owner' or ...)`
+  both evaluate to NULL, not true, for a NULL role — silently bypassed, masked only by migration 18's
+  grant revoke, not by the functions' own logic). Fixed to the NULL-safe pattern already used by
+  `update_order_items`/`add_customer_event`.
+- Migration 20: service_role-only introspection helpers (`security_audit_function_grants/
+  table_grants/policies`) backing the tests above.
+
+**The regression test proved itself for real, twice, in this PR's own CI** (this *is* the "show that
+in the log" evidence the boot asked for):
+- Migration 20's own three helper functions were first written with only `revoke ... from public`
+  (matching every earlier migration's habit) — CI's first run on this PR failed immediately: "no
+  function outside the allow-list is anon-executable" and "every function is accounted for" both
+  caught `security_audit_function_grants`/`table_grants`/`policies` as anon+authenticated-executable.
+  Fixed by explicitly revoking `anon, authenticated` (not just `public`) — the exact fix this whole
+  audit is about, needed on the audit's own code. Re-ran green.
+- Separately, pushed a throwaway branch/PR (#31, closed without merging) adding
+  `demo_unlocked_staff_action()` with no grants at all — same two tests failed on it immediately, for
+  the reason intended (a genuinely new, unlocked function). Confirms the test catches both "someone
+  forgot to revoke" and "someone added a function nobody reviewed."
+- A third, unrelated CI failure (generated-types nullability: `RETURNS TABLE` columns aren't marked
+  nullable by `supabase gen types` even when the underlying `pg_policies` column can be NULL) was
+  fixed by matching `types/database.ts` to the generator's actual output.
+
+**Corrections made mid-audit:** a peer session (S1, cross-session message) flagged that
+`gh api .../branches/main/protection` 404s for Rulesets-protected repos — verified independently
+against `/rulesets` and corrected `docs/security.md` before this report (finding #9 above). Also
+cross-referenced S1-04's independent discovery of the `payment-worker` anon-key issue rather than
+reporting it as new.
+
+**Not covered:** no live Stripe payment exists yet (no account) — money-path review is static code +
+recorded-event-fixture tests, not a live walkthrough; back-office has no public host yet, so its
+external posture is S1-04's to re-verify when it goes live; no external network/TLS pentest, only
+response-header review over HTTPS from this machine. Co-tenant hygiene (infra-access.md) re-checked:
+compose configs stay in `127.0.0.1:8200-8299`, nothing writes outside `/home/shos`, no `sudo`; did not
+probe TETA+PI's or hellfire's ports/services.
+
+**Boundaries respected:** no other session's application code touched (Edge Functions, Next.js apps,
+GitHub/Cloudflare settings all filed as proposals, not changed); `api-contracts.md` and
+`decisions.md` untouched (the payment_status fix needs a contract change — proposed to S2, not made).

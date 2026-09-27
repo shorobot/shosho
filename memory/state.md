@@ -16,7 +16,7 @@ Phase 3 — hardening and reach. Guest site live on https; back-office built, ve
 | S4 | Back-office  | in progress   | S4-02       | S4-01          | public host comes with S1-04; meanwhile ssh port-forward to `127.0.0.1:8202` |
 | S5 | Automation   | not started   | —           | —              | unblocked (S4-01 done); after S7-01 |
 | S6 | QA           | not started   | —           | —              | unblocked (S4-01 done); S6-01 next |
-| S7 | Security     | in progress   | S7-01       | —              | — |
+| S7 | Security     | boot done     | —           | S7-01 (PR #30) | owner/S2: CRITICAL — `place_order` accepts a client-supplied `payment_status`, letting a guest get a "paid" order with no real payment (`S7-02-S2-payment-security-fixes.md`); owner/S1: rotate the shared staff seed password before `bo.shos.hellfiresol.com` goes live; four more proposals filed (`memory/boots/proposed/S7-02-*.md`), none blocking |
 
 Statuses: `not started` → `in progress` → `boot done` → `blocked`
 
