@@ -56,6 +56,10 @@ jobs:
 
       - name: Migration plan vs ${{ github.base_ref }}
         run: |
+          # pipefail (S1-05, same class as the tee'd steps below): `last=$(git ls-tree | sed | sort |
+          # tail | cut)` reports *cut's* status, so a failing git left `last` empty, `${last:-0}` made
+          # every timestamp look newer, and the guard this step exists for passed silently.
+          set -euo pipefail
           base="origin/${{ github.base_ref }}"
           {
             echo "## Migration plan → staging (vs \`$base\`)"

@@ -37,14 +37,18 @@ services:
     mem_limit: 96m
     memswap_limit: 96m
 
-  api:
-    <<: *common
-    image: ${API_IMAGE:-ghcr.io/shorobot/shosho-api:staging}
-    ports:
-      - "127.0.0.1:8201:8000"
-    environment:
-      SUPABASE_URL: ${SUPABASE_URL:-}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-    mem_limit: 160m
-    memswap_limit: 160m
+  # api: REMOVED 2026-09-27 by D-013 — the FastAPI placeholder was idle at ~35 MiB while holding a
+  #   160 MiB limit, ~31% of the slice's 512 MiB cap, for a service no session uses yet.
+  #   To restore when S5 Automation ships a real FastAPI service, re-add here and in
+  #   .github/workflows/_deploy.yml (search D-013 there — image build/push and the health probe):
+  #     api:
+  #       <<: *common
+  #       image: ${API_IMAGE:-ghcr.io/shorobot/shosho-api:staging}
+  #       ports:
+  #         - "127.0.0.1:8201:8000"      # 8201 stays reserved for us (TETA+PI informed it is idle)
+  #       environment:
+  #         SUPABASE_URL: ${SUPABASE_URL:-}
+  #         SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+  #         ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  #       mem_limit: 160m                # re-size from measurement, do not copy this number
+  #       memswap_limit: 160m

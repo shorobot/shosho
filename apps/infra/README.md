@@ -9,21 +9,23 @@ TETA+PI manager — we never touch it. Binding terms: [`/memory/infra-access.md`
 ```
 GitHub main ──push──▶ CI (ci.yml) ──green──▶ migrate-staging.yml ──green──▶ deploy-staging.yml ──▶ ssh shos@server
                                               │ supabase db push → shosho-staging   │                  └─ /home/shos/shosho/staging: compose pull/up
-                                              │ (Supabase cloud, eu-central-1)      └─ images → ghcr.io/shorobot/shosho-{web,api}:staging
+                                              │ (Supabase cloud, eu-central-1)      └─ images → ghcr.io/shorobot/shosho-{web,backoffice}:staging
 Cloudflare (TLS) ──▶ host nginx vhost shos.hellfiresol.com (TETA+PI) ──▶ 127.0.0.1:8200 (web)
-                                                                          127.0.0.1:8201 (api, internal)
+                  ──▶ host nginx vhost bo.shos.hellfiresol.com (gated) ──▶ 127.0.0.1:8202 (back-office)
+                                                     127.0.0.1:8201 — reserved, idle since D-013
 git tag vX.Y.Z ──▶ deploy-prod.yml ──approve (owner)──▶ same flow — prod target NOT decided yet (D-004)
 ```
 
 ## Deploy to staging
 Merge a PR into `main`. After CI is green, **Migrate staging** pushes the schema (see *Migrations*),
-and only when that succeeded `Deploy staging` runs: it builds the `web`
-image (`apps/web/Dockerfile`, or the placeholder) and the `api` image (`apps/automation/Dockerfile`, or
-the placeholder), pushes them to GHCR, renders `.env` from secrets, copies `docker-compose.staging.yml`
+and only when that succeeded `Deploy staging` runs: it builds the `web` and `backoffice` images
+(`apps/web/Dockerfile` / `apps/backoffice/Dockerfile`, or the placeholder), pushes them to GHCR,
+renders `.env` from secrets, copies `docker-compose.staging.yml`
 to the server and runs `docker compose pull && up -d` against the rootless daemon
 (`DOCKER_HOST=unix:///run/user/<uid>/docker.sock`, set explicitly in the workflow), then health-checks
-`http://127.0.0.1:8200/` and `http://127.0.0.1:8201/health` **over ssh on the server** and prints the
-cgroup memory usage. The public URL check is informational only (edge/TLS is not ours).
+`http://127.0.0.1:8200/` and `http://127.0.0.1:8202/login` **over ssh on the server** and prints the
+cgroup memory usage. There is no `api` service on staging — **D-013** dropped the idle placeholder
+(2026-09-27); `docker-compose.staging.yml` and `_deploy.yml` carry the commented block to restore. The public URL check is informational only (edge/TLS is not ours).
 Manual run: Actions → Deploy staging → Run workflow. Status: `gh run list --workflow "Deploy staging"`.
 
 ## Add a new secret
@@ -57,6 +59,8 @@ cd apps/infra && cp .env.example .env           # fill SUPABASE_* from the stagi
 docker compose up -d                             # api → http://localhost:8000/health
 docker compose logs -f api
 ```
+The local `api` placeholder is intentionally still here after D-013 — that decision was about 160M of
+staging RAM, not about local dev.
 macOS: needs Docker Desktop or Colima (`colima start`); `docker compose` plugin v2+.
 There is no orchestrator container any more (D-007): schedules/webhooks/agents live in code
 (`apps/automation`, FastAPI + Claude Agent SDK + cron).
@@ -69,12 +73,21 @@ enable it optionally once S2 adds `supabase/` with migrations: `supabase start &
 ## Files
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | local: placeholder api |
-| `docker-compose.staging.yml` | server: `web` → 127.0.0.1:8200 (96M), `api` → 127.0.0.1:8201 (160M); nothing else published |
-| `placeholder-web/`, `placeholder-api/` | stand-in images until apps/web and apps/automation exist |
+| `docker-compose.yml` | local only: placeholder api on :8000 — a dev convenience, costs no staging RAM (kept deliberately under D-013) |
+| `docker-compose.staging.yml` | server: `web` → 127.0.0.1:8200 (96M), `backoffice` → 127.0.0.1:8202 (96M); nothing else published (no `api` — D-013) |
+| `placeholder-web/`, `placeholder-api/` | stand-in images; `placeholder-api` is now used by local compose + CI only |
 | `scripts/shos-user-setup.sh` | one-time **user-level** server setup as `shos` (rootless docker, autostart, `~/shosho/staging`); no sudo |
 | `scripts/sync-workflows.sh` | copies workflows to `/.github/workflows` (CI verifies they are in sync) |
 | `.github/workflows/` | `ci.yml`, `migrate-staging.yml`, `_deploy.yml` (reusable), `deploy-staging.yml`, `deploy-prod.yml` |
+
+### Writing a workflow step — the runner's shell has no `pipefail`
+GitHub's default shell is **`bash -e {0}`: `errexit` only, no `pipefail` and no `nounset`.** So in
+`cmd | tee "$GITHUB_STEP_SUMMARY"` (or `| jq`, `| sed`, `| grep`) the step sees only the **last**
+command's status and a failing `cmd` goes green. Two variants bite the same way: `x=$(cmd | sed …)`
+reports `sed`'s status, and `eval "$(cmd | sed …)"` reports *eval's* — pipefail cannot even help
+there, so assign to a variable first and `eval` that. **Start any step that reads a pipeline's exit
+code with `set -euo pipefail`** (this also applies to a `bash -s` heredoc run over ssh — that shell is
+not the runner's). Found live in `migrate-staging.yml` (S1-04) and swept across the rest in S1-05.
 
 ## Secrets / variables (environment `staging`)
 Secrets: `STAGING_SSH_HOST`, `STAGING_SSH_USER` (= `shos`), `STAGING_SSH_KEY` (private half of
@@ -124,11 +137,14 @@ Shared droplet administered by the TETA+PI manager; SHOSHO staging is a co-tenan
   Socket `unix:///run/user/1002/docker.sock` — exported in `~/.profile` for interactive shells; CI sets
   `DOCKER_HOST` explicitly because non-login ssh shells skip `~/.profile`.
   Setup / repair: `ssh … 'bash -s' < apps/infra/scripts/shos-user-setup.sh` (idempotent).
-- Ports: publish **only** on `127.0.0.1:8200–8299`. `web` = 8200 (the vhost target), `api` = 8201.
+- Ports: publish **only** on `127.0.0.1:8200–8299`. `web` = 8200 (the vhost target),
+  `backoffice` = 8202. **8201 is reserved for us but idle** since D-013 removed the api placeholder —
+  S5 gets it back for the real FastAPI service without asking for a port.
   A new port in that range → tell `teta-pi-e0`, they re-point the vhost. Never `0.0.0.0`
   (CI has a guard for the staging compose).
 - Memory: hard cap **512M** for the whole `shos` cgroup (`MemoryMax`, no swap), CPU 50%. Container
-  limits: web 96M, api 160M. Over the cap → our processes get OOM-killed (exit 137), not the host.
+  limits: web 96M, backoffice 96M. Over the cap → our processes get OOM-killed (exit 137), not the
+  host. Declared-limit worst case is ~330M of the 512M cap after D-013 (was ~494M).
   Check: `ssh … 'cat /sys/fs/cgroup/user.slice/user-1002.slice/memory.current'` and
   `ssh … 'DOCKER_HOST=unix:///run/user/1002/docker.sock docker stats --no-stream'`.
 - Domain: `shos.hellfiresol.com` → Cloudflare → host nginx → `127.0.0.1:8200`. The vhost, TLS and the
