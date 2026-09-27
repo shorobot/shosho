@@ -59,6 +59,10 @@ Point tests at another project: set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABA
 | 16 | `…16_guest_realtime.sql` | guest tracking broadcast to `order:<tracking_token>` + `ensure_guest_realtime_policy()` |
 | 17 | `…17_anonymise_and_schedules.sql` | `anonymise_silent_customers(months)`, `is_service_request()`, `run_payment_worker()` (pg_net + Vault), `schedule_payment_worker()`, pg_cron schedules |
 | 18 | `…18_grants_hardening.sql` | revokes the `anon` / `authenticated` EXECUTE that Supabase's default privileges hand to every new `public` function (staff- and service-only RPCs) |
+| 19 | `…19_role_access.sql` | `settings_staff_keys()` (public set + `ops`) + policy `settings_staff_common_read`; view `staff_directory`; `settings['kitchen.status'].capacity`; `kitchen_pause()` NULL-role fix + merge instead of replace |
+| 20 | `…20_event_payloads.sql` | the status trigger and `set_order_status` write the §1.4 payload per event type (GUC `shosho.status_payload` carries the RPC-only keys); `reason` canonical / `cancel_reason` legacy; `record_payment_event`'s `payment_authorized` payload |
+| 21 | `…21_order_attempts.sql` | `order_attempts` (PII-free, CHECK-enforced `items`) + `record_order_attempt(payload)` for `anon` with a per-session rate limit; `place_order` rejection hint + `payment_authorized` payload |
+| 22 | `…22_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
 
 Adding a migration: `supabase migration new <slug>` → edit → `pnpm db:reset` → `pnpm db:types` → `pnpm test`.
 Never edit an applied migration file once it is on `main`; add a new one.
@@ -190,13 +194,108 @@ Change the password before any real data enters staging (`supabase auth` → use
   phone / email / birthday / kitchen note / consents and the PII snapshot on the orders, deletes the
   addresses, keeps numbers, dates, items and totals (GoBD, 10 years). Never run by the seed.
 - Every status change writes `order_events` (`accepted`, `preparing`, `ready`, `handed_to_driver`, `delivered`, `picked_up`, `cancelled`, `refunded`); `place_order` writes `created` (+ `payment_authorized`); `set_order_status` payload `note` adds a `note` event.
+- **Event payloads (S2-03)** — each type carries what api-contracts §1.4 documents: `created {channel}`,
+  `payment_authorized {payment_ref, provider, amount_cents}`, `accepted {promised_minutes}`,
+  `preparing {promised_minutes, station?}`, `ready {}`, `handed_to_driver {driver_id, driver_name}`,
+  `delivered`/`picked_up` `{cash_received?}`, `cancelled {reason}`, `refunded {amount_cents}`,
+  `note {text, code?}`, `item_changed {before, after, totals}`. Every status event also carries
+  `from` / `to`. Keys the trigger cannot see (`station`, `cash_received`, `amount_cents`) are handed
+  over by `set_order_status` through the transaction-local GUC `shosho.status_payload`, which the
+  trigger consumes and clears. **Rows written before 2026-09-27 are not backfilled** — consumers
+  tolerate missing keys, as §1.4 requires.
+- **Cancel reason** — `set_order_status` accepts `payload.reason` (canonical, wins when both are sent)
+  and `payload.cancel_reason` (legacy, one release). The column stays `orders.cancel_reason`.
+- **Kitchen load** — `settings['kitchen.status'].capacity` (int, default 8). Load =
+  `count(accepted, preparing) / capacity`, computed by the UI. It lives on the *public* key so the
+  kitchen role can read it; `kitchen_pause()` merges the value instead of replacing it.
+
+## Settings key sets
+
+`settings` is one key/value table with **three** access tiers. Which tier a key is in is the whole
+access-control story for it — there is no per-field filtering.
+
+| Tier | Function | Keys | Who reads |
+|---|---|---|---|
+| public | `settings_public_keys()` | `business`, `opening_hours`, `site`, `payments.enabled`, `kitchen.status` | `anon` and every authenticated user |
+| staff | `settings_staff_keys()` | the public set **+ `ops`** | every authenticated staff role (owner, operator, kitchen, driver) |
+| private | — | `payments`, `kitchen` | `owner` / `operator` only |
+
+Writes are `owner` only, in every tier.
+
+- `ops` was opened up in S2-03 (§6.9 row 1) because the kitchen board needs `prep_default_min`,
+  `rush_extra_min` and `preorder_max_days`, none of which is sensitive. `auto_accept_paid_under_cents`
+  and `attempt_rate_limit_per_min` ride along in the same key.
+- `kitchen` stays private: it holds `paused_by` (a staff uuid) and the `rush` flag. Its public mirror
+  `kitchen.status` carries `{paused, since, capacity}` and is written by `kitchen_pause()`, which
+  **merges** so `capacity` survives a pause.
+- **`business` holds imprint data only** — name, address, phone, email, impressum, ust_id, all of it
+  legally public, which is why it is in the public tier. Billing details, payout data, API keys or
+  anything credential-bearing must go into `payments` (private) or a new private key. Adding such a
+  field to `business` would publish it to `anon`.
+
+## Reports (Berichte)
+
+Four security-definer set-returning functions — api-contracts §6.10 has the column lists.
+
+```ts
+rpc('report_revenue_by_day', { from_date: '2026-09-01', to_date: '2026-09-27' })
+rpc('report_top_items',      { from_date, to_date, limit_count: 20 })
+rpc('report_funnel',         { from_date, to_date })
+rpc('report_delivery_times', { from_date, to_date })
+```
+
+Why functions and not views: a `security_invoker` view is read through the caller's RLS, and `orders`
+RLS is per-role — a `driver` sees only their own orders, so a view would have handed a driver a
+partial revenue figure with no indication that it was partial. One shared gate, `reports_guard()`,
+requires an active staff role instead; `anon`'s EXECUTE is revoked. Narrowing the reports to
+owner/operator later is a one-line change per function.
+
+`from_date` / `to_date` are Europe/Berlin calendar dates, **both ends inclusive**, defaulting to the
+last 30 days (`from` / `to` are reserved words, hence the names). Revenue counts **completed orders
+only** (`delivered`, `picked_up`), with `cancelled_count` and `refunded_cents` alongside so a sum row
+reconciles against the bank.
+
+### What the funnel can honestly support today
+
+| Design tile | Status |
+|---|---|
+| **WARENKORB → BEZAHLT** | **Real** — `placed`, `paid`, `placed_to_paid_pct` come straight from `orders`. |
+| **ZUSATZVERKAUF** | **Real** — the option half of every completed line (`line_total − unit_price × qty`), per period in `report_funnel` and per day in `report_revenue_by_day`. |
+| **MENÜ → WARENKORB** | **Not computable. Deliberately absent.** It needs menu impressions / add-to-cart events and no table holds them. The `site_events` sketch in `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` is the route and needs an S0 decision (GDPR) first. No column fakes it. |
+| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholder data until S3 emits attempt rows.** The query is real; nothing calls `record_order_attempt` yet, so they read `0` / `null`. That means "nothing recorded", not "nothing happened" — the Berichte screen should label it that way. |
+
+## `order_attempts` — privacy rules
+
+The rejected/abandoned-checkout feed (api-contracts §1.7) is the one table that receives data from
+guests who never became customers, so it is PII-free **by construction**, not by convention:
+
+- **No PII column exists.** No name, phone, email, street, floor/apt, city, courier comment, comment
+  flags or `customer_id`. A test asserts each of those names is an unknown column.
+- **`items` is `[{item_id, qty}]` only**, enforced by the CHECK constraint `order_attempt_items_ok`.
+  `record_order_attempt` also rebuilds the array from scratch, so any extra key a client sends is
+  dropped before the insert ever runs.
+- **`problems` is filtered** to the §5.2 keys (`code`, `item_id`, `reason`, `field`, `promo_code`), so
+  no free text can ride along in a problem object.
+- **`postal_code`** is the coarsest location the guest typed and is the whole point of the
+  out-of-zone state; `zone_id` is resolved from it server-side.
+- **`session_hash`** is an opaque client-side id from `sessionStorage` — **not a cookie**, not derived
+  from anything about the person, and used only to de-duplicate and to rate-limit. Do not pass a
+  customer id, phone hash or device fingerprint in it.
+- **`anon` cannot read the table at all** (the table grant is revoked, and there is no insert policy
+  either — the security-definer RPC is the only writer). `owner` / `operator` select; `kitchen` and
+  `driver` see nothing.
+- Rate limit: `settings.ops.attempt_rate_limit_per_min` rows per `session_hash` per minute, default
+  20. Over that the RPC raises `rate_limited` and writes nothing.
+- Append-only: no `updated_at`, no update trigger. There is no retention job yet — if S0 wants one,
+  it is a one-line `pg_cron` delete of rows older than N days next to the anonymisation job.
 
 ## RLS in one table
 
 | Table | anon | kitchen | driver | operator | owner |
 |---|---|---|---|---|---|
-| `settings` | public keys¹ | public keys | public keys | read all | all |
+| `settings` | public keys¹ | public + `ops`² | public + `ops`² | read all | all |
 | `staff` | — | own row | own row | read | all |
+| view `staff_directory` | — | read (4 cols)³ | read (4 cols)³ | read | read |
 | `delivery_zones` | active | active | active | all | all |
 | `menu_categories`, `menu_items`, `options` | active / on sale | read all | active / on sale | all | all |
 | `option_groups`, `menu_item_option_groups` | read | read | read | all | all |
@@ -204,12 +303,18 @@ Change the password before any real data enters staging (`supabase auth` → use
 | `orders`, `order_items`, `order_events` | — (RPC only) | read | own (`driver_id`) | all | all |
 | `promo_codes` | — (validated in RPC) | — | — | all | all |
 | `customer_events`, `payment_events`, `payment_jobs` | — | — | — | read | read |
+| `order_attempts` | — (RPC insert only)⁴ | — | — | read | read |
 | `storage.objects` in bucket `menu` | read | read | read | all | all |
 
 ¹ `business`, `opening_hours`, `site`, `payments.enabled`, `kitchen.status` (`settings_public_keys()`). `service_role` bypasses RLS.
+² `settings_staff_keys()` = the public set **plus `ops`**, for every authenticated staff role (S2-03, §6.9 row 1).
+³ `id, name, role, active` — explicit column list, so `staff.phone` and anything added to `staff` later stay behind the base table's owner/operator policy. Empty for `anon` and non-staff sessions.
+⁴ `anon`'s table grant is revoked entirely and there is no insert policy: `record_order_attempt()` is the only writer.
 RPC execute grants: `quote_order`, `place_order`, `get_order_by_token` → anon + authenticated;
 `set_order_status`, `kitchen_pause`, `update_order_items`, `add_customer_event`,
 `anonymise_silent_customers` → authenticated only (role checked inside, `anon` revoked in migration 18);
+`record_order_attempt` → anon + authenticated (§1.7); the four `report_*` functions and `reports_guard`
+→ authenticated only (any active staff role, `anon` revoked);
 `record_payment_event`, `enqueue_payment_job`, `claim_payment_jobs`, `finish_payment_job`,
 `run_payment_worker`, `schedule_payment_worker`, the two `ensure_*` installers and
 `is_service_request` → `service_role` only. Supabase's default privileges grant EXECUTE on every new
@@ -219,5 +324,5 @@ RPC execute grants: `quote_order`, `place_order`, `get_order_by_token` → anon 
 ## CI
 
 `.github/workflows/ci.yml` job `backend`: `supabase start` → `db reset` → `db lint` → seed applied a second
-time (idempotency) → typecheck → vitest (52 tests) → `gen types` must equal the committed `types/database.ts`.
+time (idempotency) → typecheck → vitest (~90 tests) → `gen types` must equal the committed `types/database.ts`.
 The generated file is also uploaded as the `backend-types` artifact.
