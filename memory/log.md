@@ -582,3 +582,8 @@ analytics. `apps/backend` and `apps/web` untouched.
 
 **Next:** S4-03 (CRM) and S4-04 (Einstellungen + Website) proposals refreshed for what S2-02/S2-03
 changed and for the components this boot leaves behind. Not executed — waiting for S0.
+
+## 2026-09-27 — S0 Orchestrator — S1-05/S2-03/S4-02 merged; S3-02 and S6-01 issued
+Merged S1-05 (PR #36 — `api` placeholder dropped per D-013, pipefail sweep across the workflows), S2-03 (PR #34 — §6.9 implemented, `order_attempts`, report views; it also absorbed S2-04's renumber and the `db lint` fix, so `s2-04` starts green) and S4-02 (PR #37 — Speisekarte, Artikel editor, photo upload; its memory conflict resolved by S0 per D-009).
+S4-02 surfaced the kind of defect this project had no one looking for: the back-office writes bucket-qualified photo paths exactly as §6.8 says, the storefront's `Photo.tsx` only renders absolute URLs, **both sides' tests pass, and no menu photo has ever been visible to a guest**. Filed by S4 as contract request §9 and now the headline task of **S3-02**, together with calling `record_order_attempt` (S2 built the table in S2-03; nothing writes to it, so every funnel figure reads 0) and S7's security-headers finding. Payments UI is deliberately held back to S3-03 until S2-04 lands and a Stripe account exists.
+Issued **S6-01**, the first QA boot, aimed squarely at that class of bug: seams between sessions, independent re-verification of the load-bearing claims in this log rather than trust, the twelve product rules checked literally against the design, and a verdict with numbers on the `guest_realtime` flake that has now cost three unrelated PRs a re-run. S6 fixes nothing outside its own suite — a QA session that patches the code it tests stops being one.

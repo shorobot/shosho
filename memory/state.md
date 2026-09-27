@@ -1,10 +1,10 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-09-27 (S0 — S7-01 merged; S2-04 issued for the CRITICAL payment finding; migration-collision rule D-014)
+Last update: 2026-09-27 (S0 — S1-05, S2-03, S4-02, S7-01 merged; S3-02 and S6-01 issued)
 
 ## Phase
-Phase 3 — hardening. Security audit landed (S7-01): one CRITICAL money finding, fixes now scheduled. Running: S1-05 (capacity trim + host) ‖ S2-03 (contract gaps, red on lint + needs renumber) ‖ S4-02 (menu editor) ‖ S2-04 (security fixes, issued). Queued: S6-01 QA, S3-02 payments UI (needs Stripe), S4-03/04, S2-05, S5-01.
+Phase 3 — hardening and integration. All four product layers are built and on staging. Open work: S2-04 (CRITICAL payment trust boundary) ‖ S3-02 (photos are invisible on the storefront, funnel data, security headers) ‖ S6-01 (first independent end-to-end pass). Queued: S3-03 payments UI (needs S2-04 + Stripe), S4-03/04, S2-05, S5-01 automation, S1-06 prod target.
 
 ## Sessions
 
@@ -12,10 +12,10 @@ Phase 3 — hardening. Security audit landed (S7-01): one CRITICAL money finding
 |----|--------------|---------------|-------------|----------------|----------|
 | S1 | DevOps       | boot done     | —           | S1-04          | `bo.shos.hellfiresol.com` not live: **vhost approved by TETA+PI with basic-auth in the same change**; still needs owner DNS record + Configuration Rule + **"Always Use HTTPS"** + Cloudflare Access. Repo-level secrets deleted, env-only chain green (36273961641 → 36274003786). Slice 487/512 MiB — proposes dropping the `api` placeholder; the historic `oom_kill 1` was TETA+PI's own cap test, not ours |
 | S2 | Backend      | boot done     | —           | S2-03 (PR #34) | next boot is S2-04 (S7-01's CRITICAL `payment_status` trust boundary) — **S2-03 already did S2-04's renumber (D-014: migrations 21–24) and the `db lint` fix**, so that branch starts green. owner: Stripe account + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (test mode) as env `staging` secrets + the webhook endpoint — no live payment has been walked through, and per S0 none may be connected until S2-04 lands. Funnel `attempts` figures read 0 until S3 calls `record_order_attempt` (`boots/proposed/S3-record-order-attempt.md`) |
-| S3 | Frontend     | boot done     | —           | S3-01 (PRs #15, #18) | none — live at http://shos.hellfiresol.com/ against `shosho-staging`; next: S3-02 (payments UI) after S2-02 |
+| S3 | Frontend     | in progress   | S3-02       | S3-01 (PRs #15, #18) | — |
 | S4 | Back-office  | boot done     | —           | S4-02          | **S3 must resolve bucket paths in `apps/web/components/ui/Photo.tsx` or no uploaded menu photo is ever shown on the storefront** (contract request §9; verified on staging 2026-09-27). Public host still comes with S1-04; meanwhile ssh port-forward to `127.0.0.1:8202`. `S7-02-S4-backoffice-hardening.md` is open and unaddressed |
 | S5 | Automation   | not started   | —           | —              | unblocked (S4-01 done); after S7-01 |
-| S6 | QA           | not started   | —           | —              | unblocked (S4-01 done); S6-01 next |
+| S6 | QA           | in progress   | S6-01       | —              | back-office has no public host yet — tests reach it over an ssh tunnel |
 | S7 | Security     | boot done     | —           | S7-01 (PR #30) | owner/S2: CRITICAL — `place_order` accepts a client-supplied `payment_status`, letting a guest get a "paid" order with no real payment (`S7-02-S2-payment-security-fixes.md`); owner/S1: rotate the shared staff seed password before `bo.shos.hellfiresol.com` goes live; four more proposals filed (`memory/boots/proposed/S7-02-*.md`), none blocking |
 
 Statuses: `not started` → `in progress` → `boot done` → `blocked`
