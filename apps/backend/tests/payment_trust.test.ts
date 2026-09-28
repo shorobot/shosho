@@ -42,12 +42,12 @@ describe("place_order: a guest cannot claim a payment state", () => {
     expect(ok, "an explicit 'pending' is still fine").toBeNull();
   });
 
-  it("never auto-accepts a guest order, however cheap — auto-accept needs a vouched payment", async () => {
-    // well under ops.auto_accept_paid_under_cents (5000)
-    const { data, error } = await rpc(anon(), "place_order", {
-      payload: ramenOrder({ items: [{ item_id: "30000000-0000-4000-8000-000000000009", qty: 1 }] }),
-    });
+  it("never auto-accepts a guest order — auto-accept needs a vouched payment", async () => {
+    // ramenOrder is 2 × 13.50 + fee, comfortably under ops.auto_accept_paid_under_cents (5000):
+    // before S2-04 this order auto-accepted the moment the client claimed `authorized`.
+    const { data, error } = await rpc(anon(), "place_order", { payload: ramenOrder() });
     expect(error).toBeNull();
+    expect(data.total_cents).toBeLessThan(5000);
     expect(data.status).toBe("new");
   });
 
@@ -66,7 +66,6 @@ describe("place_order: staff may record money in hand, and it is audited", () =>
     const { data, error } = await rpc(operator, "place_order", {
       payload: ramenOrder({
         channel: "phone", payment_status: "paid", payment_method: "card", payment_ref: "Terminal ···9021",
-        items: [{ item_id: "30000000-0000-4000-8000-000000000009", qty: 1 }],
       }),
     });
     expect(error).toBeNull();
@@ -75,6 +74,7 @@ describe("place_order: staff may record money in hand, and it is audited", () =>
     expect(o!.payment_status).toBe("paid");
     expect(o!.payment_ref).toBe("Terminal ···9021");   // staff reference is kept, unlike a guest's
     expect(o!.channel).toBe("phone");
+    expect(o!.status, "a vouched payment under the threshold still auto-accepts").toBe("accepted");
 
     const { data: ev } = await admin().from("order_events")
       .select("type, actor_type, actor_id, payload").eq("order_id", data.order_id).order("at");

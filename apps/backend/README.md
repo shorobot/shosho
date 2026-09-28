@@ -59,10 +59,14 @@ Point tests at another project: set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABA
 | 16 | `…16_guest_realtime.sql` | guest tracking broadcast to `order:<tracking_token>` + `ensure_guest_realtime_policy()` |
 | 17 | `…17_anonymise_and_schedules.sql` | `anonymise_silent_customers(months)`, `is_service_request()`, `run_payment_worker()` (pg_net + Vault), `schedule_payment_worker()`, pg_cron schedules |
 | 18 | `…18_grants_hardening.sql` | revokes the `anon` / `authenticated` EXECUTE that Supabase's default privileges hand to every new `public` function (staff- and service-only RPCs) |
-| 19 | `…19_role_access.sql` | `settings_staff_keys()` (public set + `ops`) + policy `settings_staff_common_read`; view `staff_directory`; `settings['kitchen.status'].capacity`; `kitchen_pause()` NULL-role fix + merge instead of replace |
-| 20 | `…20_event_payloads.sql` | the status trigger and `set_order_status` write the §1.4 payload per event type (GUC `shosho.status_payload` carries the RPC-only keys); `reason` canonical / `cancel_reason` legacy; `record_payment_event`'s `payment_authorized` payload |
-| 21 | `…21_order_attempts.sql` | `order_attempts` (PII-free, CHECK-enforced `items`) + `record_order_attempt(payload)` for `anon` with a per-session rate limit; `place_order` rejection hint + `payment_authorized` payload |
-| 22 | `…22_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
+| 19 | `…19_security_null_role_guard_fix.sql` | **S7-01** — NULL-unsafe role guards in `kitchen_pause` / `anonymise_silent_customers` (`NULL NOT IN (…)` is NULL, and plpgsql treats `IF NULL` as false, so the gate never fired) |
+| 20 | `…20_security_audit_helpers.sql` | **S7-01** — `security_audit_function_grants` / `_table_grants` / `_policies`, the live-catalogue introspection behind `tests/security.test.ts` (service_role only) |
+| 21 | `…21_role_access.sql` | `settings_staff_keys()` (public set + `ops`) + policy `settings_staff_common_read`; view `staff_directory`; `settings['kitchen.status'].capacity`; `kitchen_pause()` merges instead of replacing (keeping S7's guard) |
+| 22 | `…22_event_payloads.sql` | the status trigger and `set_order_status` write the §1.4 payload per event type (GUC `shosho.status_payload` carries the RPC-only keys); `reason` canonical / `cancel_reason` legacy; `record_payment_event`'s `payment_authorized` payload |
+| 23 | `…23_order_attempts.sql` | `order_attempts` (PII-free, CHECK-enforced `items`) + `record_order_attempt(payload)` for `anon` with a per-session rate limit; `place_order` rejection hint + `payment_authorized` payload |
+| 24 | `…24_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
+| 25 | `…25_payment_trust_boundary.sql` | **S7-01 finding 1 (CRITICAL)** — `place_order` no longer trusts a client `payment_status` / `payment_ref`; staff-recorded `paid` is audited; `set_order_status` stops marking provider-less orders `paid` on completion |
+| 26 | `…26_search_path_and_worker_secret.sql` | `search_path` pinned on the six SECURITY INVOKER functions (finding 5); `payment_worker_secret()` + `run_payment_worker` sends it, so pg_cron can prove it is the cron (findings 3/7) |
 
 Adding a migration: `supabase migration new <slug>` → edit → `pnpm db:reset` → `pnpm db:types` → `pnpm test`.
 Never edit an applied migration file once it is on `main`; add a new one.
@@ -92,7 +96,7 @@ verification, Stripe → schema mapping) that the vitest suite unit-tests on Nod
 |---|---|---|---|
 | `create-payment-intent` | yes (anon key is enough) | the guest site / back-office (§5.6) | creates or reuses a PaymentIntent (`amount = orders.total_cents`, `eur`, `capture_method: manual`, `automatic_payment_methods`, `metadata.order_id`), stores `payment_intent_id` + `payment_provider`, returns `client_secret`. A guest must present the order's `tracking_token`; an `owner`/`operator` session may omit it. |
 | `stripe-webhook` | **no** — the `Stripe-Signature` header is the authentication | Stripe | verifies the signature against `STRIPE_WEBHOOK_SECRET`, resolves the card / wallet description, then calls `record_payment_event` (idempotent on the Stripe event id). |
-| `payment-worker` | yes | pg_cron every minute, the `payment_jobs` insert trigger, or by hand | claims queued `payment_jobs` and executes them against Stripe (capture / cancel / refund / update or increment the amount), each with the idempotency key `job:<id>:<attempt>`; `{"action":"install"}` writes the Vault secrets and (re)creates the cron job. |
+| `payment-worker` | yes | pg_cron every minute, the `payment_jobs` insert trigger, or by hand | claims queued `payment_jobs` and executes them against Stripe (capture / cancel / refund / update or increment the amount); `{"action":"install"}` writes the Vault secrets and (re)creates the cron job. **S2-04:** draining needs the service-role key or `x-worker-secret` — see below. |
 
 **Function secrets** (`supabase secrets set`, per project — never in the repo or in `settings`):
 `STRIPE_SECRET_KEY` (required), `STRIPE_WEBHOOK_SECRET` (required for the webhook),
@@ -130,6 +134,56 @@ operator/driver sets `delivered` / `picked_up` → `payment_jobs(capture)` → w
 `succeeded` → `paid` + `payment_captured_at`. `cancelled` → `payment_jobs(void)` → webhook `canceled`
 → back to `pending`. `refunded` → `payment_jobs(refund)` → webhook `charge.refunded` →
 `payment_refunded_cents` / `refunded`.
+
+## payment-worker: who may call it (S2-04)
+
+`verify_jwt = true` on an Edge Function only proves the caller holds *some* project JWT — and the
+**anon key qualifies**. That key ships in the guest web bundle, so before S2-04 anyone could POST
+`/functions/v1/payment-worker` and make it drain the job queue against Stripe, or re-run
+`{"action":"install"}`. S7-01 raised it as finding 7; S1 hit the same thing independently in S1-04.
+
+Draining now requires one of:
+
+| Credential | Who presents it |
+|---|---|
+| `Authorization: Bearer <service-role key>` | a human running the function by hand, or CI |
+| `x-worker-secret: <public.payment_worker_secret()>` | pg_cron, via `run_payment_worker()` |
+
+`payment_worker_secret()` is 32 random bytes kept in Vault, generated on first use, `service_role`
+only — the Edge Function reads it back with its own service-role client, and nothing else can. A
+caller with only the anon key gets `403 forbidden`.
+
+```bash
+# by hand (service-role key from the Supabase dashboard → Project Settings → API)
+curl -sS -X POST "$SUPABASE_URL/functions/v1/payment-worker" \
+  -H "Authorization: Bearer $SERVICE_ROLE_KEY" -H 'Content-Type: application/json' -d '{}'
+```
+
+**`{"action":"install"}` is deliberately still reachable with the anon key** — `migrate-staging.yml`
+calls it that way, S1 owns workflows, and that token swap is routed as a proposal
+(`/memory/boots/proposed/S2-04-S1-payment-worker-install-token.md`). Its parameters are server-side
+constants, so the residual surface is "a stranger can re-run our own cron install". Install also
+rewrites the Vault key to the **service-role** key and ensures the secret exists, so the drain path
+becomes strict the first time it runs after a deploy — nothing needs coordinating for that half.
+When S1's swap lands, the install branch gets the same check and no path accepts a public key.
+
+## Refunds cannot double-pay (S2-04)
+
+`capture` and `void` always asked Stripe for the PaymentIntent's live status first, so replaying them
+was safe. `refund` did not. `payment_jobs` re-claims a job after 10 minutes, and the retry used a
+*new* idempotency key (`job:<id>:<attempt>`), which Stripe treats as a genuinely new request — so a
+worker that died between `refunds.create()` resolving and `finish_payment_job` committing refunded
+the customer twice (S7-01 finding 2). Two guards now, in `_shared/refund-plan.ts`:
+
+1. **An attempt-stable idempotency key**, `refund:job:<id>`. Stripe honours a key for 24 h and
+   replays the original response, so the retry of a call that did reach Stripe returns the same
+   refund. This is the part that actually closes the race, because it needs no state of ours.
+2. **A pre-check**: list the refunds already on the intent and look for `metadata.job_id = <job>`.
+   Same "ask Stripe what is true" shape as capture/void, and it still works after the 24 h window
+   has passed — the one case a key alone would not cover.
+
+The planner is a pure function so `tests/refund_idempotency.test.ts` can play the crash-then-reclaim
+sequence exactly, with no Stripe account and no network.
 
 ## Schedules (pg_cron)
 
@@ -177,6 +231,16 @@ Change the password before any real data enters staging (`supabase auth` → use
 - Customer upsert by phone; `customers.kitchen_note` snapshots to `orders.allergy_note`; delivery address is stored on the profile (first one becomes default).
 - Auto-accept: `authorized`/`paid` ASAP orders with total < `ops.auto_accept_paid_under_cents` go straight to `accepted` (event actor `system`).
 - Status machine in `set_order_status`: `new→accepted|cancelled`, `accepted→preparing|cancelled`, `preparing→ready|cancelled`, `ready→out_for_delivery` (delivery, needs an active driver) `|picked_up` (pickup) `|cancelled`, `out_for_delivery→delivered|cancelled`, `delivered|picked_up→refunded` when paid. Kitchen: `preparing`/`ready` only. Driver: `delivered` on own orders only. Cancel/refund: owner/operator.
+- **Payment trust boundary (S2-04, S7-01 finding 1)** — **nobody but the payment provider may say
+  that money moved.** A guest order is created `pending`; sending any other `payment_status` is
+  refused (`invalid_input`), not coerced, and a guest's `payment_ref` is dropped. `authorized` is
+  reachable only from `record_payment_event` behind the verified Stripe webhook. `owner`/`operator`
+  may record `paid` at order entry for money already in hand, and that writes an `order_events`
+  `note` (`code = 'payment_recorded_by_staff'`) naming the actor. Completion is **not** evidence of
+  payment: a non-cash order with no provider completes with `payment_status` untouched plus a
+  `payment_not_confirmed` note, instead of silently becoming `paid`. Auto-accept keys only off a
+  vouched state. Until this landed, `place_order(payment_status: 'authorized')` from the public anon
+  key was a free meal.
 - **Payments (S2-02, D-011)** — Stripe with manual capture; the DB never holds a provider secret. A
   PaymentIntent is created by the `create-payment-intent` function, `stripe-webhook` moves
   `payment_status` (`authorized` → `paid` → `refunded` / `failed`) and applies the auto-accept rule when
