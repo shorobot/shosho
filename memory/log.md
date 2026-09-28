@@ -587,3 +587,166 @@ changed and for the components this boot leaves behind. Not executed — waiting
 Merged S1-05 (PR #36 — `api` placeholder dropped per D-013, pipefail sweep across the workflows), S2-03 (PR #34 — §6.9 implemented, `order_attempts`, report views; it also absorbed S2-04's renumber and the `db lint` fix, so `s2-04` starts green) and S4-02 (PR #37 — Speisekarte, Artikel editor, photo upload; its memory conflict resolved by S0 per D-009).
 S4-02 surfaced the kind of defect this project had no one looking for: the back-office writes bucket-qualified photo paths exactly as §6.8 says, the storefront's `Photo.tsx` only renders absolute URLs, **both sides' tests pass, and no menu photo has ever been visible to a guest**. Filed by S4 as contract request §9 and now the headline task of **S3-02**, together with calling `record_order_attempt` (S2 built the table in S2-03; nothing writes to it, so every funnel figure reads 0) and S7's security-headers finding. Payments UI is deliberately held back to S3-03 until S2-04 lands and a Stripe account exists.
 Issued **S6-01**, the first QA boot, aimed squarely at that class of bug: seams between sessions, independent re-verification of the load-bearing claims in this log rather than trust, the twelve product rules checked literally against the design, and a verdict with numbers on the `guest_realtime` flake that has now cost three unrelated PRs a re-run. S6 fixes nothing outside its own suite — a QA session that patches the code it tests stops being one.
+
+## 2026-09-27 — S1 DevOps — S1-05
+`api` is gone from staging and the deploy is green without it. The back-office host is **still
+owner-blocked** — DNS does not resolve, so I did nothing to it. Reported in two PRs on purpose:
+#36 carried the change, this entry needs numbers that only exist after the change is on `main`.
+
+**The trim (task 1) — done, and `.env` got smaller too.** Removed the `api` service from
+`docker-compose.staging.yml`, its build/push from `_deploy.yml`, the `:8201` health probe, and
+`api_port` from both callers. On the server the container went with `--remove-orphans`; I deleted
+`ghcr.io/shorobot/shosho-api:staging` by hand (`docker image prune -f` only touches dangling images),
+which also returned ~200 MB of disk to a box we share. **I left the GHCR package alone** — deleting a
+package version is not cheap to undo and costs nothing to keep, so `shosho-api` stays in the registry
+with its last `staging` tag; S5 overwrites it. Nothing listens on 8201 any more (`curl` → 000) and
+`ss` confirms only 8200 and 8202 are bound, loopback-only.
+
+One thing beyond the literal task, worth a look: `_deploy.yml` was rendering
+`SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` into the server's `.env`, and the `api` container
+was **their only consumer**. They now have no reader at all, so I stopped rendering them. Verified on
+the server — `.env` holds seven keys, none of them a service-role key. A service-role key sitting in a
+file on a shared host with nothing reading it is pure exposure; this is not a finding about anyone's
+code, just cleanup that D-013 made obvious. If S5 needs them, they go back scoped to that service, not
+as a blanket render.
+
+Kept on purpose: the **local** `docker-compose.yml` placeholder, `placeholder-api/`, and its CI jobs.
+D-013 is about 160 MiB of staging RAM, not about local dev. Restore instructions for S5 are commented
+in place in both `docker-compose.staging.yml` and `_deploy.yml`, naming D-013.
+
+**Capacity (task 2) — the prediction held, but `memory.current` is the wrong number and I want to say
+so plainly.** Both readings are mine, same box, same command, before and after the deploy:
+
+| | before (3 containers) | after (2) | change |
+|---|---|---|---|
+| `memory.current` | 455.9 MiB | **456.4 MiB** | **+0.5 — it did not move** |
+| `memory.peak` | 515.1 MiB | 515.2 MiB | +0.1 (historic) |
+| `memory.events.max` | 7899 | 12749 | +4850 (this deploy) |
+| `anon` (non-reclaimable) | 249.7 MiB | **191.5 MiB** | **−58.2** |
+| `file` (reclaimable cache) | 170.7 MiB | 234.3 MiB | +63.6 |
+| `kernel` | 35.7 MiB | 30.7 MiB | −5.0 |
+| containers, actual | api 35.5 + web 58.8 + bo 53.8 = 148.1 | web 55.4 + bo 63.3 = **118.7** | −29.4 |
+| containers, declared ceilings | 96+96+160 = 352 MiB | **192 MiB** | **−160** |
+
+**Anyone checking this trim by reading `memory.current` will conclude it did nothing.** It sat at
+~456 MiB before and after, because the kernel immediately took the freed memory as page cache — `file`
+rose 63.6 MiB, almost exactly what `anon` gave up. In a cgroup with a hard `memory.max`, page cache
+expands to the ceiling by design; `memory.current` measures how much cache the kernel felt like
+holding, not how close we are to a kill. The number that protects us is **`anon` + `kernel`, which
+fell from 285.4 to 222.2 MiB**.
+
+**New worst case at declared limits: ~296 MiB of 512 MiB** (192 container ceilings + 72.8 non-container
+anon — dockerd/containerd/rootlesskit/systemd/ssh — + 30.7 kernel), leaving ~216 MiB. Using S1-04's
+more conservative overhead figure of ~142 MiB instead of today's measured 103.5, it is **~334 MiB**,
+leaving ~178 MiB. So: prediction ~334, actual 296–334 depending on which overhead number you trust,
+against a prior 494. **The prediction was met.** The cleanest way to state why it is exact: we removed
+a 160 MiB ceiling, and 494 − 160 = 334.
+
+Two things I am *not* dressing up. `memory.events.max` rose by **4850** during this deploy (S1-04's
+deploy moved it by ~50): pulling two fresh ~330 MB images churns page cache against the ceiling, and
+each reclaim counts. And `memory.peak` ticked up 96 KB, so the slice **did** touch ~515 MiB again
+during the pull. Neither is an OOM: `oom_kill` is still **1** — TETA+PI's own cap test of 2026-09-20,
+per the S1-04 addendum — and both containers report `oom_kill 0`. The trim was never going to reduce
+`max` events, because cache will always grow into whatever ceiling exists. It reduced the floor, which
+is the part that kills you.
+
+**Back-office host (task 3) — still owner-blocked, but the origin half is now verified, not assumed.**
+`dig bo.shos.hellfiresol.com` is empty for both A and CNAME — checked at the start of this boot, again
+at the end, and again on 2026-09-28; `curl` → 000. Per the boot I did not force it, invented no
+workaround, gave out no URL, and did not re-ask TETA+PI.
+
+**Correction to what I first wrote here (TETA+PI, 2026-09-28):** I had this entry saying their vhost was
+"approved and queued". It is not queued — **it has been live on the origin since 2026-09-26**
+(teta-pi/infra #129), and I verified that myself rather than taking it on trust, which the boot
+explicitly requires for the gate. No DNS is needed to test it:
+
+```
+curl -D - -H 'Host: bo.shos.hellfiresol.com' http://164.90.235.66/
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"
+Strict-Transport-Security / X-Content-Type-Options: nosniff / X-Frame-Options: DENY
+```
+
+`/` and `/login` both answer **401 before the app renders anything** — the gate challenges, and it went
+up in the same change as the vhost, so the no-unguarded-window condition I asked for in S1-04 held in
+practice and not just on paper. Credentials are on the owner's machine only
+(`~/.tetapi/shos-bo-basicauth`, 600); I did not request them and they belong nowhere near chat or git.
+
+What this changes: **only the Cloudflare side is left.** I still cannot verify the edge half — valid
+TLS at `bo.shos.…`, the challenge surviving the proxy, 200 behind the gate, the four seed logins — and
+I will not claim any of it until DNS exists. Task 3 therefore stays on its "does not resolve" branch.
+
+The guest site is unaffected and re-verified: `https://shos.hellfiresol.com/` → **200, valid TLS**
+(`ssl_verify_result=0`), correct S3-01 title. No public plain-http login form exists, confirmed rather
+than assumed: the only public hostname serving the back-office would be `bo.shos.…`, which does not
+resolve, and `/login` on the guest host is 404. Over the ssh tunnel the back-office is healthy —
+`:8202/login` 200 (`<title>Anmelden · SHOSHO BO`), `:8202/` 307 to login.
+
+**The four owner actions, unchanged, in one block:**
+1. **DNS** — Cloudflare → zone `hellfiresol.com` → DNS → Add record: `CNAME`, name `bo.shos`, target
+   `shos.hellfiresol.com`, **Proxied (orange cloud) ON**, TTL Auto.
+2. **Configuration Rule** — duplicate the rule added 2026-09-26 that fixed `https://shos.…` landing on
+   the hellfire apex, changing only the hostname match to `bo.shos.hellfiresol.com`. Copy the settings,
+   do not re-derive them.
+3. **"Always Use HTTPS"** for that hostname (SSL/TLS → Edge Certificates, or a Configuration Rule
+   scoped to it). This must be at the edge — an origin `:80→https` redirect would loop under CF Full
+   (S1-04 addendum). This is what stops a staff password crossing plain http.
+4. **Cloudflare Access** — Zero Trust → Access → Applications → self-hosted app,
+   `bo.shos.hellfiresol.com`, policy Allow → include → Emails (your address + each staff address).
+   Free ≤ 50 users. If it paywalls, stop and say so; we stay on TETA+PI's basic-auth. If it goes live,
+   tell me and I ask TETA+PI to drop basic-auth — not before.
+
+**A gate that did not exist when this boot was written.** S7-01 landed mid-boot and its
+`S7-02-S1-…` proposal, task 2, says the four seed staff logins share one password that is **published
+in this public repo** (`apps/backend/README.md`), and that `bo.shos.hellfiresol.com` must not go live
+before it is rotated. I agree, and it changes the finish line: when DNS appears, the Cloudflare gate is
+**necessary but no longer sufficient**. Rotation is not mine (it is seed data in `apps/backend`, S2's
+file, and the live values are S7's item), so I did nothing to it — but whoever gets the "DNS is up"
+boot must treat it as a precondition, not a follow-up. Flagging to S0 rather than acting.
+
+**Pipefail sweep (task 4) — three more live instances of the class, all fixed.** The runner's shell is
+`bash -e {0}`: errexit only, no pipefail, no nounset.
+1. **`ci.yml`, the co-tenant port guard.** `grep … | grep -oE … | while read` reported only the
+   while-loop's status, and ran the loop in a subshell. A staging compose that published **no ports at
+   all** walked through this guard green — the guard that exists to keep us inside 8200–8299 for
+   TETA+PI. Rewritten with `awk` (exit 0 on no match) and an explicit empty-list failure; tested both
+   ways locally, and the negative case fails as it should.
+2. **`ci.yml`, backend, two steps.** `eval "$(pnpm exec supabase status -o env | sed …)"` reports
+   *eval's* status: a failed `supabase status` evaluated to nothing, exited 0, and the step ran on with
+   `DB_URL` unset. **`pipefail` cannot fix this shape** — the substitution's status is discarded by
+   `eval` regardless — so the fix is to assign first, then eval, and let `set -u` catch a missing var.
+   Worth knowing for anyone who greps for `| tee` and thinks they are done.
+3. **`migrate-staging.yml`, the plan step.** `last=$(git ls-tree … | sed | sort | tail -1 | cut …)`
+   reported `cut`'s status, so a failing `git` left `last` empty and `${last:-0}` made every new
+   migration's timestamp look newer — the migration-ordering guard would have passed silently.
+
+Also upgraded the `_deploy.yml` health step from `set -e` to `set -euo pipefail` on **both** sides of
+the ssh boundary; the remote `bash -s` is not the runner's shell and needs saying separately. Note
+added to `apps/infra/README.md` covering all three shapes plus the ssh-heredoc case. Checked and left
+alone: the compose smoke loop, where `[ "$api" = 200 ] && break` is an AND-list and correctly does not
+trip `set -e`.
+
+**`S1-06-prod-target.md` refreshed (task 5) — still a proposal.** Gap 1: env-only secrets are now a
+proven shape, not advice, and `PROD_SUPABASE_SERVICE_ROLE_KEY` has no reader on a prod host either.
+Gap 2: staging is two containers at ~296–334 MiB worst case, not three at ~494 — but that margin is
+earmarked for S5's real FastAPI service, **not** for co-locating prod; D-004 stands. Gap 4:
+`migrate-prod.yml` still does not exist, and must be written with `set -euo pipefail` throughout —
+on prod this bug class is a silent partial release. Gap 6: the "does the api placeholder ship" question
+is settled by D-013. **Gap 7, new: the `payment-worker` finding is a hard pre-prod gate — no `v*` tag
+until S7 confirms it is fixed, and I will not build a pipeline that can ship it.** Also recorded the
+ruleset-vs-classic-protection caveat so the prod-gate audit does not re-derive S7's false positive.
+
+**CI honesty note.** `backend (supabase)` failed once on my branch on the known `guest_realtime` flake
+(`partitions_created: []`, the exact signature in state.md) and passed on re-run. It was not my change:
+the step reached vitest and ran 71 tests, 70 passing, so the rewritten `eval` exported `API_URL` and
+the keys correctly. S2-03 has since made that test deterministic.
+
+**On 8201, for the record.** TETA+PI observed 8201 still bound and flagged it, hedging that my deploy
+might not have landed — their hedge was the right one. A full `ss -ltn` on the box (all users, not just
+mine) shows **nothing bound to 8201**; only 8200 and 8202 are, both loopback, both `rootlesskit`. Their
+reading predates the deploy. They confirm 8200–8299 stays ours and 8201 stays reserved.
+
+**Blockers:** the back-office host needs the **owner's four Cloudflare actions** and nothing else —
+TETA+PI's side is done and verified. The seed-password rotation above is now a second precondition
+before it goes live. TETA+PI were told 8201 is idle and reserved — informational, no request, and I did
+**not** ask for a cap increase; the trim was the answer.
