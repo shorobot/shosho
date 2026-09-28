@@ -587,3 +587,103 @@ changed and for the components this boot leaves behind. Not executed — waiting
 Merged S1-05 (PR #36 — `api` placeholder dropped per D-013, pipefail sweep across the workflows), S2-03 (PR #34 — §6.9 implemented, `order_attempts`, report views; it also absorbed S2-04's renumber and the `db lint` fix, so `s2-04` starts green) and S4-02 (PR #37 — Speisekarte, Artikel editor, photo upload; its memory conflict resolved by S0 per D-009).
 S4-02 surfaced the kind of defect this project had no one looking for: the back-office writes bucket-qualified photo paths exactly as §6.8 says, the storefront's `Photo.tsx` only renders absolute URLs, **both sides' tests pass, and no menu photo has ever been visible to a guest**. Filed by S4 as contract request §9 and now the headline task of **S3-02**, together with calling `record_order_attempt` (S2 built the table in S2-03; nothing writes to it, so every funnel figure reads 0) and S7's security-headers finding. Payments UI is deliberately held back to S3-03 until S2-04 lands and a Stripe account exists.
 Issued **S6-01**, the first QA boot, aimed squarely at that class of bug: seams between sessions, independent re-verification of the load-bearing claims in this log rather than trust, the twelve product rules checked literally against the design, and a verdict with numbers on the `guest_realtime` flake that has now cost three unrelated PRs a re-run. S6 fixes nothing outside its own suite — a QA session that patches the code it tests stops being one.
+
+## 2026-09-28 — S2 Backend — S2-04
+
+All four S7-01 backend findings fixed. PR #41 → `main`. Migrations **25–26**. `backend` CI green.
+
+**Finding 1 (CRITICAL) — the payment trust boundary.** `place_order` believed whatever
+`payment_status` its caller sent, and `anon` is the caller on the guest site. So
+`rpc('place_order', { payment_method: 'card', payment_status: 'authorized' })` bought a free meal: a
+`payment_authorized` event nobody had authorized, auto-accept straight into the kitchen queue when
+under `auto_accept_paid_under_cents`, and `paid` the moment staff marked it delivered — Stripe never
+involved at any point. Live on staging since S2-01.
+
+It survived S2-01, S2-02 and two reviews for one reason worth naming: **a passing test asserted it
+worked.** `place_order.test.ts` "auto-accepts authorized orders under 50 €" was green on every run.
+A test that locks in a vulnerability is worse than no test, because it converts "nobody checked" into
+"somebody checked and it was fine". S7 found it by reading the trust boundary rather than the suite.
+
+Three things were each independently sufficient to cause it, so all three changed:
+- **A guest order is created `pending`, full stop.** Anything else is **refused**
+  (`problems: [{code: 'invalid_input', field: 'payment_status'}]`, nothing written) rather than
+  silently coerced — a coerced order would look to an attacker like it had worked and would leave no
+  trace; a rejected one is visible. A guest's `payment_ref` is dropped: unverified display text.
+- **`authorized` is reachable from exactly one place** — `record_payment_event`, behind the
+  signature-verified Stripe webhook. Not from any RPC, not for staff either. That word means "a
+  provider is holding money we can capture", and only the provider can say it.
+- **Completion is not evidence of payment.** `set_order_status`'s "v1 client-reported" branch marked
+  any non-cash order without a provider `paid` on delivered/picked_up. Fixing the first two points
+  would not have fixed this: today **no Stripe account exists**, so every card order on staging has
+  `payment_provider is null` and was completing as `paid` having never been charged. It now completes
+  with `payment_status` untouched plus an `order_events` note `code = 'payment_not_confirmed'` — the
+  same shape as the cash `cash_not_received` flag the back-office already renders.
+
+Staff keep one narrow power, because a phone order can genuinely be paid at the counter: `owner` /
+`operator` may pass `payment_status: 'paid'` and a `payment_ref`. Not `authorized`. Every such order
+writes an `order_events` `note` with `code = 'payment_recorded_by_staff'`, the method, the amount and
+`actor_id = auth.uid()`, so "this order started out paid" always has a name against it. Auto-accept
+now keys only off that, or off a real authorization arriving in the webhook.
+
+**Finding 2 — refunds could pay out twice.** `capture` and `void` always asked Stripe for the
+intent's live status first; `refund` had no equivalent, and `payment_jobs` re-claims after 10 minutes
+with a *new* idempotency key (`job:<id>:<attempt>`), which Stripe treats as a genuinely new request.
+Die between `refunds.create()` resolving and `finish_payment_job` committing and the customer is
+refunded twice. Two guards: an **attempt-stable** key (`refund:job:<id>` — Stripe replays the
+original response for 24 h, and this is the half that actually closes the race because it needs no
+state of ours), plus a pre-check listing the intent's refunds for `metadata.job_id`, which still
+works after the 24 h window has passed. The planner is a pure function, so
+`tests/refund_idempotency.test.ts` plays the crash-then-reclaim sequence exactly — no Stripe account,
+no network, no flakiness.
+
+**Findings 3/7 — `payment-worker` accepted the public anon key.** `verify_jwt = true` only proves
+*some* project JWT, and the anon key ships in the guest web bundle. Draining the queue now requires
+the service-role key or `x-worker-secret` — 32 bytes the DB generates and keeps in Vault
+(`payment_worker_secret()`, service_role only), which `run_payment_worker()` sends on every pg_cron
+POST. **`{"action":"install"}` is deliberately still anon-reachable**: `migrate-staging.yml` calls it
+that way, S1 owns workflows and has just hardened that file, so the token swap went to
+`boots/proposed/S2-04-S1-payment-worker-install-token.md` instead of a cross-session edit. Nothing
+breaks in the meantime and there is no window where anything is down — install now writes the
+**service-role** key into Vault, so cron stops presenting a public credential the first time the
+pipeline runs after this merges, and the install step was already non-fatal. When S1's one-line swap
+lands, install gets the same check and no path accepts a public key.
+
+**Findings 4/5 — the small ones.** `tracking_token` is compared in constant time via a shared
+`timingSafeEqual` (the webhook signature was already doing this; now there is one helper and no
+judgement call per call site). `search_path` pinned on the six `SECURITY INVOKER` functions, bodies
+otherwise byte-identical to what is on `main` — verified by diffing each against its original.
+
+**What S3 and S4 must do differently** (§5.3, §5.6, §2 and §6.8 updated — S0 please route):
+- **S3 (web):** sending `payment_status` other than `pending` is now an **error**, not advice. §5.6
+  already said not to, and the shipped checkout omits it, so the live site is unaffected — this makes
+  the contract enforced. `place_order` now always returns `status: 'new'` for a guest; the
+  `accepted` case moves to the webhook. Worth a glance at any code branching on that.
+- **S4 (back-office):** a delivered non-cash order now stays `pending` and carries a
+  `payment_not_confirmed` note. **While no Stripe account exists this is the state every card /
+  wallet / PayPal order ends in** — it wants surfacing like the existing cash flag, or the Bestellungen
+  board will look like everything is unpaid without explaining why. Also new:
+  `payment_recorded_by_staff` notes on phone orders, worth showing in the Verlauf.
+
+**Two tests rewritten, both for the same reason.** `place_order.test.ts` "auto-accepts authorized
+orders under 50 €" (S7 named this one) and `payment_jobs.test.ts` "non-Stripe orders keep the v1
+behaviour (delivered → paid)". Both asserted a half of finding 1. Neither was deleted — each now
+pins the refusal, with a comment saying what it used to assert and why that was wrong, so nobody
+"fixes" them back.
+
+**Also corrected:** the README migration table was stale from S2-03's renumber — rows 19–22 named
+files that no longer exist and S7's own 19/20 were missing entirely. Now 19–26 and accurate. My own
+S2-03 error; it would have sent the next reader to the wrong file.
+
+**Task 6 was already done.** S2-03 merged on 2026-09-27 with its migrations at 21–24 (D-014's rule,
+which S0 wrote in response to that very collision) and the `db lint` 42702 alias fix. This boot
+started from a clean `main`; migrations here are 25–26. Nothing to renumber.
+
+**Not done / left alone:** S7's task 6 (HTTP-layer tests for the `Deno.serve` handlers) is still open
+— it needs `supabase functions serve`, which needs Docker, which this machine does not have (colima
+wants `qemu`; not mine to install). Everything this boot added is testable without it: the refund
+planner and the caller check are pure functions with real tests, but the handler wiring around them
+is still only covered by reading. Worth a boot when someone has a Docker host, or an S6 QA pass
+against staging.
+
+**Blockers:** none. **No live payment has still ever run** — the owner's Stripe account is still the
+gate, and per S0 none should be connected until this merges. It now has.
