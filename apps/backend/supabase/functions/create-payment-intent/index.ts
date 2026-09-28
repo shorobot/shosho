@@ -11,6 +11,7 @@
 import Stripe from "npm:stripe@17";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, problem, CORS } from "../_shared/http.ts";
+import { timingSafeEqual } from "../_shared/secure-compare.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -54,7 +55,9 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (error) return problem("db_error", 500, { message: error.message });
   if (!order) return problem("order_not_found", 404);
-  if (!staff && (!body.tracking_token || body.tracking_token !== order.tracking_token)) return problem("forbidden", 403);
+  // The tracking token *is* the guest's capability for this order, so it is compared the same way
+  // the Stripe webhook signature is — constant time (S7-01 finding 4).
+  if (!staff && !timingSafeEqual(body.tracking_token, order.tracking_token)) return problem("forbidden", 403);
   if (!EDITABLE.has(order.status)) return problem("order_not_payable", 409, { status: order.status });
   if (order.payment_method === "cash") return problem("cash_order", 409);
   if (order.payment_status === "paid" || order.payment_status === "refunded") return problem("already_paid", 409);
