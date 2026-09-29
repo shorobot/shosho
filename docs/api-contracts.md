@@ -103,8 +103,8 @@ stays empty and the funnel's attempt figures read 0** — see §6.10.
 | Function | Caller | Contract |
 |---|---|---|
 | `quote_order(payload)` | anon (web) | input: items `[{item_id, qty, option_ids[]}]`, `type`, `postal_code?`, `promo_code?`, `scheduled_for?` → returns lines with snapshots, subtotal, discount, fee, total, zone, promised_minutes, problems `[{code, item_id?, reason?}]` (unavailable, invalid_options, below_min_order, out_of_zone, closed, promo_invalid, empty_cart, invalid_input). Pure, no writes. Full shape in §5.2. |
-| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token, status}` (status `accepted` when auto-accept applied). Accepts `payment_status` pending/authorized + `payment_ref` as reported by the client in v1; staff callers may set `channel` (phone). Payment authorization itself = S2-02 (Stripe). |
-| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions and role gates (kitchen: preparing/ready only; driver: delivered on own orders); writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush; `payload.note` also lands on the customer timeline. Returns the full updated `orders` row. **S2-02 payments** (same signature): Stripe orders enqueue `payment_jobs` — delivered/picked_up → `capture` (payment_status stays `authorized` until the webhook reports `paid`), cancelled → `void`, refunded → `refund` (`payload.amount_cents` = partial, absent = full); cash → `payload.cash_received` true → `paid`, false → stays `pending` + a `note` event; orders without a provider keep the v1 behaviour (completion → `paid`). |
+| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token, status}` (status `accepted` when auto-accept applied). **S2-04**: `payment_status` is not a client input — a guest order is always created `pending` and anything else is refused; `authorized` comes only from the Stripe webhook; staff (`owner`/`operator`) may record `paid` for a phone order, audited with an `order_events` note (`payment_recorded_by_staff`). A guest's `payment_ref` is discarded. Staff callers may set `channel` (phone). |
+| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions and role gates (kitchen: preparing/ready only; driver: delivered on own orders); writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush; `payload.note` also lands on the customer timeline. Returns the full updated `orders` row. **S2-02 payments** (same signature): Stripe orders enqueue `payment_jobs` — delivered/picked_up → `capture` (payment_status stays `authorized` until the webhook reports `paid`), cancelled → `void`, refunded → `refund` (`payload.amount_cents` = partial, absent = full); cash → `payload.cash_received` true → `paid`, false → stays `pending` + a `note` event. **S2-04**: an order with no payment provider no longer becomes `paid` on completion — completion is not evidence of payment. It completes, `payment_status` is untouched, and a `note` with `code = 'payment_not_confirmed'` flags the outstanding money. |
 | `get_order_by_token(token)` | anon | guest order tracking (status + ETA), no PII beyond what the guest entered. |
 | `kitchen_pause(paused bool)` | operator/owner | flips `settings.kitchen.paused`, event. |
 | `update_order_items(order_id, items)` — S2-02 | operator/owner | replaces the positions while status ∈ {new, accepted, preparing}, re-quotes server-side with the order's own type/zone/promo/slot/tip, marks changed rows `modified_by_operator`, writes `order_events(item_changed)` with the before/after diff. Full shape in §6.8. |
@@ -205,13 +205,33 @@ payload: quote payload + {
   courier_comment?: string,
   comment_flags?: ('leave_at_door' | 'dont_ring' | 'call_on_arrival' | 'no_wasabi')[],
   payment_method: 'card' | 'apple_pay' | 'google_pay' | 'paypal' | 'bitcoin' | 'cash',
-  payment_status?: 'pending' | 'authorized',   // v1: what the payment step reported; default 'pending'
-  payment_ref?: string,                        // e.g. "Visa ···4417"
+  payment_status?: 'pending',                  // S2-04: guests may only ever create `pending` —
+                                               // anything else is REFUSED (see below). Just omit it.
+  payment_ref?: string,                        // ignored for guests; staff-only (e.g. "Terminal ···9021")
   tip_cents?: number,
 }
 → { order_id: uuid, number: number, total_cents: number, tracking_token: string, status: 'new' | 'accepted' }
 ```
-Failure: PostgREST error with `message = 'order_rejected'` and `details` = JSON string of the same `problems[]` as the quote (parse it). Nothing is written in that case. On success the customer is upserted by phone, the order is `new` (or `accepted` when auto-accept applied: authorized/paid, ASAP, total < 50 €, kitchen not paused). Store `tracking_token` in local storage and route to the tracking page with it.
+Failure: PostgREST error with `message = 'order_rejected'` and `details` = JSON string of the same `problems[]` as the quote (parse it). Nothing is written in that case. On success the customer is upserted by phone and the order is `new`. Store `tracking_token` in local storage and route to the tracking page with it.
+
+**Payment state is not a client input (S2-04, S7-01 finding 1).** Until 2026-09-28 `place_order`
+believed whatever `payment_status` its caller sent, and `anon` is the caller on the guest site — so
+anyone could post `payment_status: 'authorized'` with a card method and get an order that was
+auto-accepted into the kitchen and marked `paid` on delivery, with Stripe never involved. The rule
+now:
+- **A guest order is created `pending`.** Sending any other `payment_status` is refused with
+  `problems: [{code: 'invalid_input', field: 'payment_status'}]` — the order is not created at all.
+  Sending `'pending'`, or omitting the key, is fine. A guest's `payment_ref` is discarded.
+- **`authorized` comes from one place only**: `record_payment_event`, fed by the signature-verified
+  Stripe webhook. No RPC can produce it.
+- **Staff callers** (`owner` / `operator`, i.e. a phone order) may pass `payment_status: 'paid'` to
+  record money already in hand — counter cash, a card terminal — and may set `payment_ref`. Not
+  `authorized`, for them either. Each such order writes an `order_events` `note` with
+  `code = 'payment_recorded_by_staff'` and `actor_id`, so "started out paid" always has a name
+  against it.
+- **Auto-accept** (ASAP, total < 50 €, kitchen not paused) therefore fires only for a staff-recorded
+  `paid` here, or in `record_payment_event` when a real authorization arrives — never off a guest
+  claim. A guest order always comes back `status: 'new'`.
 
 ### 5.4 `rpc('get_order_by_token', { token })` — tracking page (poll every ~15 s; guest realtime since S2-02 — §5.6)
 ```ts
@@ -242,9 +262,11 @@ order reaches `delivered` / `picked_up` ("Payment is captured on delivery confir
 implemented in v1 — hide it unless `settings.payments.enabled.methods` contains it.
 
 **Flow**
-1. `rpc('place_order', …)` as in §5.3 with the chosen `payment_method` and **`payment_status` left at
-   the default `pending`** (do not report `authorized` yourself any more — the webhook does it).
-   → `{order_id, tracking_token, …}`.
+1. `rpc('place_order', …)` as in §5.3 with the chosen `payment_method` and **no `payment_status`**.
+   Since S2-04 this is enforced, not merely advised: sending `authorized` (or `paid`) makes the call
+   fail with `order_rejected` / `invalid_input` on `payment_status` and creates nothing. The shipped
+   checkout already omits it, so nothing changes for a correct client.
+   → `{order_id, tracking_token, …}`, always `status: 'new'`.
 2. For every method except `cash`:
 ```ts
 const { data, error } = await supabase.functions.invoke('create-payment-intent', {
@@ -267,8 +289,8 @@ const { data, error } = await supabase.functions.invoke('create-payment-intent',
    by the `stripe-webhook` function, so the UI waits for `payment_status` to become `authorized`
    (typically < 2 s): poll `get_order_by_token` or subscribe per §3. `failed` means the card was
    declined — offer step 2 again (the same order, a new attempt on the same intent).
-   `status` may already be `accepted` when the authorization arrives (auto-accept: ASAP, total < 50 €,
-   kitchen not paused).
+   `status` may become `accepted` when the authorization arrives (auto-accept: ASAP, total < 50 €,
+   kitchen not paused) — that now happens in the webhook, never at `place_order` time.
 5. Never show a "paid" state before `payment_status = 'paid'`; that only happens after the operator
    confirms delivery and the capture succeeds.
 
@@ -336,6 +358,21 @@ cancel and re-order, or take the difference in cash). Below the authorization a 
 still in flight (a `payment_jobs` row with `action = 'capture'`); `payment_jobs.status = 'failed'`
 with `last_error` is the operator's signal that a capture / refund needs a human. Both
 `payment_events` and `payment_jobs` are readable by operator/owner (`select` only).
+
+**Unpaid completion (S2-04)** — a non-cash order that never went through a payment provider does
+**not** become `paid` when staff mark it delivered/picked_up. It completes with `payment_status`
+unchanged (normally `pending`) and an `order_events` `note` carrying
+`code = 'payment_not_confirmed'`, `payment_method`, `payment_status` and `amount_cents`. Surface it
+exactly like the cash flag below — it is the same "money still outstanding" signal, and while no
+Stripe account exists it is the state **every** card / wallet / PayPal order ends in. Before S2-04
+these silently read `paid` (S7-01 finding 1).
+
+**Payment recorded at order entry (S2-04)** — an `owner`/`operator` taking a phone order may pass
+`payment_status: 'paid'` to `place_order` for money already in hand (counter cash, card terminal).
+Those orders carry an `order_events` `note` with `code = 'payment_recorded_by_staff'`, the
+`payment_method`, `amount_cents` and the `actor_id` who recorded it — worth showing in the Verlauf,
+since it is the one way an order can start out paid. No client-side flow reaches it: the guest site
+cannot set `payment_status` at all.
 
 **Cash on delivery** — the driver (or the operator on their behalf) confirms:
 `rpc('set_order_status', { order_id, new_status: 'delivered', payload: { cash_received: true } })`

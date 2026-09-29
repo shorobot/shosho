@@ -60,22 +60,33 @@ describe("order_events payloads per type", () => {
     expect(firstOf(await events(id), "delivered").payload).toMatchObject({ cash_received: true });
   });
 
-  it("payment_authorized {payment_ref, amount_cents} (client-reported authorization)", async () => {
-    const id = await newOrder(ramenOrder({ payment_status: "authorized", payment_ref: "Visa ···4417" }));
-    const pa = firstOf(await events(id), "payment_authorized").payload;
-    expect(pa).toMatchObject({ payment_ref: "Visa ···4417", payment_method: "card" });
-    expect(pa.amount_cents).toEqual(expect.any(Number));
-    // no provider on the v1 client-reported path — stripped rather than written as null
-    expect(pa.provider).toBeUndefined();
+  // Was: "(client-reported authorization)" — a guest claiming `payment_status: 'authorized'`.
+  // S2-04 removed that path entirely (S7-01 finding 1): the only writer of a payment_authorized
+  // event is now the Stripe webhook, so that is what this asserts the payload of.
+  it("payment_authorized {payment_ref, provider, amount_cents} — written only by the webhook", async () => {
+    const { data: r } = await rpc(anon(), "place_order", { payload: ramenOrder() });
+    const { error } = await admin().rpc("record_payment_event", {
+      p_provider: "stripe",
+      p_event_id: `evt_payload_${r.order_id}`,
+      p_type: "payment_intent.amount_capturable_updated",
+      p_payload: { data: { object: { id: `pi_payload_${r.number}`, amount_capturable: 2700, metadata: { order_id: r.order_id } } } },
+      p_payment_ref: "Visa ···4417",
+      p_payment_method: "card",
+    });
+    expect(error).toBeNull();
+    const pa = firstOf(await events(r.order_id), "payment_authorized").payload;
+    expect(pa).toMatchObject({ payment_ref: "Visa ···4417", provider: "stripe", amount_cents: 2700 });
   });
 
   it("refunded {amount_cents}", async () => {
-    const id = await newOrder();
+    // refund needs a genuinely paid order; since S2-04 delivery alone does not pay one, so this
+    // goes through the cash confirmation that legitimately does.
+    const id = await newOrder(ramenOrder({ payment_method: "cash" }));
     await setStatus(operator, id, "accepted");
     await setStatus(kitchen, id, "preparing");
     await setStatus(kitchen, id, "ready");
     await setStatus(operator, id, "out_for_delivery", { driver_id: STAFF.driver.id });
-    const { data: delivered } = await setStatus(operator, id, "delivered");
+    const { data: delivered } = await setStatus(operator, id, "delivered", { cash_received: true });
     expect(delivered.payment_status).toBe("paid");
     await setStatus(operator, id, "refunded", { amount_cents: 500 });
     expect(firstOf(await events(id), "refunded").payload).toMatchObject({ amount_cents: 500 });

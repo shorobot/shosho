@@ -81,16 +81,25 @@ describe("set_order_status × Stripe (payment_jobs)", () => {
     expect(row!.payment_status).toBe("pending");
   });
 
-  it("non-Stripe orders keep the v1 behaviour (delivered → paid, cancelled → pending)", async () => {
+  // Was: "non-Stripe orders keep the v1 behaviour (delivered → paid, cancelled → pending)".
+  // That v1 behaviour was the second half of S7-01 finding 1 — a card order that never reached a
+  // payment provider became `paid` simply because staff marked it delivered. With no Stripe account
+  // on staging that is *every* card order. S2-04 removed it: completion is not evidence of payment.
+  it("a non-Stripe order completes without being marked paid, and says why", async () => {
     const o = await order();
     await setStatus(operator, o.id, "accepted");
     await setStatus(operator, o.id, "preparing");
     await setStatus(operator, o.id, "ready");
     await setStatus(operator, o.id, "out_for_delivery", { driver_id: STAFF.driver.id });
     const { data: d } = await setStatus(driver, o.id, "delivered");
-    expect(d.payment_status).toBe("paid");
-    expect(d.payment_captured_at).toBeTruthy();
-    expect(await jobs(o.id)).toEqual([]);
+    expect(d.status).toBe("delivered");
+    expect(d.payment_status, "no provider, no money — completion must not pay the order").toBe("pending");
+    expect(d.payment_captured_at).toBeNull();
+    expect(await jobs(o.id), "nothing to ask a provider to do").toEqual([]);
+
+    const { data: ev } = await admin().from("order_events")
+      .select("payload").eq("order_id", o.id).eq("type", "note");
+    expect(ev!.some((e) => (e.payload as { code?: string }).code === "payment_not_confirmed")).toBe(true);
   });
 
   it("cash: driver confirms cash_received → paid; without it → pending + note", async () => {
