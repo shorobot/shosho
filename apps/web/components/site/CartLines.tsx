@@ -1,4 +1,5 @@
 "use client";
+import { Photo } from "@/components/ui/Photo";
 import { QtyStepper } from "@/components/ui/QtyStepper";
 import { useCart, useCatalog, type CartLine } from "@/lib/cart";
 import { euro } from "@/lib/money";
@@ -31,7 +32,9 @@ export function CartLines({ compact = false }: { compact?: boolean }) {
             data-problem={problem ? "true" : undefined}
           >
             <div className="flex items-center gap-3">
-              <div className={`flex-none photo-sand ${thumb} ${i % 2 ? "photo-sky" : ""}`} aria-hidden />
+              <div className={`relative flex-none overflow-hidden ${thumb}`} aria-hidden={!item}>
+                {item ? <Photo item={item} index={i} sizes={compact ? "48px" : "58px"} /> : <div className={`h-full w-full photo-sand ${i % 2 ? "photo-sky" : ""}`} />}
+              </div>
               <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
                 <span className="text-[14px] font-extrabold leading-[1.2]">{item?.name_en ?? line.name}</span>
                 {line.options_label && <span className="truncate text-[12px] leading-[1.3] text-muted">{line.options_label}</span>}

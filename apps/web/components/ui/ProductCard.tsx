@@ -25,7 +25,7 @@ export function ProductCard({ item, disabled, index = 0 }: { item: MenuItem; dis
   return (
     <article className="flex flex-col gap-3 rounded-3xl bg-paper p-3.5 shadow-(--shadow-card) transition-micro hover:-translate-y-0.5">
       <Link href={href} className="relative block aspect-[4/3] overflow-hidden rounded-2xl bg-[#F7F3EF]" aria-label={item.name_en}>
-        <Photo item={item} index={index} />
+        <Photo item={item} index={index} sizes="(max-width: 768px) 50vw, 300px" priority={index < 4} />
         {badge && (
           <span className="absolute left-2.5 top-2.5 rounded-full bg-ink px-2.5 py-[5px] text-[10px] font-medium leading-[1.3] tracking-[0.08em] text-cream">{badge}</span>
         )}

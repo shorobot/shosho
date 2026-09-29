@@ -2,6 +2,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@shosho/backend/types/database";
 import { publicEnv } from "./env";
+import { PHOTO_BUCKET, resolvePhotos } from "./photos";
 import type { ShoshoApi } from "./api";
 import {
   OrderRejectedError,
@@ -96,6 +97,9 @@ export function createSupabaseApi(): ShoshoApi {
         if (items.error) throw items.error;
 
         const categories: MenuCategory[] = cats.data ?? [];
+        // Bucket paths → public URLs, once, here (lib/photos.ts): every surface downstream receives
+        // absolute URLs, so no component needs storage or env access. Synchronous, no network call.
+        const publicPhotoUrl = (key: string) => sb.storage.from(PHOTO_BUCKET).getPublicUrl(key).data.publicUrl || null;
         // The view types every column as nullable; on-sale rows always carry these.
         const menuItems: MenuItem[] = (items.data ?? []).flatMap((r) =>
           r.id && r.sku && r.category_id && r.name_en && r.name_de && r.base_price_cents != null
@@ -111,7 +115,7 @@ export function createSupabaseApi(): ShoshoApi {
                   description_de: r.description_de ?? null,
                   description_en: r.description_en ?? null,
                   base_price_cents: r.base_price_cents,
-                  photos: r.photos ?? [],
+                  photos: resolvePhotos(r.photos, publicPhotoUrl),
                   tags: r.tags ?? [],
                   prep_minutes: r.prep_minutes ?? null,
                   allergens: r.allergens ?? [],
