@@ -1,7 +1,7 @@
 // The single seam between the UI and the backend (api-contracts §5).
 // Implementations: lib/api-supabase.ts (real, default) and lib/api-mock.ts (in-memory seed data).
 // Switch with NEXT_PUBLIC_API=mock|supabase — see README "Mock layer".
-import type { Catalog, PlaceOrderPayload, PlaceOrderResult, Quote, QuotePayload, TrackedOrder } from "./types";
+import type { Catalog, OrderAttemptPayload, PlaceOrderPayload, PlaceOrderResult, Quote, QuotePayload, TrackedOrder } from "./types";
 
 export interface ShoshoApi {
   /** Menu + zones + public settings. Never throws: an unreachable backend yields `online: false`. */
@@ -12,6 +12,8 @@ export interface ShoshoApi {
   placeOrder(payload: PlaceOrderPayload): Promise<PlaceOrderResult>;
   /** `rpc('get_order_by_token')` — null for an unknown token. */
   getOrderByToken(token: string): Promise<TrackedOrder | null>;
+  /** `rpc('record_order_attempt')` — funnel telemetry (§1.7). Never throws: a lost row is not the guest's problem. */
+  recordOrderAttempt(payload: OrderAttemptPayload): Promise<void>;
 }
 
 export type ApiMode = "supabase" | "mock";

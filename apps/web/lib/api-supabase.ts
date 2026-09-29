@@ -11,6 +11,7 @@ import {
   type ItemOptionGroups,
   type MenuCategory,
   type MenuItem,
+  type OrderAttemptPayload,
   type PlaceOrderPayload,
   type PlaceOrderResult,
   type Problem,
@@ -190,6 +191,15 @@ export function createSupabaseApi(): ShoshoApi {
         throw new ApiError(error.message, error.code);
       }
       return data as unknown as PlaceOrderResult;
+    },
+
+    async recordOrderAttempt(payload: OrderAttemptPayload): Promise<void> {
+      const sb = get();
+      if (!sb) return;
+      // Funnel telemetry (§1.7): never allowed to affect the guest. A `rate_limited` answer means the
+      // limit did its job, so it is logged, not surfaced.
+      const { error } = await sb.rpc("record_order_attempt", { payload: payload as never });
+      if (error) console.warn("[shosho] order attempt not recorded:", error.message);
     },
 
     async getOrderByToken(token: string): Promise<TrackedOrder | null> {

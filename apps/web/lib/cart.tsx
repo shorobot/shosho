@@ -3,7 +3,8 @@
 // (debounced ~300 ms); the totals shown anywhere are the server's — nothing is priced here.
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { getApi } from "./api";
-import type { Catalog, MenuItem, OrderType, Quote, QuotePayload } from "./types";
+import { useAttemptReporting } from "./useAttemptReporting";
+import type { Catalog, MenuItem, OrderType, Problem, Quote, QuotePayload } from "./types";
 
 export type CartLine = {
   key: string;
@@ -121,6 +122,8 @@ type CartContextValue = {
   setSchedule: (iso: string | null) => void;
   setTip: (cents: number) => void;
   clear: () => void;
+  /** Record a refused `place_order` in the funnel (api-contracts §1.7) — checkout's call site. */
+  reportRejection: (problems: Problem[]) => void;
   /** transient "added" flash for the mobile bar / panel */
   lastAddedAt: number;
 };
@@ -202,6 +205,9 @@ export function CartProvider({ children, debounceMs = 300 }: { children: ReactNo
     return () => clearTimeout(t);
   }, [hydrated, runQuote, debounceMs]);
 
+  // Funnel: a blocking quote state is reported once per distinct state (lib/attempts.ts §1.7).
+  const reportRejection = useAttemptReporting(state, quote);
+
   const value = useMemo<CartContextValue>(
     () => ({
       state,
@@ -223,9 +229,10 @@ export function CartProvider({ children, debounceMs = 300 }: { children: ReactNo
       setSchedule: (iso) => dispatch({ type: "setSchedule", iso }),
       setTip: (cents) => dispatch({ type: "setTip", cents }),
       clear: () => dispatch({ type: "clear" }),
+      reportRejection,
       lastAddedAt,
     }),
-    [state, hydrated, quote, quoting, quoteError, runQuote, lastAddedAt],
+    [state, hydrated, quote, quoting, quoteError, runQuote, reportRejection, lastAddedAt],
   );
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
