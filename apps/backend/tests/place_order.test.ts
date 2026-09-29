@@ -114,14 +114,44 @@ describe("place_order", () => {
     );
   });
 
-  it("auto-accepts authorized orders under 50 € (ASAP only)", async () => {
-    const { data: r } = await rpc(anon(), "place_order", {
+  // Was: "auto-accepts authorized orders under 50 € (ASAP only)" — which asserted the S7-01 finding 1
+  // exploit was working. A guest could claim `payment_status: 'authorized'` and get a free meal:
+  // false payment_authorized event, auto-accept into the kitchen, `paid` on delivery, Stripe never
+  // involved. The test now pins the refusal. See migration 25.
+  it("refuses a guest-claimed payment_status; a guest order is always created pending", async () => {
+    const { data: r, error } = await rpc(anon(), "place_order", {
       payload: ramenOrder({ payment_status: "authorized", payment_ref: "Visa ···4417" }),
     });
-    expect(r.status).toBe("accepted");
-    const { data: ev } = await admin().from("order_events").select("type, actor_type").eq("order_id", r.order_id).order("at");
-    expect(ev!.map((e) => e.type)).toEqual(["created", "payment_authorized", "accepted"]);
-    expect(ev![2].actor_type).toBe("system");
+    expect(r, "the order must not be created at all").toBeNull();
+    expect(error!.message).toBe("order_rejected");
+    expect(JSON.parse(error!.details)).toContainEqual(
+      expect.objectContaining({ code: "invalid_input", field: "payment_status" }),
+    );
+
+    // `paid` is refused too — there is no self-service route to a paid order
+    const { error: paidErr } = await rpc(anon(), "place_order", {
+      payload: ramenOrder({ payment_status: "paid" }),
+    });
+    expect(paidErr!.message).toBe("order_rejected");
+
+    // the ordinary guest order still works and is pending, with no payment_authorized event
+    const { data: ok, error: okErr } = await rpc(anon(), "place_order", { payload: ramenOrder() });
+    expect(okErr).toBeNull();
+    expect(ok.status).toBe("new");
+    const { data: o } = await admin().from("orders")
+      .select("payment_status, payment_ref, payment_provider").eq("id", ok.order_id).single();
+    expect(o!.payment_status).toBe("pending");
+    const { data: ev } = await admin().from("order_events").select("type").eq("order_id", ok.order_id);
+    expect(ev!.map((e) => e.type)).toEqual(["created"]);
+  });
+
+  it("drops a guest-supplied payment_ref — it is an unverified display string", async () => {
+    const { data: r, error } = await rpc(anon(), "place_order", {
+      payload: ramenOrder({ payment_ref: "Visa ···4417" }),
+    });
+    expect(error).toBeNull();
+    const { data: o } = await admin().from("orders").select("payment_ref").eq("id", r.order_id).single();
+    expect(o!.payment_ref).toBeNull();
   });
 
   it("rejects when the kitchen is paused (ASAP), accepts pre-orders", async () => {

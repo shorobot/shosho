@@ -78,6 +78,9 @@ const SERVICE_ROLE_ONLY = new Set([
   "security_audit_function_grants",
   "security_audit_table_grants",
   "security_audit_policies",
+  // S2-04: the secret payment-worker presents to prove it is the cron and not a holder of the
+  // public anon key (finding 7). Readable by nobody else — that is the whole point of it.
+  "payment_worker_secret",
 ]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what

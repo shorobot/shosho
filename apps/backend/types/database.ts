@@ -1242,6 +1242,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      payment_worker_secret: { Args: never; Returns: string }
       place_order: { Args: { payload: Json }; Returns: Json }
       quote_order: { Args: { payload: Json }; Returns: Json }
       record_order_attempt: { Args: { payload: Json }; Returns: Json }
