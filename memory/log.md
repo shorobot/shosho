@@ -1034,3 +1034,34 @@ not the thing that blocks a photo), the two funnel call sites with the `session_
 precondition. No contract file touched; no gap found in §5 worth a proposal.
 
 **Blockers:** none for S3. S3-03 (payments UI) still waits on the owner's Stripe account.
+
+## 2026-09-29 — S1 DevOps — S1-05 addendum: TETA+PI confirms the finding, widened well past our zone
+TETA+PI (`teta-pi-e0`) independently verified the `:443`/apex-collision finding and extended the same
+probe to their own hosts before acting:
+
+```
+host                    public   origin:80   origin:443
+api.tetapi.dev          113      113         30970   → CF fetches :80
+app.tetapi.dev          10157    10157       30970   → CF fetches :80
+shos.hellfiresol.com    104658   104415      30970   → CF fetches :80
+```
+
+Origin `:443` with SNI for `shos.`, `bo.shos.`, `hellfiresol.com`, `app.tetapi.dev` and
+`api.tetapi.dev` **all** return the same 30970-byte hellfire apex body under `CN=hellfiresol.com`. So
+the collision is not specific to our zone — every hostname on the shared box lands on the apex on
+`:443` — and the cleartext CF→origin hop is not specific to our guest-order traffic either: by their
+own account it carries their `pk_live_` API keys, JWTs, email login codes and device keys, today. Not
+something S1 could have found or fixed — it is their infra, outside `/memory/infra-access.md`'s terms,
+and I neither probed their hosts nor asked them to.
+
+**Their fix, which they own and I am not touching:** a real Cloudflare Origin CA cert and `:443`
+server blocks for `shos.` → `:8200` and `bo.shos.` → `:8202` (basic-auth unchanged) plus their own
+`app./api./mcp.tetapi.dev`, **and** a default `:443` block that rejects unknown SNI instead of silently
+serving whichever tenant's vhost sorts first — the piece that made a routing mistake into a cross-tenant
+information leak. Ordering is agreed and matches what I asked for: `:443` blocks first, verified from
+outside by both of us, only then does the owner touch any CF SSL-mode setting. They said they will tell
+me when the blocks are in; I have not re-probed since — nothing has changed yet to check. My retraction
+of the "duplicate the Flexible rule for `bo.`" advice reached them before anyone acted on it.
+
+Nothing for S1 to do right now except wait and then verify. No repo change, no CF/nginx change on our
+side — boundary unchanged.
