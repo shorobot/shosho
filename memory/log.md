@@ -872,6 +872,47 @@ The owner asked for the four Cloudflare actions step by step, so S0 probed the o
 That makes S1-04's step 2 — "duplicate the 2026-09-26 Configuration Rule for `bo.`" — the wrong fix to reach for first. A rule of that kind pins the hostname to Flexible, i.e. Cloudflare fetches the origin over plain `:80` across the public internet, and on this hostname that traffic carries basic-auth credentials and staff passwords. The right fix is to have TETA+PI add `bo.shos.hellfiresol.com` to the origin's existing `:443` server block, as `shos.` already is, and leave the zone on Full. Recorded in state.md as superseding the earlier instruction; S1 owns the request. Flexible remains a fallback only if the origin genuinely cannot serve the name on :443, and would have to be removed before staff use it.
 Unchanged: the DNS record, Always Use HTTPS and Access are still the owner's, and the shared staff seed password must be rotated before the name resolves (S7-01 finding 2).
 
+## 2026-09-29 — S1 DevOps — S1-05 addendum: S0's "shos. already on :443" premise is wrong, checked byte-for-byte
+S0's message asked me to request TETA+PI mirror `bo.shos.hellfiresol.com` onto the origin's existing
+`:443` block "same as `shos.` already is." Before sending that request I probed the origin myself —
+the boot requires verifying a gate rather than trusting it, and this is the same discipline. Status
+codes agreed with S0's note; **response bodies did not**, so I went to MD5 rather than trust a 200.
+
+```
+origin :443, SNI=shos.hellfiresol.com    → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :443, SNI=bo.shos.hellfiresol.com → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :443, no SNI (bare IP)            → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :80,  Host=shos.hellfiresol.com   → SHOSHO site (matches public, different MD5 — CF edge rewrites)
+public https://shos.hellfiresol.com/     → SHOSHO site
+```
+
+All three `:443` responses are byte-identical to each other and to the bare-IP apex. **There is no
+`shos.` or `bo.` server block on origin `:443` at all** — only `hellfiresol.com`/`www.` (cert
+`CN=hellfiresol.com`, no other SANs). `shos.` was never "already on :443, reached over TLS" as
+recorded — the 200 there is the **wrong site**. Public `https://shos.hellfiresol.com/` works today only
+because Cloudflare is fetching our origin over **plain `:80`** — the zone (or a per-hostname rule) is
+Flexible for us, whatever label the dashboard shows. This has presumably been true since the
+2026-09-26 Configuration Rule and I did not catch it in S1-05's first pass.
+
+Two consequences, not one:
+1. **"Mirror what `shos.` has" has nothing to mirror.** `bo.` cannot be fixed by copying a working
+   `shos.` :443 vhost, because none exists.
+2. **The larger risk is the live guest site, not just `bo.` staying blocked.** If Full mode is switched
+   on for either hostname before a real `:443` vhost exists, Cloudflare starts fetching `:443` and gets
+   the apex — `https://shos.hellfiresol.com/` would start serving **HELLFIRE's marketing page** to
+   every guest, 200, no error, nothing to alert on. That is worse than the failure this thread started
+   out fixing.
+
+Also worth a note for whoever re-derives this: my `:443`/bo. reading (200, wrong site) differs from
+S0's (404). Possibly a probe-method difference (SNI vs none), possibly the picture changed in between —
+either way the conclusion is unaffected: neither hostname is safely servable on `:443` today.
+
+**Sent to TETA+PI (message, not a repo change):** add **both** `bo.shos.hellfiresol.com` and
+`shos.hellfiresol.com` to a real `:443` server block, before either hostname's SSL mode is touched. A
+Cloudflare Origin CA certificate is the natural fit — covers our subdomains, free, not coupled to the
+hellfire cert's renewal. Flagged to S0 rather than editing `state.md`'s "Origin facts" / "Corrected step
+2" prose myself — that is S0's section, not my row (D-002). I am not touching the CF side myself
+(boundary, this boot); waiting on TETA+PI to confirm the `:443` block exists before anything changes.
 ## 2026-09-29 — S0 Orchestrator — S2-05 issued (seed credentials)
 The owner asked for a micro-boot on the staff password rotation, so S0 established the surface first rather than handing S2 a one-line instruction: `shosho-test-2026` lives in `README.md:212`, `seed.sql:54,61`, `tests/helpers.ts:17` and as the fallback in `apps/backoffice/e2e/smoke.spec.ts:5`. Checked the assumption that mattered — `seed.sql` inserts the four `auth.users` rows `on conflict (id) do nothing`, so rotating today is **not** undone by the next `Migrate staging`; the real defect is that a fresh or reset cloud project is born with a password published on the internet. That puts the fix in the seed, not in a dashboard click, and S2-05 says so.
 Shape asked for: the seed always writes a random password on any project, local developers get their known login from a small script run after `db reset`, the README keeps the emails and roles but stops publishing a credential, and the two hardcoded consumers read env with the local default. Staging's four users are rotated to distinct strong values written to a gitignored file on the owner's machine — the report carries the path, never the values. S2 also writes a short note for S4 and S6, who sign in with these accounts, so neither discovers the change through a failed login.
