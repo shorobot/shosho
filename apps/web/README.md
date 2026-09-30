@@ -11,10 +11,14 @@ apps/web/
 ├── components/ui/          design system: Pill (the only button), CategoryChip, ProductCard, QtyStepper, Logo (+ 1.3 s animation), EmptyState, Decor
 ├── components/site/        Header, Footer (DE), CartPanel, CartLines/Totals, PromoField, StatusBanners, MobileBar, CookieBanner, Maintenance
 ├── components/home|product|checkout|order|legal
-├── lib/api.ts              the seam: ShoshoApi (getCatalog · quoteOrder · placeOrder · getOrderByToken)
+├── middleware.ts           security headers on every response (CSP with a nonce, HSTS, …) — see lib/csp.ts
+├── lib/api.ts              the seam: ShoshoApi (getCatalog · quoteOrder · placeOrder · getOrderByToken · recordOrderAttempt)
 ├── lib/api-supabase.ts     real implementation (default)
 ├── lib/api-mock.ts         in-memory seed + faithful quote/place/track (NEXT_PUBLIC_API=mock)
 ├── lib/cart.tsx            cart state (localStorage) + debounced quote_order — totals are always the server's
+├── lib/photos.ts           menu photos: bucket path → public URL (see "Photos" below)
+├── lib/attempts.ts         record_order_attempt: session id, dedupe, payload (see "Funnel" below)
+├── lib/csp.ts              the Content-Security-Policy and the other security headers
 ├── lib/hours.ts            opening hours → open/closed, next opening, pre-order slots (Europe/Berlin)
 ├── lib/types.ts            domain types derived from apps/backend/types/database.ts
 ├── tests/                  vitest (unit) · tests/integration (real Supabase) · e2e/ (Playwright, mock API)
@@ -77,9 +81,86 @@ If the project is unreachable, unconfigured, or the tables don't exist yet, `get
 - Payment: v1 has no provider — every method submits `payment_status: 'pending'`; "Payment is captured
   on delivery confirmation" is shown as in the design.
 
+## Photos
+
+`menu_items.photos` holds **bucket-qualified paths** — `menu/<item_id>/<n>.jpg`, which is what the
+back-office uploader writes (api-contracts §1.2, §6.8). Seed rows may instead hold an absolute URL.
+
+The pipeline is one hop, and it happens **once, in the data layer**:
+
+```
+menu_items.photos ──► lib/api-supabase.ts getCatalog()
+                         resolvePhotos(r.photos, key => sb.storage.from('menu').getPublicUrl(key))
+                      ──► MenuItem.photos: absolute URLs only
+                      ──► components/ui/Photo.tsx  <Image fill sizes … />
+```
+
+So every surface — product card, product page, "Goes well with", cart line — receives URLs and no
+component needs storage or env access. An item with no usable photo keeps the brand placeholder
+(stone + dot grid); that is deliberate, not a failure. `lib/photos.ts` also refuses anything malformed
+(`data:`, protocol-relative, traversal) rather than emitting a src that points somewhere else.
+
+Two things that made the old bug invisible and are worth remembering:
+
+- **`images.unoptimized` is on** (no `sharp` in a 96 MB container), so `next/image` emits the src
+  unchanged: `images.remotePatterns` is never consulted and cannot be what blocks a photo. It is
+  declared in `next.config.ts` anyway so the config is right if an optimizer ever becomes affordable.
+  `sizes` is likewise inert today and kept for the same reason. `priority` sets `fetchpriority="high"`.
+- **The rule that *can* silently block a remote photo is CSP `img-src`** — `lib/csp.ts`. It is derived
+  from the runtime Supabase URL, with a `*.supabase.co` fallback.
+
+Photos only ever reach the browser over https from the public `menu` bucket; nothing is proxied.
+
+## Funnel — `record_order_attempt`
+
+`order_attempts` and its RPC are S2-03's (api-contracts §1.7); the storefront is the only writer, so
+every attempt figure in the back-office Berichte screen read `0` until this shipped. Two call sites,
+one shared tracker (`lib/useAttemptReporting.ts`, mounted in `CartProvider`):
+
+| When | Where | Dedupe |
+|---|---|---|
+| `place_order` was refused (`OrderRejectedError`) | `components/checkout/CheckoutClient.tsx` → `cart.reportRejection(problems)` | none — always recorded |
+| the guest sits on a blocking `quote_order` state: out of zone, below the minimum, closed, item unavailable | `useAttemptReporting`, 1.5 s after the state settles | once per distinct problem state per visit |
+
+`place_order` cannot write the row itself: PostgREST runs one transaction per request and its rejection
+is a `raise`, so any row it inserted would roll back with it (§1.7). Hence the client call.
+
+**`session_hash`** is an opaque `crypto.randomUUID()` in **`sessionStorage`** — not a cookie, not
+`localStorage`, not a fingerprint, and never anything derived from the person. It dies with the tab and
+exists only so the DB can de-duplicate and rate-limit (20 rows per session per minute), which is why no
+consent banner is involved. Without storage (private mode) nothing is reported at all.
+
+**Only what §1.7 lists is ever sent**: type, session hash, postal code, subtotal, `{item_id, qty}` and
+the problem codes. No name, phone, email, street or comment — the table has a CHECK constraint that
+would reject them loudly, and `lib/attempts.ts` is written so the question never arises. Do not widen
+the payload without changing the contract first.
+
+## Security headers
+
+Set by `middleware.ts` on every response, so they no longer depend on Cloudflare defaults (S7-01
+finding 5). `lib/csp.ts` holds the policy and the reasoning; `tests/csp.test.tsx` locks it down.
+
+- **CSP is enforcing and nonce-based.** That is only safe because `app/layout.tsx` declares
+  `dynamic = "force-dynamic"`: every HTML response is rendered per request, so the nonce in the header
+  always matches the markup. **If a route is ever made static or ISR, its cached HTML will carry a
+  stale nonce and every script on it will be blocked.** Read `lib/csp.ts` before changing that.
+- `<PublicEnvScript />` is the one inline script this app writes; it reads the `x-nonce` request header.
+- `style-src` keeps `'unsafe-inline'` — React `style={{…}}` attributes need it. Scripts do not get it.
+- `connect-src` must keep the Supabase **wss:** origin or the tracking page's live updates die quietly
+  and it looks like a Supabase outage rather than a CSP block.
+- `Referrer-Policy` is `no-referrer` on `/order` and `/order/<token>` so the tracking token cannot ride
+  along in a `Referer` (S7-01 finding 8); everything else is `strict-origin-when-cross-origin`.
+
+Verify after a deploy:
+
+```bash
+curl -sI https://shos.hellfiresol.com/ | grep -iE 'content-security-policy|strict-transport|x-frame|x-content-type|referrer-policy|permissions-policy'
+```
+
 ## Tests
 
-- `pnpm test` — vitest (jsdom): mock quote semantics, cart reducer, hours/slots, slug, problem copy.
+- `pnpm test` — vitest (jsdom): mock quote semantics, cart reducer, hours/slots, slug, problem copy,
+  the photo URL resolver, the attempt-reporting trigger logic, and the security headers.
 - `pnpm test:integration` — the same contract through `lib/api-supabase.ts` against a running Supabase
   (`NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY` set; writes a test order — never against production).
 - `pnpm exec playwright install chromium && pnpm test:e2e` — smoke flow menu → product → checkout →

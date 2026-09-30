@@ -158,6 +158,26 @@ export type Problem = {
   promo_code?: string;
 };
 
+// ---- record_order_attempt (api-contracts §1.7)
+
+/** The only problem keys the RPC keeps — everything else is stripped server-side. */
+export type OrderAttemptProblem = Pick<Problem, "code" | "item_id" | "reason" | "field" | "promo_code">;
+
+/**
+ * One rejected or abandoned checkout. **PII-free by construction** — the table has a CHECK
+ * constraint and the RPC drops unknown keys, so nothing but these fields may ever be sent.
+ * `session_hash` is an opaque per-visit id (sessionStorage, not a cookie, not a fingerprint).
+ */
+export type OrderAttemptPayload = {
+  type: OrderType;
+  session_hash: string;
+  postal_code?: string;
+  subtotal_cents?: number;
+  items?: { item_id: string; qty: number }[];
+  problems?: OrderAttemptProblem[];
+  promo_code?: string;
+};
+
 export type QuoteLineOption = {
   group_id: string;
   group: string;

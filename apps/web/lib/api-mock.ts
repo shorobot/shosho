@@ -7,6 +7,7 @@ import { MOCK_CATEGORIES, MOCK_ITEMS, MOCK_ITEM_OPTION_GROUPS, MOCK_OPS, MOCK_PR
 import {
   OrderRejectedError,
   type Catalog,
+  type OrderAttemptPayload,
   type OrderStatus,
   type PlaceOrderPayload,
   type PlaceOrderResult,
@@ -18,6 +19,9 @@ import {
 } from "./types";
 
 type StoredOrder = TrackedOrder & { tracking_token: string; phone: string };
+
+/** Attempts recorded through the mock layer, newest last — the mock has no `order_attempts` table. */
+export const MOCK_ATTEMPTS: OrderAttemptPayload[] = [];
 
 const STORAGE_KEY = "shosho.mock.orders.v1";
 
@@ -254,6 +258,10 @@ export function createMockApi(opts: MockOptions = {}): ShoshoApi {
       saveOrders(getOrders());
       const result: PlaceOrderResult = { order_id: order.order_id, number, total_cents: order.total_cents, tracking_token: token, status: "new" };
       return result;
+    },
+    async recordOrderAttempt(payload: OrderAttemptPayload) {
+      // No table to write to — keep the last rows in memory so the mock can be inspected in a test.
+      MOCK_ATTEMPTS.push(payload);
     },
     async getOrderByToken(token) {
       const o = getOrders().find((x) => x.tracking_token === token);

@@ -7,8 +7,15 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: new URL("../../", import.meta.url).pathname,
   reactStrictMode: true,
   poweredByHeader: false,
-  // No image optimizer (sharp) in the 96 MB container; photos are placeholder art in v1 anyway.
-  images: { unoptimized: true },
+  // No image optimizer: sharp is not a dependency and the web container runs under a 96 MB limit on a
+  // 512 MB slice (D-004, D-013) — optimising uploaded photos there is not affordable. `unoptimized`
+  // means next/image emits the src unchanged, so `remotePatterns` is never consulted and cannot be
+  // what silently blocks a photo; it is declared anyway so the config is correct the day an optimizer
+  // becomes affordable. The rule that *can* block a remote photo is CSP `img-src` — see lib/csp.ts.
+  images: {
+    unoptimized: true,
+    remotePatterns: [{ protocol: "https", hostname: "**.supabase.co", pathname: "/storage/v1/object/public/**" }],
+  },
   typescript: { tsconfigPath: "./tsconfig.json" },
 };
 

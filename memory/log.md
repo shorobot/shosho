@@ -875,3 +875,121 @@ Unchanged: the DNS record, Always Use HTTPS and Access are still the owner's, an
 ## 2026-09-29 — S0 Orchestrator — S2-05 issued (seed credentials)
 The owner asked for a micro-boot on the staff password rotation, so S0 established the surface first rather than handing S2 a one-line instruction: `shosho-test-2026` lives in `README.md:212`, `seed.sql:54,61`, `tests/helpers.ts:17` and as the fallback in `apps/backoffice/e2e/smoke.spec.ts:5`. Checked the assumption that mattered — `seed.sql` inserts the four `auth.users` rows `on conflict (id) do nothing`, so rotating today is **not** undone by the next `Migrate staging`; the real defect is that a fresh or reset cloud project is born with a password published on the internet. That puts the fix in the seed, not in a dashboard click, and S2-05 says so.
 Shape asked for: the seed always writes a random password on any project, local developers get their known login from a small script run after `db reset`, the README keeps the emails and roles but stops publishing a credential, and the two hardcoded consumers read env with the local default. Staging's four users are rotated to distinct strong values written to a gitignored file on the owner's machine — the report carries the path, never the values. S2 also writes a short note for S4 and S6, who sign in with these accounts, so neither discovers the change through a failed login.
+## 2026-09-29 — S3 Frontend — S3-02
+
+**An uploaded menu photo is now visible on `https://shos.hellfiresol.com/`.** That box had been open
+since S4-02 and nobody could tick it. PR #44 (`s3-02`), four commits.
+
+**The photo bug, reproduced before it was fixed.** `menu_items.photos` has held bucket-qualified paths
+(`menu/<item_id>/<n>.jpg`) since S2-02/S4-02; `Photo.tsx` rendered an image only when `photos[0]`
+matched `/^https?:\/\//`, so every card fell back to the placeholder stone (S4 contract request §9).
+I did not take that on trust — I uploaded a photo to staging through the operator seed login (the boot
+authorised this; the back-office still has no public host), confirmed the object is public
+(`HTTP 200`, `image/png`, 20 158 bytes) and that `menu_items.photos` held `menu/<id>/1.png`, then
+counted the `<img>` elements the live site served: **zero**. Exactly S4's finding, still true.
+
+**The fix resolves in one place — the data layer, not the component.** `getCatalog()` maps `photos`
+through `supabase.storage.from('menu').getPublicUrl()`, so `MenuItem.photos` carries absolute URLs by
+the time any surface sees it: card, product page, "Goes well with", and cart-line thumbnails (which
+previously showed a decorative tint — they now show the real photo when the catalog knows the item).
+No component touches storage or env. `lib/photos.ts` keeps the absolute-URL branch for the seed and
+refuses malformed values (`data:`, `javascript:`, protocol-relative, traversal) rather than emitting a
+`src` that points somewhere else. Items with no photo keep the brand placeholder — unchanged, correct.
+
+**Three things about `next/image` worth writing down, because two of them are how this bug survived.**
+1. `images.unoptimized` is on (no `sharp` in a 96 MB container), and under it `next/image` emits the
+   `src` unchanged: **`remotePatterns` is never consulted**, so it was never what blocked the photo and
+   declaring it fixes nothing on its own. I declared it anyway so the config is right the day an
+   optimizer is affordable, and said so in the config. `sizes` is inert for the same reason and kept
+   for the same reason.
+2. The rule that **can** silently block a remote photo is CSP `img-src` — which this same boot added.
+   Had the headers landed without the storage origin, I would have shipped the identical symptom from
+   a new cause. They were built together and verified together.
+3. Next 15 does **not** derive `fetchpriority` from `priority`; `priority` only disables lazy loading
+   and asks React to preload (no preload link was actually emitted for these). The above-the-fold photo
+   now says `fetchpriority="high"` itself.
+
+**`record_order_attempt` — the funnel has data for the first time.** Two call sites sharing one tracker
+in `CartProvider`: a refused `place_order` (it rejects by raising, so a row it wrote itself would roll
+back — §1.7), and a guest sitting on a blocking `quote_order` state 1.5 s after it settles. Once per
+distinct problem state, never per keystroke: the effect keys on an order-independent signature of the
+problems, the tracker refuses a signature it has already sent, and that set is persisted in
+`sessionStorage` so a reload does not re-file. A rejection also marks its state seen, so the quote side
+cannot double-count it. `session_hash` is an opaque `crypto.randomUUID()` in `sessionStorage` — not a
+cookie, not `localStorage`, not a fingerprint; with storage unavailable nothing is reported at all.
+
+One judgement call worth flagging: **`out_of_zone` with `reason: postal_code_missing` is not reported.**
+It is not a refusal, it is a guest who has not typed a postal code yet, and recording it would file a
+row for every visit that ever opened the cart and drown the real signal.
+
+**Both call sites verified on staging, with rows an operator can read.**
+- Abandoned cart, postal `99999`: `{type: delivery, postal_code: 99999, zone_id: null,
+  subtotal_cents: 1490, items: [{item_id, qty: 1}], problems: [{code: out_of_zone}]}`.
+- A genuine mid-checkout race — cart filled and valid, then the item set `available = false` as the
+  operator, then Place order: `place_order` refused and the client filed
+  `problems: [{unavailable, item_id}, {empty_cart}, {below_min_order}]`, `zone_id` resolved,
+  `subtotal_cents: 2980`. That is the "sold out during checkout" state S4 could not render (contract
+  request 5). Availability restored to `true` afterwards.
+- No PII in either row — no name, phone or street, though all three were entered in the form.
+- `report_funnel` now reads `attempts: 2, attempts_with_problems: 2` instead of `0`.
+
+**For S2, not blocking:** with two attempts and four pre-existing orders `report_funnel` returned
+`attempts_to_placed_pct: 200.0`. The formula is fine, the window is not — `placed` counts a period the
+attempt rows did not exist for. It will look wrong to an operator for as long as the two series have
+different histories. S2's call whether that needs a floor or a note in the UI.
+
+**Security headers (S7-01 finding 5) — served by the app now, CSP enforcing.** `middleware.ts` sets all
+six on every response. What the live site served before came from Cloudflare defaults, including a
+**one-day** HSTS max-age; nothing in this repo set anything.
+
+The CSP is nonce-based and enforcing, **and that is only safe because `app/layout.tsx` declares
+`dynamic = "force-dynamic"`** — every HTML response is rendered per request, so the header's nonce
+always matches the markup. If any route is ever made static or ISR, its cached HTML will carry a stale
+nonce and every script on it will be blocked. That precondition is written at the top of `lib/csp.ts`
+and in the README, because it is the one way to break this badly and silently later. `next build`
+confirms every route is `ƒ (Dynamic)` today.
+
+`script-src` gets a nonce plus `'strict-dynamic'` and neither `'unsafe-inline'` nor `'unsafe-eval'`.
+`style-src` keeps `'unsafe-inline'` — React `style={{…}}` attributes need it and scripts do not get it.
+`font-src 'self'`: `next/font` self-hosts both faces at build time, so no Google host is allowed at all.
+`img-src`/`connect-src` carry the Supabase origin derived from the **runtime** `SUPABASE_URL` — I
+checked this rather than assuming, because `NEXT_PUBLIC_*` is inlined at build time and CI builds the
+image without the secrets; a `*.supabase.co` wildcard is the fallback so a missing env degrades to
+"any Supabase project" instead of a blank menu. `connect-src` keeps the `wss:` origin: S7's warning is
+right, a too-strict one kills guest tracking's live updates and reads as a Supabase outage.
+`<PublicEnvScript />` is the one inline script this app writes and now reads the `x-nonce` header.
+
+HSTS is one year with `includeSubDomains` and deliberately **no `preload`** — submitting the apex to
+the preload list is the owner's decision and is not quickly undone.
+
+**Tracking token (S7 finding 8):** `Referrer-Policy: no-referrer` on `/order` and `/order/<token>`,
+`strict-origin-when-cross-origin` elsewhere. Verified per route.
+
+**Verification, on a standalone build against the real staging Supabase project** (the container's own
+shape — `node .next/standalone/…/server.js` with runtime env, plus the `static`/`public` copy the
+Dockerfile does): all six headers on every route, the photo loads, the site renders and hydrates, 11
+Next chunks load under `'strict-dynamic'`, `window.__SHOSHO_ENV__` is populated (so the nonced inline
+script ran), and the browser reported **no CSP violation**. The photo fills its box exactly — 169×126
+in a 169×126 parent, no layout shift.
+
+**Tests:** 73 green. 13 for the photo resolver (bucket path, absolute URL, empty, malformed, encoding,
+and a check that our URL builder has not drifted from the SDK's `getPublicUrl`), 22 for the attempt
+trigger logic (fires once per state, order-independent, survives a reload, silent without storage,
+rejection always recorded), 20 for the headers and the `Photo` component. One note for whoever reads
+`tests/csp.test.tsx`: vitest does not read `next.config.ts`, so `images.unoptimized` is off there and
+`next/image` routes the src through `/_next/image` — the assertion is written to hold in both modes.
+
+**S2-04 compatibility:** checked after merging `origin/main`. The client already sends
+`payment_status: 'pending'`, which the new guard accepts; anything else is now refused. No change
+needed, and no payments UI in this boot.
+
+**Left on staging deliberately:** a test photo on `RL-014 Philadelphia Deluxe` (`menu/<id>/1.png`) so
+the post-deploy check has something to show. It is my generated placeholder art, not food — the owner
+should replace it with a real photograph through the back-office. Nothing else was left changed.
+
+**Docs:** `apps/web/README.md` gained three sections — the photo pipeline (and why `remotePatterns` is
+not the thing that blocks a photo), the two funnel call sites with the `session_hash` rules and the
+"do not widen this payload without changing the contract" line, and the headers with the force-dynamic
+precondition. No contract file touched; no gap found in §5 worth a proposal.
+
+**Blockers:** none for S3. S3-03 (payments UI) still waits on the owner's Stripe account.
