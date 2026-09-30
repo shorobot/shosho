@@ -102,6 +102,9 @@ export function CheckoutClient() {
     } catch (e) {
       if (e instanceof OrderRejectedError) {
         setRejected(e.problems);
+        // Funnel call site 1 (api-contracts §1.7): place_order rejects by raising, so the row cannot
+        // be written server-side — the client files it from the problems[] it just received.
+        cart.reportRejection(e.problems);
         void cart.requote();
       } else {
         setFailure(e instanceof Error ? e.message : "Something went wrong");
