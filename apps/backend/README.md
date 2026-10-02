@@ -226,12 +226,16 @@ anyone can find in this public repo.
   (`scripts/seed-local-logins.mjs` — it prints the value, and refuses to run against anything but a
   loopback Supabase URL). The test suite does this for you automatically: `pnpm test`'s `pretest`
   hook runs the same script before vitest starts, so no extra step is needed to run the suite.
-- **Staging**: passwords are unique per account and live only in `apps/backend/.staff-credentials.local`
-  on the owner's machine (gitignored, never committed). Ask the owner for the current values — do not
-  expect the old shared password to work, and never put a real value in chat, a commit, a log entry,
-  or this README. To rotate again, the owner runs `scripts/rotate-staging-passwords.mjs` (see its
-  header for the one-line recipe); it writes the new values to that same file and prints nothing
-  password-shaped.
+- **Staging**: this seed change does **not**, by itself, invalidate the password already on
+  `shosho-staging` — the `auth.users` insert is `on conflict (id) do nothing`, so a project that
+  already has these four rows (which `shosho-staging` has had since S2-01) keeps whatever password
+  they already had. **The former shared password is still a live, known-compromised credential on
+  staging until the owner rotates it.** To close that: the owner runs
+  `scripts/rotate-staging-passwords.mjs` (see its header for the one-line recipe) with the real
+  service-role key, which sets four fresh, distinct, random passwords and writes them to
+  `apps/backend/.staff-credentials.local` on their own machine (gitignored, never committed) —
+  rerunning it rotates again, overwriting that file. After rotation, ask the owner for the current
+  values; never put a real value in chat, a commit, a log entry, or this README.
 
 | Email | Role | Name |
 |---|---|---|
