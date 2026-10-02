@@ -11,6 +11,8 @@
     "db:push": "supabase db push --include-seed",
     "db:lint": "supabase db lint --level warning",
     "db:types": "supabase gen types typescript --local --schema public > types/database.ts",
+    "seed:local-logins": "node scripts/seed-local-logins.mjs",
+    "pretest": "node scripts/seed-local-logins.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
