@@ -25,6 +25,7 @@ pnpm install                                   # repo root
 cd apps/backend
 pnpm db:start                                  # supabase start → pulls images, applies migrations + seed
 pnpm db:reset                                  # drop & re-apply migrations + seed (use after editing SQL)
+pnpm seed:local-logins                         # optional — `pnpm test` already does this via `pretest`
 pnpm test                                      # vitest; keys are read from `supabase status` automatically
 pnpm db:types                                  # regenerate types/database.ts (commit it)
 pnpm db:lint                                   # plpgsql_check on all functions
@@ -34,8 +35,14 @@ pnpm db:stop
 `supabase status` prints the local URL, anon key and service-role key (Studio is disabled to save RAM —
 enable it in `config.toml` if you want the UI). The API is `http://127.0.0.1:54321`.
 
-Point tests at another project: set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-(see `.env.example`). The suite writes orders/customers — never run it against production.
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (see `.env.example`) override the
+values `supabase status` would otherwise supply, but **`pnpm test` only works against the local
+stack** since S2-05: its `pretest` hook (`scripts/seed-local-logins.mjs`) sets the suite's known
+password and refuses anything but a loopback URL on purpose — the whole point of this boot is that no
+known password may exist on a real project. Run `pnpm exec vitest run` directly (bypassing `pretest`)
+if you need to point the raw suite elsewhere, but the role-based sign-in tests will fail unless that
+project's staff accounts already have a known password set some other way. The suite writes
+orders/customers regardless — never run it against production.
 
 ## Migrations
 
@@ -209,7 +216,22 @@ back-office in api-contracts §6.8. Deleting an item does not remove its objects
 
 ## Test logins (seed)
 
-All four exist in `auth.users` + `public.staff` after seeding (local and staging). Password for all: **`shosho-test-2026`**.
+All four exist in `auth.users` + `public.staff` after seeding (local and staging), identified by
+email/role/name below — **not** by a shared password: since S2-05, `seed.sql` gives each one a
+random, immediately-discarded password, so a fresh or reset cloud project is never born with a login
+anyone can find in this public repo.
+
+- **Local development**: after `supabase db reset`, run `pnpm --filter @shosho/backend
+  seed:local-logins` to set the documented local-only password on all four accounts
+  (`scripts/seed-local-logins.mjs` — it prints the value, and refuses to run against anything but a
+  loopback Supabase URL). The test suite does this for you automatically: `pnpm test`'s `pretest`
+  hook runs the same script before vitest starts, so no extra step is needed to run the suite.
+- **Staging**: passwords are unique per account and live only in `apps/backend/.staff-credentials.local`
+  on the owner's machine (gitignored, never committed). Ask the owner for the current values — do not
+  expect the old shared password to work, and never put a real value in chat, a commit, a log entry,
+  or this README. To rotate again, the owner runs `scripts/rotate-staging-passwords.mjs` (see its
+  header for the one-line recipe); it writes the new values to that same file and prints nothing
+  password-shaped.
 
 | Email | Role | Name |
 |---|---|---|
@@ -218,7 +240,11 @@ All four exist in `auth.users` + `public.staff` after seeding (local and staging
 | `kitchen@shosho.test` | kitchen | Lena N. |
 | `driver@shosho.test` | driver | Jonas M. |
 
-Change the password before any real data enters staging (`supabase auth` → users) — these are test accounts.
+Rotating the staging passwords is permanent against this seed file: the `auth.users` insert is
+`on conflict (id) do nothing`, so a later `Migrate staging` (`db push --include-seed`) never
+overwrites a password already set. (`supabase db reset` locally is a full wipe, not a push, so a
+reset always starts the four accounts fresh — rerun `seed:local-logins` after one, or just run
+`pnpm test`, which does it for you.)
 
 ## Business rules implemented in the DB
 
