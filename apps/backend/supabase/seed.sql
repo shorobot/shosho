@@ -8,8 +8,9 @@
 --   owner@shosho.test / operator@shosho.test / kitchen@shosho.test / driver@shosho.test
 -- Local dev: run `pnpm --filter @shosho/backend seed:local-logins` after `db reset` to set the
 -- documented local-only password (apps/backend/scripts/seed-local-logins.mjs; also the test suite's
--- own `pretest` hook, so `pnpm test` needs no extra step). Staging: see apps/backend/README.md
--- "Test logins" — the current passwords live only in a gitignored file on the owner's machine.
+-- own `pretest` hook, so `pnpm test` needs no extra step). Staging: on-conflict-do-nothing means
+-- THIS CHANGE DOES NOT ROTATE an existing project's password — see apps/backend/README.md
+-- "Test logins" for the owner's one-command rotation and where the new values end up.
 
 begin;
 

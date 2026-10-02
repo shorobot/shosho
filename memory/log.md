@@ -1080,3 +1080,69 @@ Method note worth keeping: for a name-based vhost, a status code proves nothing.
 ## 2026-10-01 — S0 Orchestrator — struck a stale blocker before it cost the owner time
 Re-checked the whole open-items list before handing the owner a consolidated action plan, and found that the line still reading "CRITICAL, blocks any real payment — `place_order` trusts a client-supplied `payment_status`" had been fixed and merged in S2-04 (PR #41) days earlier; only the S2 row had been updated, because that row is S2's to edit and the open-items list is mine. Left as it was, it would have kept the owner from creating the Stripe test account for no reason. Struck, with the hold on connecting Stripe explicitly lifted.
 Infra state unchanged since 2026-09-30 and re-measured today: origin :443 still answers with HELLFIRE's page for SNI `shos.` (TETA+PI's vhost not yet in place, S1 owns the request), `bo.shos.hellfiresol.com` still does not resolve, and `apps/backend/README.md` still publishes the shared staff password (S2-05 issued, not yet run). So the ordering in the owner's plan is unchanged: origin :443 first, SSL mode second.
+
+## 2026-10-02 — S2 Backend — S2-05
+
+No known staff password may exist on a cloud project. PR #51 → `main`. One self-caught correction,
+PR #52 → `main`. `backend` CI green on both.
+
+**Shape chosen.** `seed.sql` now gives each staff account a random, immediately-discarded password
+instead of `shosho-test-2026` — `extensions.crypt(encode(extensions.gen_random_bytes(24), 'base64'),
+extensions.gen_salt('bf'))`, never stored anywhere, so nobody (including this session) knows it. The
+`auth.users` insert's `on conflict (id) do nothing` means this protects exactly the case that
+mattered — a fresh or reset cloud project — and never touches a project that already has these rows.
+Local development needed a known password back, so that convenience moved entirely out of SQL:
+`scripts/seed-local-logins.mjs` sets it via the Admin API, refuses anything but a loopback Supabase
+URL (no override — that is what `rotate-staging-passwords.mjs` is for), and is wired as the package's
+`pretest` hook. That means `pnpm test` needs no extra step and **no CI workflow file changed** — the
+boundary held cleanly because `pretest`/`test` is an npm-lifecycle pairing, not a workflow concept.
+Verified this actually works rather than assuming it: ran the hook's safety gate directly against a
+fake non-local URL (refused, exit 1) and against missing env vars (refused, exit 1) before relying on
+CI to prove the happy path — which it did, every role-based sign-in test across the whole suite
+passed with `pretest` setting the password immediately beforehand.
+
+**Staging rotation — written, not run.** `scripts/rotate-staging-passwords.mjs` generates four fresh,
+distinct, 160-bit random passwords and writes them to `apps/backend/.staff-credentials.local`
+(gitignored, mode 0600) — never to stdout, chat, a commit, or this log. I do not have the
+`shosho-staging` service-role key in this environment and did not ask for it; the script's own header
+is the owner's one-command recipe.
+
+**Un-publishing.** `README.md`'s "Test logins" section rewritten; `tests/helpers.ts` (`PASSWORD`) and
+`apps/backoffice/e2e/smoke.spec.ts` (`E2E_PASSWORD`, the one line task 4 allowed) now fall back to the
+same local-only value, overridable via env. Also corrected a note the "point tests at another
+project" paragraph used to make: `pretest`'s safety gate means that capability is local-only now, by
+design — the README says so instead of documenting a path that no longer works.
+
+**Confirmed, per task 6.** `git log -S"shosho-test-2026"` shows it in history since the very first
+commit (`9c791a1`, S2-01) on this public repo — the honest conclusion is that the value must be
+treated as compromised, which the rotation step already assumes. No attempt to rewrite history.
+`git grep` after the change: zero occurrences in any operative tracked file; it remains in
+`/memory/log.md` and the boot files as the historical record of the finding, which is correct and
+deliberate (D-002 — memory is never rewritten) rather than an oversight.
+
+**Self-caught correction worth describing plainly, not just noting happened.** The first version of
+`boots/proposed/S2-05-credentials-note.md` and a README paragraph both said, in effect, "the old
+shared password no longer works" — true of a *future* project, **false of `shosho-staging` itself**.
+`on conflict (id) do nothing` means PR #51 could not have touched the live project's existing rows, so
+`shosho-test-2026` was still a working credential on staging the moment that PR merged, and stays that
+way until the owner actually runs `rotate-staging-passwords.mjs`. I found this myself, re-reading what
+I had just shipped before closing out the boot, not from a review. Filed PR #52 same-day: both files
+now say plainly that the exposure is open, not closed, and name the one remaining action. Recording
+this not to pad the report but because a security fix whose own documentation overstates what it
+accomplished is a worse outcome than no documentation — it is exactly the "a test said it worked"
+failure mode from S2-04's finding 1, in a different shape.
+
+**What S4 and S6 must do differently** — `boots/proposed/S2-05-credentials-note.md` has the detail;
+headline version: local work needs one new command after `db reset`
+(`pnpm --filter @shosho/backend seed:local-logins`, or just run `pnpm test`, which does it
+automatically); staging work still needs the owner directly for current credentials, and must not
+assume the old password is gone without checking.
+
+**Blockers:** none for S2. **Open, owner-only, until acted on:** the staging rotation itself — run
+`apps/backend/scripts/rotate-staging-passwords.mjs` with the real service-role key. Until then
+`shosho-test-2026` remains a live, published, working credential on `shosho-staging`.
+
+**Boundaries:** no workflow file touched (`pretest` is a package.json lifecycle hook, not a workflow
+change); `apps/web` untouched; `apps/backoffice` touched only in the single permitted line;
+`/docs/security.md`, `/memory/decisions.md`, `/memory/sessions.md` untouched. No password value
+appears anywhere in this log entry, any commit, or the chat that produced this boot.
