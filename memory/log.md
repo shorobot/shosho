@@ -1146,3 +1146,30 @@ assume the old password is gone without checking.
 change); `apps/web` untouched; `apps/backoffice` touched only in the single permitted line;
 `/docs/security.md`, `/memory/decisions.md`, `/memory/sessions.md` untouched. No password value
 appears anywhere in this log entry, any commit, or the chat that produced this boot.
+
+## 2026-10-03 — S1 DevOps — S1-05 addendum: `:443` fix verified independently, confirmed to TETA+PI
+TETA+PI reported the `:443` blocks in (teta-pi/infra #134) and asked me to verify from outside before
+anyone touches the Cloudflare side — the same discipline this whole thread has run on. Did not take
+their own check at face value; ran a wider pass:
+
+```
+shos.hellfiresol.com    :443 → 200, 107204B, correct title, 0 occurrences of "HELLFIRE" in the body
+bo.shos.hellfiresol.com :443 → 401, nginx's own auth page (not hellfire, not the app) — still 401
+                                with wrong credentials supplied, so the gate actually checks, it is
+                                not a decoy that lets anything through
+cert (both hostnames)    CloudFlare Origin CA, SAN = shos.hellfiresol.com + bo.shos.hellfiresol.com
+                                only — the hellfire apex/www were not folded in, confirmed
+unknown SNI              TLS handshake rejected outright (`tlsv1 alert unrecognized name`) —
+                                `ssl_reject_handshake` live, not just configured. This was the piece
+                                that turned a routing mistake into a cross-tenant leak; checked it
+                                directly rather than trusting the description.
+hellfiresol.com apex     untouched: still CN=hellfiresol.com, SAN apex+www only, still 30970B
+:80 (both hostnames)     unchanged — shos 200, bo 401, no redirect added
+DNS (bo.shos.)           still empty, as expected — this fix doesn't touch resolution
+```
+
+Confirmed back to TETA+PI with the specifics above. **Nothing executed on the Cloudflare side by
+either of us yet** — by agreement, their turn now: `tetapi.dev` zone → Full (strict) is theirs alone;
+our zone keeps Full and the owner retires the 2026-09-26 Configuration Rule that forces `shos.*` to
+Flexible, which is the one change that actually closes our cleartext hop. I am not touching the CF
+side; will re-verify the same way, from outside, once it is flipped, before treating this closed.
