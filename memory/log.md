@@ -1173,3 +1173,8 @@ either of us yet** — by agreement, their turn now: `tetapi.dev` zone → Full 
 our zone keeps Full and the owner retires the 2026-09-26 Configuration Rule that forces `shos.*` to
 Flexible, which is the one change that actually closes our cleartext hop. I am not touching the CF
 side; will re-verify the same way, from outside, once it is flipped, before treating this closed.
+
+## 2026-10-04 — S0 Orchestrator — origin :443 verified a third time; the Cloudflare flip is unblocked
+S1 merged PR #53 and reported the origin fix verified beyond TETA+PI's own report. S0 re-measured rather than relaying it — this is the area where S0 was wrong once, which is a reason to check, not to skip. Every claim holds: SNI `shos.` → the real site; SNI `bo.` → nginx's 401; certificate SANs exactly our two names with hellfire's apex untouched; `:80` unchanged. The check that matters most is the one S1 added and TETA+PI had not made: an **unknown SNI is refused at the TLS handshake**, so there is no default server block left to fall into — the mechanism behind the original bug is gone rather than hidden.
+One apparent discrepancy was not one: S0's `grep -i hellfire` matched the page once, but the match is our own `siteUrl: https://shos.hellfiresol.com`. S1's "zero occurrences" is correct in substance.
+State.md's prohibition on touching the SSL mode is lifted and replaced with the precise action S1 identified: the cleartext hop now persists only because of the **Configuration Rule the owner added on 2026-09-26 pinning `shos.*` to Flexible**. Retiring that rule is the change — not the zone-wide flip to Full that S0 had described. The owner's step list is updated accordingly.
