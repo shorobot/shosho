@@ -1,7 +1,7 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-10-05 (S0 — `bo.shos.` cannot work on free Universal SSL: two-level subdomain; rename needed)
+Last update: 2026-10-05 (S0 — handoff snapshot; S0 boot written to boots/S0-00-orchestrator.md)
 
 ## Phase
 Phase 3 — hardening and integration. All four layers on staging; back-office waits only on the owner's DNS plus a password rotation. Running: S2-04 (CRITICAL payment trust boundary) ‖ S3-02 (photo blocker, funnel, headers) ‖ S6-01 (first e2e QA) ‖ S4-03 (back-office hardening + CRM). Queued: S3-03 payments UI (needs S2-04 + Stripe), S4-04, S2-05, S5-01 automation, S1-06 prod target.
@@ -39,6 +39,23 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/memory`: log, state, decisions (D-001…D-011), sessions, infra-access, boots/.
 - `/apps/backend` (S2-01): Supabase CLI project — 10 migrations, RPCs `quote_order`/`place_order`/`set_order_status`/`get_order_by_token`/`kitchen_pause`, RLS, seed (menu, zones, promos, 4 staff logins), `types/database.ts`, 21 vitest tests, `backend` CI job (supabase start → reset → lint → seed ×2 → tests → types diff). Applied to `shosho-staging`.
 - `/docs`: architecture.md, api-contracts.md (§1–4 implemented schema, §5 web contract by S2, §6 backoffice contract by S0), design/ (brandbook, canvas, README).
+
+## Owner's open actions (the only things no session can do)
+
+| # | Action | Status | Unblocks |
+|---|---|---|---|
+| 1 | `node apps/backend/scripts/rotate-staging-passwords.mjs` (needs `SUPABASE_SERVICE_ROLE_KEY` in env) — the four seed logins still share `shosho-test-2026`, which is in this public repo's history | **open** | handing the back-office to staff |
+| 2 | `gh secret set STRIPE_SECRET_KEY --env staging --repo shorobot/shosho` (`sk_test_…`) | **open** | S3-03, any live payment |
+| 3 | Stripe dashboard → Webhooks → add endpoint `https://bvmitglwwqsvufetlkff.supabase.co/functions/v1/stripe-webhook` with `payment_intent.amount_capturable_updated`, `.succeeded`, `.payment_failed`, `.canceled`, `charge.refunded` → `gh secret set STRIPE_WEBHOOK_SECRET --env staging --repo shorobot/shosho` | **open** | as above |
+| 4 | Rename the DNS record `bo.shos` → **`bo-shos`** (CNAME → `shos.hellfiresol.com`, proxied) — two-label names are not covered by Universal SSL | **open** | the back-office URL |
+| 5 | Cloudflare → SSL/TLS → Edge Certificates → **Always Use HTTPS** | after 4 | — |
+| 6 | Cloudflare Zero Trust → Access → self-hosted app for the new hostname, policy Allow → Emails (free ≤ 50 users) | after 5 | handing the back-office to staff |
+| 7 | Revoke the Supabase personal access token created 2026-09-20 (the 2026-09-26 one is in use) | open, low | — |
+| 8 | Replace the generated placeholder image on `RL-014 Philadelphia Deluxe` with a real photograph | open, cosmetic | — |
+
+Done and verified: the zone is already on **Full** and the origin serves our names on `:443`, so the Cloudflare↔origin hop is encrypted — the step once described as "switch to Full" needs no action.
+
+**Waiting on S1 → TETA+PI:** add `bo-shos.hellfiresol.com` to the origin vhost and reissue the Origin CA certificate (current SANs are `shos.` + `bo.shos.`). Without it the origin leg breaks the moment the edge leg starts working.
 
 ## Not yet done / open
 - **Owner**: Stripe account (Shosho Sushi GmbH, test mode) + `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in env `staging`, and the webhook endpoint in the Stripe dashboard (`…/functions/v1/stripe-webhook`, 5 events — `apps/backend/README.md`). Blocks the live payment walkthrough and S3-02.
