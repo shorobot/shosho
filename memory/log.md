@@ -1215,6 +1215,28 @@ SAN requested: `shos.hellfiresol.com` + `bo-shos.hellfiresol.com`.
 Same order as the `:443` fix: TETA+PI makes the change, I verify from outside independently before
 anything else moves. Nothing requested or changed on `shos.` — untouched by this.
 
+## 2026-10-05 — S1 DevOps — S1-05 addendum: TETA+PI accepted, boot issued (5.17); found their own :80 twin of #134
+TETA+PI accepted the `bo-shos.` request and issued their own boot (5.17): reissue the Origin CA cert
+for our zone with SAN `shos.hellfiresol.com` + `bo-shos.hellfiresol.com` (same private key, `bo.shos.`
+dropped as I asked), rename the vhost on both `:80` and `:443` to `bo-shos.`, same target
+`127.0.0.1:8202`, basic-auth unchanged. `shos.` is not touched.
+
+**They found something of their own in my report's margin, and it's the more useful half.** My
+`http://bo-shos....` → 200 landing on their API wasn't just "nothing claims this hostname yet" — they
+have **no `default_server` on `:80` at all**, so any unknown `Host:` header falls through to whichever
+vhost sorts first alphabetically (`api.tetapi.dev`). The `:80` twin of the exact bug #134 fixed on
+`:443`. Checked their claim myself rather than taking it on description — `curl -H 'Host:
+totally-unknown-probe.example' http://164.90.235.66/` → 200, their API body. Confirmed: anyone pointing
+DNS at that IP gets an answer under their name today. Folded into the same boot: a `return 444` default
+block, with care to leave hellfire's certbot ACME path on `:80` alone (their production renewal, not
+TETA+PI's to break).
+
+**Constraint on timing:** their Cloudflare API token expires 2026-10-10 — the cert reissue has to land
+inside that window. Nothing for S1 to do but wait; same protocol as #134/#53: they make the change,
+I verify from outside independently before anything else moves. They will ping when it's in.
+
+Quick check before writing this: `https://bo-shos....` still 525 (boot not applied yet, as expected).
+
 ## 2026-10-05 — S0 Orchestrator — the rename worked; the origin leg broke exactly as predicted, and a step on the owner's own list would now have caused a leak
 Resumed the role cold from `boots/S0-00-orchestrator.md` and re-measured the infra claims before touching anything, which is the only reason the rest of this entry exists.
 
@@ -1222,7 +1244,7 @@ Resumed the role cold from `boots/S0-00-orchestrator.md` and re-measured the inf
 
 **The predicted consequence arrived with it.** `https://bo-shos.hellfiresol.com/` returns **525**: origin `:443` with real SNI `bo-shos` is refused with `tlsv1 alert unrecognized name`, because the Origin CA certificate's SANs are still `bo.shos.` + `shos.` — the old name.
 
-**S1 got there independently while I was writing this, and the agreement is the useful part.** Their S1-05 addendum (merged as PR #57 mid-flight, which is why my own PR conflicted) measured the same chain from the origin side and reached the same conclusion on every point — including the `:80` default-vhost finding below, which neither of us predicted. Two independent measurements agreeing is the strongest evidence this project has produced about the origin, and I am recording it as settled rather than re-deriving it a third time. Their request to TETA+PI also improves on what I would have asked for: **drop the dead `bo.shos.` from the SAN** instead of carrying it alongside the new name — a smaller SAN for no loss. Accepted as issued. I therefore rewrote **S1-06** rather than issuing it as drafted: its task 1 is marked already done, and what remains is the outside verification plus the one finding S1 could not have had (below). Renumbered the prod-target proposal to `S1-07` so the number was free. Resolved the `memory/` conflict per D-009 — both log entries kept in time order, and S1's own row kept over mine with only the S0-owned fields (status, active boot) applied.
+**S1 got there independently while I was writing this, twice over, and the agreement is the useful part.** Their S1-05 addendum (merged as PR #57 mid-flight, which is why my own PR conflicted) measured the same chain from the origin side and reached the same conclusion on every point — including the `:80` default-vhost finding below, which neither of us predicted. Two independent measurements agreeing is the strongest evidence this project has produced about the origin, and I am recording it as settled rather than re-deriving it a third time. Their request to TETA+PI also improves on what I would have asked for: **drop the dead `bo.shos.` from the SAN** instead of carrying it alongside the new name — a smaller SAN for no loss. Accepted as issued. I therefore rewrote **S1-06** rather than issuing it as drafted: its task 1 is marked already done, and what remains is the outside verification plus the one finding S1 could not have had (below). Renumbered the prod-target proposal to `S1-07` so the number was free. Resolved the `memory/` conflict per D-009 — both log entries kept in time order, and S1's own row kept over mine with only the S0-owned fields (status, active boot) applied.
 
 **What neither of us predicted, and both of us found by measuring rather than reasoning.** Origin `:80` with `Host: bo-shos` returns `200 {"name":"TETA+PI API", … ,"mcp":"/mcp/sse"}` — byte-identical to `Host: nonexistent.invalid`. That is nginx's default `:80` server block, and on this host it is TETA+PI's own API. Our name has no `:80` vhost yet, so it lands there. Nothing of SHOSHO's is exposed: the direction is outward, their already-public API homepage answering under our name, no SHOSHO data and no back-office surface. S1-06 tells them anyway, because it is their surface and an unconfigured name reaching it is worth knowing.
 
@@ -1233,3 +1255,9 @@ Resumed the role cold from `boots/S0-00-orchestrator.md` and re-measured the inf
 **Re-verified absent, not assumed:** `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` — `gh secret list --env staging` holds the same 8 secrets as 2026-09-26 and no `STRIPE_*`, so owner actions 2 and 3 are genuinely still open. Repo-level secret list still empty, as S1-04 left it. The staging password rotation cannot be verified from here without the service-role key and is unchanged by anything in this entry: `shosho-test-2026` must still be treated as live and published.
 
 **Method note, since it earned its place twice now.** Every origin claim here used `curl --resolve <name>:443:164.90.235.66` and compared bodies, not status codes — and the `:80` finding came from comparing our hostname's body against a deliberately nonexistent `Host:`, which is what identified the default block rather than leaving it a guess.
+
+**Addendum, same day, after S1's second and third reports landed.** TETA+PI accepted the whole request and issued their own boot 5.17 — vhost renamed on both ports, Origin CA reissued as `shos.` + `bo-shos.` with the dead name dropped as S1 asked. Two things from that exchange are now in `state.md` and in S1-06, and neither came from me:
+- **A deadline.** TETA+PI's Cloudflare API token expires **2026-10-10**, so the certificate reissue has to land inside that window or the request needs re-sending against a new token. That is the only live risk on this item and the only reason to contact them again — S1-06 says so explicitly, so it is not mistaken for a licence to chase them for progress.
+- **The bigger finding, which was theirs, out of the margin of S1's report.** Our name reaching their API was not merely an unclaimed hostname: the origin has **no `default_server` on `:80` at all**, so any unknown `Host:` falls through to whichever vhost sorts first alphabetically. That is the `:80` twin of the `:443` bug PR #53 fixed. S1 confirmed it by probe rather than on description — an invented `Host:` against the bare IP returns their API — which means anyone pointing DNS at that address gets an answer under their name today. Their fix is a `return 444` default block. **It is their host-level issue on their own surface, owned by them**; I have recorded it because our hostname is what surfaced it, and added both the `444` check and a caution about hellfire's certbot ACME path on `:80` to S1-06's verification list, since S1 is the one with a harness already pointed at that origin.
+
+Worth stating plainly rather than leaving implicit: on this item S1 out-measured me on their own side of the boundary and routed a third party's security gap correctly without being asked (D-012). My contribution that they could not have had was the Cloudflare side — that the owner's own next step would have turned the harmless 525 into a live leak. Both halves were needed; neither session had the whole picture alone.
