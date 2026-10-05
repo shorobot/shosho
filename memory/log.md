@@ -1188,3 +1188,29 @@ Cheapest fix with no recurring cost: rename to a single label, `bo-shos.hellfire
 Wrote `/memory/boots/S0-00-orchestrator.md` so a cold session can resume this role: the first five minutes in order, what the role actually owns, and the lessons that cost something — chiefly that a status code proves nothing for a name-based vhost (use `--resolve` and compare body hashes), that a child's correction should be measured before it is agreed with, and that a stale open-item is as expensive as a wrong one.
 Added an **Owner's open actions** table to state.md: eight items, each with what it unblocks. Four matter: the staging password rotation (the seed credential is still live and is in this public repo's history), the two Stripe secrets, and renaming the back-office DNS record to a single label. The old "switch SSL to Full" step is retired — the zone is already on Full and the origin serves `:443`, so that hop is encrypted and needs nothing.
 Session state at handoff: S1, S2, S3, S7 idle with their last boots merged; S4-03 and S6-01 in flight; S5 never started. No open PRs. Eighteen proposals sit in `boots/proposed/` — the next boots to issue from them are S3-03 (payments UI, once the Stripe keys exist), S4-04, S2-06 (campaigns/CMS), S1-06 (prod target, after S7 signs off) and S5-01.
+
+## 2026-10-05 — S1 DevOps — S1-05 addendum: back-office renamed to `bo-shos.`, origin vhost requested
+S0 reported the two-label edge-cert gap and the owner's rename to `bo-shos.hellfiresol.com`. Checked
+independently before sending anything to TETA+PI, same discipline as the rest of this thread:
+
+```
+bo.shos.hellfiresol.com    DNS no longer resolves at all — old record gone, as expected
+bo-shos.hellfiresol.com    resolves via Cloudflare; edge TLS succeeds with the *.hellfiresol.com
+                            wildcard cert — confirms the edge half of S0's diagnosis
+  https://bo-shos....       Cloudflare 525 "SSL handshake failed" — the ORIGIN refuses the TLS
+                            handshake for this SNI. This is the unknown-SNI reject from PR #53/#134
+                            working as designed on a name the origin doesn't know yet, not a new bug.
+  http://bo-shos....         200, but body is {"name":"TETA+PI API",...} — lands on TETA+PI's own
+                            default vhost, not ours, because nothing on the origin claims this
+                            hostname on :80 either
+```
+
+Confirms the gap is exactly where S0 said: edge is fine, origin has no block for the new name on
+either port. Asked TETA+PI to add `bo-shos.hellfiresol.com` to the origin vhost (`:80` server_name and
+`:443` block, same target `127.0.0.1:8202`, basic-auth unchanged) and reissue the Origin CA cert.
+**Recommended dropping `bo.shos.` from the SAN** rather than keeping it alongside the new name — it is
+a dead record now, and a smaller SAN on a cert is strictly better than a larger one for no reason. New
+SAN requested: `shos.hellfiresol.com` + `bo-shos.hellfiresol.com`.
+
+Same order as the `:443` fix: TETA+PI makes the change, I verify from outside independently before
+anything else moves. Nothing requested or changed on `shos.` — untouched by this.
