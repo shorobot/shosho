@@ -1214,3 +1214,25 @@ SAN requested: `shos.hellfiresol.com` + `bo-shos.hellfiresol.com`.
 
 Same order as the `:443` fix: TETA+PI makes the change, I verify from outside independently before
 anything else moves. Nothing requested or changed on `shos.` — untouched by this.
+
+## 2026-10-05 — S1 DevOps — S1-05 addendum: TETA+PI accepted, boot issued (5.17); found their own :80 twin of #134
+TETA+PI accepted the `bo-shos.` request and issued their own boot (5.17): reissue the Origin CA cert
+for our zone with SAN `shos.hellfiresol.com` + `bo-shos.hellfiresol.com` (same private key, `bo.shos.`
+dropped as I asked), rename the vhost on both `:80` and `:443` to `bo-shos.`, same target
+`127.0.0.1:8202`, basic-auth unchanged. `shos.` is not touched.
+
+**They found something of their own in my report's margin, and it's the more useful half.** My
+`http://bo-shos....` → 200 landing on their API wasn't just "nothing claims this hostname yet" — they
+have **no `default_server` on `:80` at all**, so any unknown `Host:` header falls through to whichever
+vhost sorts first alphabetically (`api.tetapi.dev`). The `:80` twin of the exact bug #134 fixed on
+`:443`. Checked their claim myself rather than taking it on description — `curl -H 'Host:
+totally-unknown-probe.example' http://164.90.235.66/` → 200, their API body. Confirmed: anyone pointing
+DNS at that IP gets an answer under their name today. Folded into the same boot: a `return 444` default
+block, with care to leave hellfire's certbot ACME path on `:80` alone (their production renewal, not
+TETA+PI's to break).
+
+**Constraint on timing:** their Cloudflare API token expires 2026-10-10 — the cert reissue has to land
+inside that window. Nothing for S1 to do but wait; same protocol as #134/#53: they make the change,
+I verify from outside independently before anything else moves. They will ping when it's in.
+
+Quick check before writing this: `https://bo-shos....` still 525 (boot not applied yet, as expected).
