@@ -1261,3 +1261,41 @@ Resumed the role cold from `boots/S0-00-orchestrator.md` and re-measured the inf
 - **The bigger finding, which was theirs, out of the margin of S1's report.** Our name reaching their API was not merely an unclaimed hostname: the origin has **no `default_server` on `:80` at all**, so any unknown `Host:` falls through to whichever vhost sorts first alphabetically. That is the `:80` twin of the `:443` bug PR #53 fixed. S1 confirmed it by probe rather than on description — an invented `Host:` against the bare IP returns their API — which means anyone pointing DNS at that address gets an answer under their name today. Their fix is a `return 444` default block. **It is their host-level issue on their own surface, owned by them**; I have recorded it because our hostname is what surfaced it, and added both the `444` check and a caution about hellfire's certbot ACME path on `:80` to S1-06's verification list, since S1 is the one with a harness already pointed at that origin.
 
 Worth stating plainly rather than leaving implicit: on this item S1 out-measured me on their own side of the boundary and routed a third party's security gap correctly without being asked (D-012). My contribution that they could not have had was the Cloudflare side — that the owner's own next step would have turned the harmless 525 into a live leak. Both halves were needed; neither session had the whole picture alone.
+
+## 2026-10-05 — S1 DevOps — S1-06: TETA+PI's boot 5.17 verified live from outside; `bo-shos.` is up
+
+Resumed cold from this boot. Task 1 (the request) was already sent and accepted in the S1-05 addenda — nothing to re-send. Read S0's 2026-10-05 entries first, per the boot, and absorbed the one finding only they could have had: the struck Flexible-rule step, now removed from `state.md`'s owner-actions table before anyone could act on it. Then verified TETA+PI's change from outside, `--resolve` + body comparison throughout, never a bare-IP probe:
+
+```
+dig bo-shos.hellfiresol.com         → 104.21.25.237 / 172.67.168.47 (Cloudflare), unchanged
+https://bo-shos.hellfiresol.com/    → HTTP 401, WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"
+                                       (was 525 — the vhost now exists on the origin)
+origin :443, SNI bo-shos            → 401 nginx (was tlsv1 alert unrecognized name)
+origin :443, SNI bo-shos, bad creds → 401 nginx, unchanged — the gate checks, not decorates
+origin :80,  Host bo-shos           → 401 nginx (was 200 {"name":"TETA+PI API",...}) — the regression
+                                       to check for; gone
+origin cert SANs                    → DNS:bo-shos.hellfiresol.com, DNS:shos.hellfiresol.com
+                                       exactly as requested; dead bo.shos. is gone
+hellfire apex cert                  → DNS:hellfiresol.com, DNS:www.hellfiresol.com — untouched
+origin :80,  Host totally-unknown   → curl 52 "Empty reply from server" (nginx return 444; was 200,
+                                       their API body) — their own :80 default_server gap is closed
+origin :443, SNI unknown-probe      → tlsv1 unrecognized name — still refused at the handshake,
+                                       no default server block was reintroduced
+hellfire ACME path, named vhost     → 301 (their own redirect-to-https, pre-existing, unaffected —
+                                       requests to hellfiresol.com's own Host still reach their vhost,
+                                       not the default block)
+hellfire ACME path, unknown Host    → closed by 444, as expected — but this was never hellfire's real
+                                       flow: a genuine ACME HTTP-01 challenge arrives with Host set to
+                                       the domain being validated, which matches hellfire's named vhost
+                                       and never falls into the default block. Could not safely force a
+                                       real challenge to double-check end-to-end; this is as far as a
+                                       non-interfering probe can verify, and I'm saying so rather than
+                                       claiming more
+https://shos.hellfiresol.com/       → 200, only "hellfire" string in the body is our own siteUrl
+```
+
+Every regression this boot named to watch for is gone, and nothing new appeared. The back-office hostname's origin leg is fixed; the `:80` default_server gap TETA+PI found in their own surface is closed; `shos.` and hellfire's apex are untouched.
+
+**Still not telling anyone the URL.** The second precondition (S7-01, owner-only) is unchanged: all four seed logins still share `shosho-test-2026`, published in this repo's history, until `rotate-staging-passwords.mjs` runs with the real service-role key. Verified the gate is live (401 everywhere, bad creds still 401) and stopped there, per this boot's boundary.
+
+Nothing outstanding on this item. No workaround invented, none needed.
