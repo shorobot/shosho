@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { BoardHeader } from "@/components/orders/BoardHeader";
 import { DoneColumn, InProgressColumn, OnTheWayColumn, PreorderColumn, Section } from "@/components/orders/Columns";
 import { Filters } from "@/components/orders/Filters";
@@ -22,6 +23,13 @@ export function Board() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [phoneOpen, setPhoneOpen] = useState(false);
+  // The CRM profile's "Bestellung anlegen" arrives as /orders?phone=<customer id> and opens the
+  // phone-order dialog prefilled for that customer (components/crm/Profile.tsx).
+  const params = useSearchParams();
+  const phoneFor = params.get("phone");
+  useEffect(() => {
+    if (phoneFor) setPhoneOpen(true);
+  }, [phoneFor]);
 
   const filtered = useMemo(() => applyFilters(orders, query, filter), [orders, query, filter]);
   const g = useMemo(() => groupOrders(filtered, now), [filtered, now]);
@@ -121,7 +129,7 @@ export function Board() {
         </div>
       )}
 
-      <PhoneOrderDialog open={phoneOpen} onClose={() => setPhoneOpen(false)} />
+      <PhoneOrderDialog open={phoneOpen} onClose={() => setPhoneOpen(false)} customerId={phoneFor} />
       <Toasts />
     </div>
   );
