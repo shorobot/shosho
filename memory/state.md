@@ -1,7 +1,7 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-10-06 (S0 — back-office host RESOLVED; S4-03 issued and running; S2-06 issued in parallel; D-015 rules out client-side analytics)
+Last update: 2026-10-06 (S0 — back-office host RESOLVED; S4-03 ‖ S2-06 running; D-015 analytics, D-016 customer accounts; customer-accounts roadmap queued)
 
 ## Phase
 Phase 3 — hardening and integration. All four layers on staging. The back-office hostname now waits on one TETA+PI change (origin vhost + certificate) plus the staging password rotation. Running: S4-03 (back-office hardening + CRM) ‖ S2-06 (campaigns, banners, publish, funnel fix). **S6-01 deliberately held** until S4-03 merges — S4-03 is rewriting back-office login and headers, so QA now would land findings on code already being replaced. The back-office host is **done** (S1-06 merged, verified twice) — one owner action, the password rotation, stands between it and its first real user. Queued: S3-03 payments UI (needs the Stripe keys), S4-04, S2-06 campaigns/CMS, S5-01 automation, S1-07 prod target.
@@ -39,6 +39,16 @@ S1 → S2 → S3 → S4 → (S5 ‖ S6 ‖ S7)
 - `/memory`: log, state, decisions (D-001…D-011), sessions, infra-access, boots/.
 - `/apps/backend` (S2-01): Supabase CLI project — 10 migrations, RPCs `quote_order`/`place_order`/`set_order_status`/`get_order_by_token`/`kitchen_pause`, RLS, seed (menu, zones, promos, 4 staff logins), `types/database.ts`, 21 vitest tests, `backend` CI job (supabase start → reset → lint → seed ×2 → tests → types diff). Applied to `shosho-staging`.
 - `/docs`: architecture.md, api-contracts.md (§1–4 implemented schema, §5 web contract by S2, §6 backoffice contract by S0), design/ (brandbook, canvas, README).
+
+## Queued, decided, not started — customer accounts + push (D-016)
+The owner asked for customer login (OTP by SMS or email), a personal cabinet, and push across the customer base. **Queued deliberately, not started** — `boots/proposed/ROADMAP-customer-accounts-and-push.md` holds the phases, the dependency order and the measurements behind them. Not started because S4-03 is live in the customer/CRM surface and S2-06 is live in campaigns/consent right now; a third session in the customer domain is what D-003 exists to prevent. Written as one roadmap rather than six boots on purpose — a boot written weeks before it runs goes stale, which is the exact failure S0 spent 2026-10-06 repairing in S4-03 and S6-01.
+Five things S0 measured that shape it, kept here because they are the parts a future session would otherwise rediscover:
+- **It retires a documented product rule.** `docs/design/README.md` lines 26 and 48 say "guest checkout, no account". D-016 keeps guest checkout and makes accounts optional, but the rule list must change in the same boot or S6 will correctly report a violation.
+- **Push has no transport at all.** Zero occurrences of `push_subscriptions`, VAPID, service worker or any token store anywhere in the repo. S2-06's campaigns will be able to record intent with nowhere to send it. Consent (`consent_push`) and the `push_opened` event type have existed since S2-01 — only delivery is missing.
+- **The owner's "bell with new messages" is an in-app notification centre, not push** — DB rows + unread state + realtime. No permission prompt, no service worker, no PWA, works identically on iPhone. It is the reliable surface and can ship before any push exists; push is the nudge back to it.
+- **Native apps are planned**, which removes the iOS web-push limitation for the app audience and makes one thing urgent early: the push token store must be **channel-agnostic from its first migration** (web-push subscription | FCM | APNs behind one interface). Retrofitting that later is the expensive order.
+- **RLS is already safe against a second class of authenticated user, and this corrects S0's own first draft.** `auth_role()` is a *lookup* in `staff` by `auth.uid()`, so a customer account yields `null` and `is_staff()` is `false`; every `to authenticated` policy carries an explicit staff predicate; and the two functions granted to `authenticated` without one (`set_order_status`, `add_customer_event`) both guard internally and raise `42501`. So S2-07's job is to **preserve** that property, not repair it — but nothing currently tests it with a non-staff JWT, which is the regression test that matters.
+**Rate limiting is now blocking, not advisory.** The owner chose SMS OTP; unthrottled SMS is an open financial exposure (SMS pumping bills the owner at German rates, ~€0.03–0.09/message). The open S7-01 rate-limiting finding becomes a hard precondition of the phone channel, and S7-03 moves to the front of this roadmap.
 
 ## Owner's open actions (the only things no session can do)
 
