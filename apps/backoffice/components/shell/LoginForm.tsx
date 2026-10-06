@@ -7,6 +7,7 @@ import { LangToggle } from "@/components/shell/LangToggle";
 import { Logo } from "@/components/shell/Logo";
 import { Pill } from "@/components/ui/Pill";
 import { useT } from "@/lib/i18n";
+import { safeNextPath } from "@/lib/safeRedirect";
 
 export function LoginForm({ configured }: { configured: boolean }) {
   const t = useT();
@@ -49,8 +50,9 @@ function Form() {
       setBusy(false);
       return;
     }
+    // `?next=` is attacker-controllable, so it is validated, not trusted (lib/safeRedirect.ts).
     const next = new URLSearchParams(window.location.search).get("next");
-    router.replace(next && next.startsWith("/") ? next : "/");
+    router.replace(safeNextPath(next, window.location.origin));
     router.refresh();
   }
 
