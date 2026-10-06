@@ -60,6 +60,12 @@ const AUTHENTICATED_ONLY = new Set([
   "report_top_items",
   "report_funnel",
   "report_delivery_times",
+  // S2-06 §8 — campaigns/CMS. Each has its OWN inline guard narrower than reports_guard():
+  // resolve_segment and report_payments are owner/operator only (kitchen/driver get
+  // forbidden_for_role despite ACL execute); publish_site is owner only.
+  "resolve_segment",
+  "report_payments",
+  "publish_site",
 ]);
 
 // service_role only (Edge Functions, cron, one-time bootstrap) — never anon, never authenticated.
@@ -81,6 +87,12 @@ const SERVICE_ROLE_ONLY = new Set([
   // S2-04: the secret payment-worker presents to prove it is the cron and not a holder of the
   // public anon key (finding 7). Readable by nobody else — that is the whole point of it.
   "payment_worker_secret",
+  // S2-06 §8.3 — the exact "anon key, service-role authority" shape S7-01/S1 found wrong in
+  // payment-worker must not be reproduced here: unreachable with anon OR authenticated.
+  "claim_campaign_recipients",
+  // S2-06 §8.6 — bucket `site` installer, service_role only (same shape as ensure_menu_bucket_policies,
+  // but starting correct: revoked from anon AND authenticated directly, not just `public`).
+  "ensure_site_bucket_policies",
 ]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what
@@ -96,6 +108,9 @@ const TRIGGER_FUNCTIONS = new Set([
   "customers_consent_changed",
   "orders_broadcast_tracking",
   "payment_jobs_kick_worker",
+  // S2-06 §8.1 — the weekly-cap guard; cannot be invoked directly via RPC regardless of grants,
+  // same as every other trigger function here.
+  "campaign_recipients_enforce_weekly_cap",
 ]);
 
 async function functionGrants(): Promise<FnGrant[]> {
