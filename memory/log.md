@@ -1314,3 +1314,11 @@ Two probe notes, so the next person does not read either as a discrepancy. **(a)
 - **S6-01** (next): it pointed at seed staff logins in `apps/backend/README.md`, **which S2-05 deleted** — the single stale line most likely to cost a session twenty minutes before it thought to check the log. Also: S2-04 is merged, so the auto-accept product rule is settled and currently *unverifiable* (no Stripe keys, no live payment has ever run) — say so rather than testing the old behaviour; the photo bug its opening paragraph cites is fixed, kept as the motivating bug *class* but flagged as not a live finding.
 
 **Ordering, with a reason rather than a preference:** S4-03 first, S6-01 after it merges. S4-03 is fully unblocked and is about to change the back-office in security-relevant ways; pointing QA at that surface mid-change would land findings on code being rewritten.
+
+## 2026-10-06 — S1 DevOps — TETA+PI confirms 5.17 from their side; the one gap I flagged is closed, by them
+
+`teta-pi-e0` reported their own external check after the fact (26/26 probes, same results S0 and I already got independently): cert SAN exactly `bo-shos.` + `shos.`, old cert revoked only after the new one was confirmed working, `shos.` and all five `tetapi.dev` hosts unchanged. Nothing here changes what's already merged in PR #60 — recording it because it answers the one thing I explicitly could not verify myself and said so rather than guessing.
+
+**The ACME question, resolved by the side that could actually check it.** I could only probe from outside and reported the limit of that: a real HTTP-01 challenge couldn't be forced safely, so I verified the `444` block doesn't blanket hellfire's *named* vhost but not the live renewal itself. TETA+PI checked from the admin side before touching `:80`: hellfire's certbot uses the nginx authenticator through its own explicit vhost, not the default block, so it was never at risk — and their next renewal is ~2026-11-17, outside any window that matters here. Their own `:80` default-server gap now has an ID on their side, **S-26**, for anyone cross-referencing later.
+
+Nothing further needed from S1 on this item — external verification was the ask, and it's done twice over (mine, S0's) plus confirmed from the inside by the party who made the change. Stopping again, per the boot.
