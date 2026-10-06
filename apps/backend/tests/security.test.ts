@@ -261,15 +261,23 @@ describe("RLS sweep (live catalog: public, storage, realtime)", () => {
     expect(pol.qual ?? "").toMatch(/order:/);
   });
 
-  it("storage `menu` bucket policies: public read, staff-only write, exactly as documented", async () => {
+  // [S2-06] `storage.objects` is one table shared by every bucket — bucket `site`'s policies
+  // (migration 31) land in the exact same (schemaname, tablename) pair as `menu`'s, so this test
+  // now checks each bucket's four policies by NAME prefix rather than assuming there are only
+  // four policies on the table at all.
+  it("storage bucket policies: public read, staff-only write, for both `menu` and `site`", async () => {
     await admin().rpc("ensure_menu_bucket_policies");
-    const rows = (await policies()).filter((p) => p.schemaname === "storage" && p.tablename === "objects");
-    const byCmd = Object.fromEntries(rows.map((p) => [p.cmd, p]));
-    expect(rows.map((p) => p.cmd).sort()).toEqual(["DELETE", "INSERT", "SELECT", "UPDATE"]);
-    expect(byCmd.SELECT.roles).toEqual(expect.arrayContaining(["anon", "authenticated"]));
-    for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
-      expect(byCmd[cmd].roles, cmd).toEqual(["authenticated"]);
-      expect(byCmd[cmd].with_check ?? byCmd[cmd].qual ?? "").toMatch(/is_staff/);
+    await admin().rpc("ensure_site_bucket_policies");
+    const all = (await policies()).filter((p) => p.schemaname === "storage" && p.tablename === "objects");
+    for (const prefix of ["menu photos", "site assets"] as const) {
+      const rows = all.filter((p) => p.policyname.startsWith(prefix));
+      const byCmd = Object.fromEntries(rows.map((p) => [p.cmd, p]));
+      expect(rows.map((p) => p.cmd).sort(), prefix).toEqual(["DELETE", "INSERT", "SELECT", "UPDATE"]);
+      expect(byCmd.SELECT.roles, prefix).toEqual(expect.arrayContaining(["anon", "authenticated"]));
+      for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
+        expect(byCmd[cmd].roles, `${prefix} ${cmd}`).toEqual(["authenticated"]);
+        expect(byCmd[cmd].with_check ?? byCmd[cmd].qual ?? "", `${prefix} ${cmd}`).toMatch(/is_staff/);
+      }
     }
   });
 
