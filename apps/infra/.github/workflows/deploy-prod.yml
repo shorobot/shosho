@@ -27,6 +27,11 @@ jobs:
       remote_dir: /home/shosho/shosho/prod
       web_port: "8200"
       secret_prefix: PROD
-    # No secrets passed — see deploy-staging.yml's comment: _deploy.yml's `deploy` job declares
-    # `environment: production` on itself, so PROD_* resolves directly from that environment and
-    # nothing needs to cross the call. `secrets: inherit` was removed as unnecessary (S7-01 task 3).
+    # RESTORED by S0 2026-10-07 — see deploy-staging.yml's comment for the measurement. Short version:
+    # _deploy.yml reads these through a DYNAMIC index (`secrets[format('{0}_SSH_KEY', …)]`), and a
+    # called workflow's `secrets` context holds only what the caller passes, so a job-level
+    # `environment:` is not enough. Removing it broke the live staging deploy (run 37640250636, "SSH
+    # setup", key empty). Prod has no target yet, so this was never exercised here — restored anyway so
+    # the two callers cannot drift. Narrowing it properly needs named `secrets:` inputs in _deploy.yml
+    # (proposed/S1-explicit-secrets-map.md), not a second removal.
+    secrets: inherit

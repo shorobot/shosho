@@ -32,8 +32,13 @@ jobs:
       web_port: "8200"
       backoffice_port: "8202"
       secret_prefix: STAGING
-    # No secrets passed: _deploy.yml's `deploy` job declares `environment: staging` on itself, so
-    # GitHub resolves STAGING_* directly from that environment regardless of what this caller forwards
-    # (confirmed: a job-level `environment:` takes priority over anything passed from the caller).
-    # `secrets: inherit` therefore handed the callee the repo's entire secret set for no reason — S7-01
-    # task 3 flagged it; removed rather than replaced with a map, since nothing needs to cross the call.
+    # RESTORED by S0 2026-10-07 after it broke the live deploy. S1-07 removed `secrets: inherit` on
+    # the reasoning that a job-level `environment:` in _deploy.yml resolves STAGING_* on its own. That
+    # is true for a *static* `secrets.NAME` reference, but _deploy.yml reads these through a DYNAMIC
+    # index — `secrets[format('{0}_SSH_KEY', inputs.secret_prefix)]` — and in a called workflow the
+    # `secrets` context is populated only from what the caller passes. Measured, not argued: run
+    # 37640250636 failed at "SSH setup" with the key empty, caught by S1-04's own `[ -s ]` guard.
+    # Narrowing this properly means giving _deploy.yml named `secrets:` inputs instead of the dynamic
+    # prefix — a restructure, filed as proposed/S1-explicit-secrets-map.md. Do not remove this again
+    # without that restructure and a real `Deploy staging` run to prove it.
+    secrets: inherit
