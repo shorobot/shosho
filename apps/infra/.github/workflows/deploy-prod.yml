@@ -27,6 +27,6 @@ jobs:
       remote_dir: /home/shosho/shosho/prod
       web_port: "8200"
       secret_prefix: PROD
-    # No secrets passed — see deploy-staging.yml's comment: _deploy.yml's `deploy` job declares
-    # `environment: production` on itself, so PROD_* resolves directly from that environment and
-    # nothing needs to cross the call. `secrets: inherit` was removed as unnecessary (S7-01 task 3).
+    secrets: inherit
+    # secrets: inherit is REQUIRED here — see deploy-staging.yml's comment. Removing it (S1-07's first
+    # attempt at S7-01 task 3) broke the real `Deploy staging` run; restored 2026-10-07.

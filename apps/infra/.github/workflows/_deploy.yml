@@ -1,11 +1,12 @@
 # Reusable deploy: build images → push to GHCR → ssh to server → docker compose pull/up → health.
-# Called by deploy-staging.yml (env=staging) and deploy-prod.yml (env=production) — neither caller
-# passes secrets (no `secrets:` key, no `inherit`; S7-01 task 3 flagged `inherit` as unnecessarily
-# broad). Secrets are ENVIRONMENT secrets (repo is public): the `deploy` job below declares
-# `environment:` on itself and reads `<secret_prefix>_*` straight from it — e.g. STAGING_SSH_KEY lives
-# only in environment `staging`, which only `main` may deploy to — and a job-level `environment:`
-# resolves that environment's secrets directly, taking priority over anything a caller would forward.
-# Nothing sensitive at repo level.
+# Called by deploy-staging.yml (env=staging) and deploy-prod.yml (env=production) with `secrets:
+# inherit` — REQUIRED, confirmed by a real failed run (see deploy-staging.yml's comment): a called
+# job's own `environment:` declaration does not by itself populate secrets, even environment-scoped
+# ones with a matching name — GitHub's docs on this are easy to misread as saying otherwise, verify
+# against an actual run before changing it again. Secrets are ENVIRONMENT secrets (repo is public):
+# the `deploy` job below declares `environment:` and reads `<secret_prefix>_*` from it — e.g.
+# STAGING_SSH_KEY lives only in environment `staging`, which only `main` may deploy to. Nothing
+# sensitive at repo level.
 # Server side runs as an unprivileged co-tenant user with ROOTLESS docker (memory/infra-access.md):
 # no sudo, DOCKER_HOST points at the user's socket, everything lives under $HOME.
 name: _deploy
