@@ -230,8 +230,9 @@ realtime subscription for the timeline).
 - **Consents are written through**, never patched locally, so the `customers_consent_changed` trigger
   records who changed which channel and from what source.
 - **Unavailable actions are disabled with a reason.** "Push senden" / "Nachricht" have no messaging
-  channel (S5) and "Gutschein senden" has no voucher issuing (S2-06), so they render disabled with a
-  tooltip naming what is missing rather than as buttons that do nothing.
+  channel — per **D-016** customer messaging arrives with customer accounts (the notification bell
+  first, then push), not with S5 — and "Gutschein senden" has no voucher issuing until S2-06. Both
+  render disabled with a tooltip naming what is missing rather than as buttons that do nothing.
 - **Erasure is a request, not an act.** There is no server-side single-customer erasure — only the
   nightly 24-month job (§6.8). "Daten löschen" files an auditable `note`
   (`payload.kind = 'erasure_request'`) on the customer's own timeline for an operator to action by
