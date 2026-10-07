@@ -74,6 +74,12 @@ orders/customers regardless — never run it against production.
 | 24 | `…24_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
 | 25 | `…25_payment_trust_boundary.sql` | **S7-01 finding 1 (CRITICAL)** — `place_order` no longer trusts a client `payment_status` / `payment_ref`; staff-recorded `paid` is audited; `set_order_status` stops marking provider-less orders `paid` on completion |
 | 26 | `…26_search_path_and_worker_secret.sql` | `search_path` pinned on the six SECURITY INVOKER functions (finding 5); `payment_worker_secret()` + `run_payment_worker` sends it, so pg_cron can prove it is the cron (findings 3/7) |
+| 27 | `…27_campaigns.sql` | `campaigns`, `campaign_recipients` (unique `(campaign_id, customer_id)`) + the weekly-cap `before insert` trigger that sits on top of it |
+| 28 | `…28_automations.sql` | `automations` (seeded inactive for all four kinds), `automation_runs` audit trail |
+| 29 | `…29_segments_and_claim.sql` | `resolve_segment(segment, channel)` (owner/operator, consent + anonymisation enforced unconditionally); `claim_campaign_recipients(limit)` (service_role only, `for update skip locked` + stale-claim recovery, shaped like `claim_payment_jobs`) |
+| 30 | `…30_report_payments.sql` | `report_payments(from, to)` — per payment_method × payment_status; owner/operator only (narrower than the other four `report_*`), sourced from `orders` not `payment_jobs` so a cash refund is never missed |
+| 31 | `…31_banners.sql` | `banners` (owner/operator only, `draft jsonb`), `banners_live` view (the only anon-reachable surface), storage bucket `site` |
+| 32 | `…32_publish_and_funnel_fix.sql` | `settings.draft` + column-level `anon` grant narrowing, `site_publications`, `publish_site()` (owner only); `report_funnel` window fix (the "200 %" defect) |
 
 Adding a migration: `supabase migration new <slug>` → edit → `pnpm db:reset` → `pnpm db:types` → `pnpm test`.
 Never edit an applied migration file once it is on `main`; add a new one.
@@ -355,8 +361,8 @@ reconciles against the bank.
 |---|---|
 | **WARENKORB → BEZAHLT** | **Real** — `placed`, `paid`, `placed_to_paid_pct` come straight from `orders`. |
 | **ZUSATZVERKAUF** | **Real** — the option half of every completed line (`line_total − unit_price × qty`), per period in `report_funnel` and per day in `report_revenue_by_day`. |
-| **MENÜ → WARENKORB** | **Not computable. Deliberately absent.** It needs menu impressions / add-to-cart events and no table holds them. The `site_events` sketch in `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` is the route and needs an S0 decision (GDPR) first. No column fakes it. |
-| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholder data until S3 emits attempt rows.** The query is real; nothing calls `record_order_attempt` yet, so they read `0` / `null`. That means "nothing recorded", not "nothing happened" — the Berichte screen should label it that way. |
+| **MENÜ → WARENKORB** | **Not computable. Deliberately absent.** It needs menu impressions / add-to-cart events and no table holds them. `/memory/decisions.md` D-015 (2026-10-06) rules no client-side analytics (`site_events`) is built for v1 — a deliberate ruling, not an open question. No column fakes it. |
+| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholder data until S3 emits attempt rows**, and — since S2-06 — **windowed**: the ratio is computed only over `[attempts_window_from, attempts_window_to]`, the overlap between the requested range and the period `order_attempts` has actually existed for (it only exists from 2026-09-26). A range with no overlap at all returns `attempts`/`attempts_with_problems`/the ratio/both window columns as `null` together — "not yet measurable", never a plausible-looking wrong number (S3-02 found `200.0`, a window mismatch, not an arithmetic bug). A ratio **above 100 % over a fully-comparable window is not suppressed** — `order_attempts` records only rejected/abandoned checkouts, not total attempts, so it is not bounded by `placed`. |
 
 ## `order_attempts` — privacy rules
 
@@ -383,6 +389,73 @@ guests who never became customers, so it is PII-free **by construction**, not by
 - Append-only: no `updated_at`, no update trigger. There is no retention job yet — if S0 wants one,
   it is a one-line `pg_cron` delete of rows older than N days next to the anonymisation job.
 
+## Campaigns, automations, banners, site publish (S2-06)
+
+Tables, the segment resolver and a claim function only — **sending (push/email) and automation
+scheduling are S5's**, not built here. Full contract: api-contracts §8.
+
+- **`campaigns` / `campaign_recipients`** — owner/operator draft a campaign directly (no RPC
+  needed, same shape as `promo_codes`). `campaign_recipients` is staff **read-only**, written only
+  by whatever eventually runs on the service-role connection. The unique
+  `(campaign_id, customer_id)` constraint stops a customer appearing twice *in the same* campaign;
+  it says nothing about two *different* campaigns reaching them inside a week, which is what the
+  design's weekly cap actually means — that needs a `before insert` trigger
+  (`campaign_recipients_enforce_weekly_cap()`) that looks across campaigns, since a per-row CHECK or
+  a two-column UNIQUE index cannot. `failed` contacts are exempt — a bounced send doesn't spend the
+  week's slot.
+- **`resolve_segment(segment jsonb, channel campaign_channel)`** — owner/operator. Two required
+  arguments, not the one-argument shape an earlier sketch used: consent and
+  `anonymised_at is null` are checked **first and unconditionally**, keyed off `channel` (`email`
+  needs `consent_email`, `push` needs `consent_push`, `both` needs either) — not a `segment` key, so
+  no caller-supplied filter can bypass them. "A caller who forgets consent gets fewer rows, never
+  more." `segment` shape and every filter key: api-contracts §8.2.
+- **`claim_campaign_recipients(limit)`** — service_role only, unreachable with anon **or**
+  authenticated (the exact "anon key, service-role authority" shape S7-01/S1 found wrong in
+  `payment-worker`, deliberately not repeated here). Shaped like `claim_payment_jobs`: `for update
+  skip locked`, and a `claimed_at` timeout (10 min) recovers a claim a worker died holding —
+  `campaign_recipient_state` has no `processing` value the way `payment_jobs.status` does, so
+  `claimed_at` alone marks "in flight".
+- **`automations` / `automation_runs`** — one row per kind (`welcome`, `win_back_45d`, `birthday`,
+  `review_after_delivery`), seeded inactive. Owner/operator toggle/tune `automations` directly;
+  `automation_runs` is staff read-only, written by S5's runner.
+- **`report_payments(from, to)`** — owner/operator only, narrower than the other four `report_*`
+  (kitchen/driver get nothing here, unlike revenue/delivery-time figures they already see). Sourced
+  from `orders`, not `payment_jobs`/`payment_events` — a cash refund settles
+  `orders.payment_refunded_cents` directly and never creates a `payment_jobs` row, so sourcing from
+  the job queue alone would silently miss the one payment path actually exercisable on staging
+  today (no Stripe account exists). **Unexercised against real provider data** either way.
+- **`banners` / `banners_live` / bucket `site`** — `banners` is owner/operator only, including the
+  `anon` table grant being revoked outright (belt-and-braces, like `order_attempts`) because it
+  carries unpublished `draft` content. `banners_live` is the *only* anon-reachable surface:
+  `security_invoker = false` (same reasoning as `staff_directory`) with an explicit column list that
+  never selects `draft`. Bucket `site` is the exact policy shape as bucket `menu`.
+- **`settings.draft` / `publish_site()` / `site_publications`** — the smallest model giving the CMS
+  design's publish flow: `settings` and `banners` rows get a `draft jsonb` column; `publish_site()`
+  (owner only) copies every pending `settings.draft` into `value` (a full replacement) and merges
+  every pending `banners.draft` onto its row (a **partial patch** — an absent or JSON-`null` key
+  keeps the live value), clears both, and logs one `site_publications` row (staff read-only, same
+  shape as `payment_events`). **The column-level pitfall this boot named explicitly**: RLS is
+  row-level, so a plain `draft` column on `settings` would, with no further change, hand `anon`
+  every pending edit on the public keys it can already read the *row* for — `select *` doesn't know
+  which columns were "meant" to stay private. The fix is a **column-level `GRANT`**: `anon`'s
+  blanket table grant is revoked and re-granted for exactly `(key, value, created_at, updated_at)` —
+  `draft` is pointedly absent. `banners.draft` needs no such narrowing: the base table has no `anon`
+  policy or grant at all, so there is nothing on it for `anon` to reach regardless of column.
+- **`report_funnel` window fix** — `order_attempts` only exists from 2026-09-26; a requested range
+  reaching earlier was counting pre-recording `orders` rows as "placed" against an attempts count
+  that could not exist yet (S3-02 found `attempts_to_placed_pct: 200.0`). `attempts`,
+  `attempts_with_problems` and the ratio are now computed only over `[attempts_window_from,
+  attempts_window_to]` — the overlap between the request and the period recording has actually
+  existed for — reported back explicitly; all four come back `null` together when there is no
+  overlap at all. `placed`/`paid`/`cancelled`/upsell are untouched. See "Reports (Berichte)" above
+  for what this means for the funnel screen.
+
+Deleted in this boot's PR, fully implemented: `/memory/boots/proposed/S2-03-reports-campaigns-cms.md`
+§2 and §3 (§1 — the four original `report_*` — was already shipped in S2-03). Two small leftover
+items from that file's §4 with no other home, carried into the S2-06 log entry rather than a new
+proposal file: the push/email provider decision campaigns need before S5 can send anything, and a
+private `receipts` storage bucket for invoice PDFs, "when S5 Accounting needs it."
+
 ## RLS in one table
 
 | Table | anon | kitchen | driver | operator | owner |
@@ -398,25 +471,35 @@ guests who never became customers, so it is PII-free **by construction**, not by
 | `promo_codes` | — (validated in RPC) | — | — | all | all |
 | `customer_events`, `payment_events`, `payment_jobs` | — | — | — | read | read |
 | `order_attempts` | — (RPC insert only)⁴ | — | — | read | read |
-| `storage.objects` in bucket `menu` | read | read | read | all | all |
+| `campaigns`, `automations` | — | — | — | all | all |
+| `campaign_recipients`, `automation_runs` | — | — | — | read | read |
+| `banners` | — (base table, belt-and-braces⁵) | — | — | all | all |
+| view `banners_live` | read | read | read | read | read |
+| `site_publications` | — | — | — | read | read |
+| `storage.objects` in bucket `menu`, `site` | read | read | read | all | all |
 
 ¹ `business`, `opening_hours`, `site`, `payments.enabled`, `kitchen.status` (`settings_public_keys()`). `service_role` bypasses RLS.
 ² `settings_staff_keys()` = the public set **plus `ops`**, for every authenticated staff role (S2-03, §6.9 row 1).
 ³ `id, name, role, active` — explicit column list, so `staff.phone` and anything added to `staff` later stay behind the base table's owner/operator policy. Empty for `anon` and non-staff sessions.
 ⁴ `anon`'s table grant is revoked entirely and there is no insert policy: `record_order_attempt()` is the only writer.
+⁵ Same belt-and-braces shape as `order_attempts`: `banners` carries unpublished `draft` content, so `anon`'s table grant is revoked outright rather than relying only on RLS returning zero rows. `settings.draft` is narrower still — a **column-level** grant (§"Settings key sets" below), since `settings` itself stays `anon`-readable for its public keys.
 RPC execute grants: `quote_order`, `place_order`, `get_order_by_token` → anon + authenticated;
 `set_order_status`, `kitchen_pause`, `update_order_items`, `add_customer_event`,
 `anonymise_silent_customers` → authenticated only (role checked inside, `anon` revoked in migration 18);
 `record_order_attempt` → anon + authenticated (§1.7); the four `report_*` functions and `reports_guard`
-→ authenticated only (any active staff role, `anon` revoked);
+→ authenticated only (any active staff role, `anon` revoked); `resolve_segment`, `report_payments`
+→ authenticated only but **owner/operator-only inside** (kitchen/driver get `forbidden_for_role`
+despite having ACL execute — §"Campaigns, automations, banners, site publish" below);
+`publish_site` → authenticated only, **owner-only inside**.
 `record_payment_event`, `enqueue_payment_job`, `claim_payment_jobs`, `finish_payment_job`,
-`run_payment_worker`, `schedule_payment_worker`, the two `ensure_*` installers and
-`is_service_request` → `service_role` only. Supabase's default privileges grant EXECUTE on every new
-`public` function to `anon` and `authenticated`, so a new staff-only function needs an explicit
-`revoke … from anon` — not just `revoke … from public`.
+`run_payment_worker`, `schedule_payment_worker`, the two `ensure_*` installers (`menu` and `site`) and
+`is_service_request` → `service_role` only — joined by `claim_campaign_recipients`, unreachable with
+anon **or** authenticated (the exact shape S7-01/S1 found wrong in `payment-worker`). Supabase's
+default privileges grant EXECUTE on every new `public` function to `anon` and `authenticated`, so a
+new staff-only function needs an explicit `revoke … from anon` — not just `revoke … from public`.
 
 ## CI
 
 `.github/workflows/ci.yml` job `backend`: `supabase start` → `db reset` → `db lint` → seed applied a second
-time (idempotency) → typecheck → vitest (~90 tests) → `gen types` must equal the committed `types/database.ts`.
+time (idempotency) → typecheck → vitest (~110 tests) → `gen types` must equal the committed `types/database.ts`.
 The generated file is also uploaded as the `backend-types` artifact.
