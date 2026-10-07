@@ -25,6 +25,7 @@ pnpm install                                   # repo root
 cd apps/backend
 pnpm db:start                                  # supabase start → pulls images, applies migrations + seed
 pnpm db:reset                                  # drop & re-apply migrations + seed (use after editing SQL)
+pnpm seed:local-logins                         # optional — `pnpm test` already does this via `pretest`
 pnpm test                                      # vitest; keys are read from `supabase status` automatically
 pnpm db:types                                  # regenerate types/database.ts (commit it)
 pnpm db:lint                                   # plpgsql_check on all functions
@@ -34,8 +35,14 @@ pnpm db:stop
 `supabase status` prints the local URL, anon key and service-role key (Studio is disabled to save RAM —
 enable it in `config.toml` if you want the UI). The API is `http://127.0.0.1:54321`.
 
-Point tests at another project: set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
-(see `.env.example`). The suite writes orders/customers — never run it against production.
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (see `.env.example`) override the
+values `supabase status` would otherwise supply, but **`pnpm test` only works against the local
+stack** since S2-05: its `pretest` hook (`scripts/seed-local-logins.mjs`) sets the suite's known
+password and refuses anything but a loopback URL on purpose — the whole point of this boot is that no
+known password may exist on a real project. Run `pnpm exec vitest run` directly (bypassing `pretest`)
+if you need to point the raw suite elsewhere, but the role-based sign-in tests will fail unless that
+project's staff accounts already have a known password set some other way. The suite writes
+orders/customers regardless — never run it against production.
 
 ## Migrations
 
@@ -59,10 +66,20 @@ Point tests at another project: set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABA
 | 16 | `…16_guest_realtime.sql` | guest tracking broadcast to `order:<tracking_token>` + `ensure_guest_realtime_policy()` |
 | 17 | `…17_anonymise_and_schedules.sql` | `anonymise_silent_customers(months)`, `is_service_request()`, `run_payment_worker()` (pg_net + Vault), `schedule_payment_worker()`, pg_cron schedules |
 | 18 | `…18_grants_hardening.sql` | revokes the `anon` / `authenticated` EXECUTE that Supabase's default privileges hand to every new `public` function (staff- and service-only RPCs) |
-| 19 | `…19_role_access.sql` | `settings_staff_keys()` (public set + `ops`) + policy `settings_staff_common_read`; view `staff_directory`; `settings['kitchen.status'].capacity`; `kitchen_pause()` NULL-role fix + merge instead of replace |
-| 20 | `…20_event_payloads.sql` | the status trigger and `set_order_status` write the §1.4 payload per event type (GUC `shosho.status_payload` carries the RPC-only keys); `reason` canonical / `cancel_reason` legacy; `record_payment_event`'s `payment_authorized` payload |
-| 21 | `…21_order_attempts.sql` | `order_attempts` (PII-free, CHECK-enforced `items`) + `record_order_attempt(payload)` for `anon` with a per-session rate limit; `place_order` rejection hint + `payment_authorized` payload |
-| 22 | `…22_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
+| 19 | `…19_security_null_role_guard_fix.sql` | **S7-01** — NULL-unsafe role guards in `kitchen_pause` / `anonymise_silent_customers` (`NULL NOT IN (…)` is NULL, and plpgsql treats `IF NULL` as false, so the gate never fired) |
+| 20 | `…20_security_audit_helpers.sql` | **S7-01** — `security_audit_function_grants` / `_table_grants` / `_policies`, the live-catalogue introspection behind `tests/security.test.ts` (service_role only) |
+| 21 | `…21_role_access.sql` | `settings_staff_keys()` (public set + `ops`) + policy `settings_staff_common_read`; view `staff_directory`; `settings['kitchen.status'].capacity`; `kitchen_pause()` merges instead of replacing (keeping S7's guard) |
+| 22 | `…22_event_payloads.sql` | the status trigger and `set_order_status` write the §1.4 payload per event type (GUC `shosho.status_payload` carries the RPC-only keys); `reason` canonical / `cancel_reason` legacy; `record_payment_event`'s `payment_authorized` payload |
+| 23 | `…23_order_attempts.sql` | `order_attempts` (PII-free, CHECK-enforced `items`) + `record_order_attempt(payload)` for `anon` with a per-session rate limit; `place_order` rejection hint + `payment_authorized` payload |
+| 24 | `…24_reports.sql` | `customer_stats` rebuilt (completed orders only + `cancelled_count`); `reports_guard()`; `report_revenue_by_day`, `report_top_items`, `report_funnel`, `report_delivery_times` |
+| 25 | `…25_payment_trust_boundary.sql` | **S7-01 finding 1 (CRITICAL)** — `place_order` no longer trusts a client `payment_status` / `payment_ref`; staff-recorded `paid` is audited; `set_order_status` stops marking provider-less orders `paid` on completion |
+| 26 | `…26_search_path_and_worker_secret.sql` | `search_path` pinned on the six SECURITY INVOKER functions (finding 5); `payment_worker_secret()` + `run_payment_worker` sends it, so pg_cron can prove it is the cron (findings 3/7) |
+| 27 | `…27_campaigns.sql` | `campaigns`, `campaign_recipients` (unique `(campaign_id, customer_id)`) + the weekly-cap `before insert` trigger that sits on top of it |
+| 28 | `…28_automations.sql` | `automations` (seeded inactive for all four kinds), `automation_runs` audit trail |
+| 29 | `…29_segments_and_claim.sql` | `resolve_segment(segment, channel)` (owner/operator, consent + anonymisation enforced unconditionally); `claim_campaign_recipients(limit)` (service_role only, `for update skip locked` + stale-claim recovery, shaped like `claim_payment_jobs`) |
+| 30 | `…30_report_payments.sql` | `report_payments(from, to)` — per payment_method × payment_status; owner/operator only (narrower than the other four `report_*`), sourced from `orders` not `payment_jobs` so a cash refund is never missed |
+| 31 | `…31_banners.sql` | `banners` (owner/operator only, `draft jsonb`), `banners_live` view (the only anon-reachable surface), storage bucket `site` |
+| 32 | `…32_publish_and_funnel_fix.sql` | `settings.draft` + column-level `anon` grant narrowing, `site_publications`, `publish_site()` (owner only); `report_funnel` window fix (the "200 %" defect) |
 
 Adding a migration: `supabase migration new <slug>` → edit → `pnpm db:reset` → `pnpm db:types` → `pnpm test`.
 Never edit an applied migration file once it is on `main`; add a new one.
@@ -92,7 +109,7 @@ verification, Stripe → schema mapping) that the vitest suite unit-tests on Nod
 |---|---|---|---|
 | `create-payment-intent` | yes (anon key is enough) | the guest site / back-office (§5.6) | creates or reuses a PaymentIntent (`amount = orders.total_cents`, `eur`, `capture_method: manual`, `automatic_payment_methods`, `metadata.order_id`), stores `payment_intent_id` + `payment_provider`, returns `client_secret`. A guest must present the order's `tracking_token`; an `owner`/`operator` session may omit it. |
 | `stripe-webhook` | **no** — the `Stripe-Signature` header is the authentication | Stripe | verifies the signature against `STRIPE_WEBHOOK_SECRET`, resolves the card / wallet description, then calls `record_payment_event` (idempotent on the Stripe event id). |
-| `payment-worker` | yes | pg_cron every minute, the `payment_jobs` insert trigger, or by hand | claims queued `payment_jobs` and executes them against Stripe (capture / cancel / refund / update or increment the amount), each with the idempotency key `job:<id>:<attempt>`; `{"action":"install"}` writes the Vault secrets and (re)creates the cron job. |
+| `payment-worker` | yes | pg_cron every minute, the `payment_jobs` insert trigger, or by hand | claims queued `payment_jobs` and executes them against Stripe (capture / cancel / refund / update or increment the amount); `{"action":"install"}` writes the Vault secrets and (re)creates the cron job. **S2-04:** draining needs the service-role key or `x-worker-secret` — see below. |
 
 **Function secrets** (`supabase secrets set`, per project — never in the repo or in `settings`):
 `STRIPE_SECRET_KEY` (required), `STRIPE_WEBHOOK_SECRET` (required for the webhook),
@@ -131,6 +148,56 @@ operator/driver sets `delivered` / `picked_up` → `payment_jobs(capture)` → w
 → back to `pending`. `refunded` → `payment_jobs(refund)` → webhook `charge.refunded` →
 `payment_refunded_cents` / `refunded`.
 
+## payment-worker: who may call it (S2-04)
+
+`verify_jwt = true` on an Edge Function only proves the caller holds *some* project JWT — and the
+**anon key qualifies**. That key ships in the guest web bundle, so before S2-04 anyone could POST
+`/functions/v1/payment-worker` and make it drain the job queue against Stripe, or re-run
+`{"action":"install"}`. S7-01 raised it as finding 7; S1 hit the same thing independently in S1-04.
+
+Draining now requires one of:
+
+| Credential | Who presents it |
+|---|---|
+| `Authorization: Bearer <service-role key>` | a human running the function by hand, or CI |
+| `x-worker-secret: <public.payment_worker_secret()>` | pg_cron, via `run_payment_worker()` |
+
+`payment_worker_secret()` is 32 random bytes kept in Vault, generated on first use, `service_role`
+only — the Edge Function reads it back with its own service-role client, and nothing else can. A
+caller with only the anon key gets `403 forbidden`.
+
+```bash
+# by hand (service-role key from the Supabase dashboard → Project Settings → API)
+curl -sS -X POST "$SUPABASE_URL/functions/v1/payment-worker" \
+  -H "Authorization: Bearer $SERVICE_ROLE_KEY" -H 'Content-Type: application/json' -d '{}'
+```
+
+**`{"action":"install"}` is deliberately still reachable with the anon key** — `migrate-staging.yml`
+calls it that way, S1 owns workflows, and that token swap is routed as a proposal
+(`/memory/boots/proposed/S2-04-S1-payment-worker-install-token.md`). Its parameters are server-side
+constants, so the residual surface is "a stranger can re-run our own cron install". Install also
+rewrites the Vault key to the **service-role** key and ensures the secret exists, so the drain path
+becomes strict the first time it runs after a deploy — nothing needs coordinating for that half.
+When S1's swap lands, the install branch gets the same check and no path accepts a public key.
+
+## Refunds cannot double-pay (S2-04)
+
+`capture` and `void` always asked Stripe for the PaymentIntent's live status first, so replaying them
+was safe. `refund` did not. `payment_jobs` re-claims a job after 10 minutes, and the retry used a
+*new* idempotency key (`job:<id>:<attempt>`), which Stripe treats as a genuinely new request — so a
+worker that died between `refunds.create()` resolving and `finish_payment_job` committing refunded
+the customer twice (S7-01 finding 2). Two guards now, in `_shared/refund-plan.ts`:
+
+1. **An attempt-stable idempotency key**, `refund:job:<id>`. Stripe honours a key for 24 h and
+   replays the original response, so the retry of a call that did reach Stripe returns the same
+   refund. This is the part that actually closes the race, because it needs no state of ours.
+2. **A pre-check**: list the refunds already on the intent and look for `metadata.job_id = <job>`.
+   Same "ask Stripe what is true" shape as capture/void, and it still works after the 24 h window
+   has passed — the one case a key alone would not cover.
+
+The planner is a pure function so `tests/refund_idempotency.test.ts` can play the crash-then-reclaim
+sequence exactly, with no Stripe account and no network.
+
 ## Schedules (pg_cron)
 
 | Job | Schedule | Runs |
@@ -155,7 +222,26 @@ back-office in api-contracts §6.8. Deleting an item does not remove its objects
 
 ## Test logins (seed)
 
-All four exist in `auth.users` + `public.staff` after seeding (local and staging). Password for all: **`shosho-test-2026`**.
+All four exist in `auth.users` + `public.staff` after seeding (local and staging), identified by
+email/role/name below — **not** by a shared password: since S2-05, `seed.sql` gives each one a
+random, immediately-discarded password, so a fresh or reset cloud project is never born with a login
+anyone can find in this public repo.
+
+- **Local development**: after `supabase db reset`, run `pnpm --filter @shosho/backend
+  seed:local-logins` to set the documented local-only password on all four accounts
+  (`scripts/seed-local-logins.mjs` — it prints the value, and refuses to run against anything but a
+  loopback Supabase URL). The test suite does this for you automatically: `pnpm test`'s `pretest`
+  hook runs the same script before vitest starts, so no extra step is needed to run the suite.
+- **Staging**: this seed change does **not**, by itself, invalidate the password already on
+  `shosho-staging` — the `auth.users` insert is `on conflict (id) do nothing`, so a project that
+  already has these four rows (which `shosho-staging` has had since S2-01) keeps whatever password
+  they already had. **The former shared password is still a live, known-compromised credential on
+  staging until the owner rotates it.** To close that: the owner runs
+  `scripts/rotate-staging-passwords.mjs` (see its header for the one-line recipe) with the real
+  service-role key, which sets four fresh, distinct, random passwords and writes them to
+  `apps/backend/.staff-credentials.local` on their own machine (gitignored, never committed) —
+  rerunning it rotates again, overwriting that file. After rotation, ask the owner for the current
+  values; never put a real value in chat, a commit, a log entry, or this README.
 
 | Email | Role | Name |
 |---|---|---|
@@ -164,7 +250,11 @@ All four exist in `auth.users` + `public.staff` after seeding (local and staging
 | `kitchen@shosho.test` | kitchen | Lena N. |
 | `driver@shosho.test` | driver | Jonas M. |
 
-Change the password before any real data enters staging (`supabase auth` → users) — these are test accounts.
+Rotating the staging passwords is permanent against this seed file: the `auth.users` insert is
+`on conflict (id) do nothing`, so a later `Migrate staging` (`db push --include-seed`) never
+overwrites a password already set. (`supabase db reset` locally is a full wipe, not a push, so a
+reset always starts the four accounts fresh — rerun `seed:local-logins` after one, or just run
+`pnpm test`, which does it for you.)
 
 ## Business rules implemented in the DB
 
@@ -177,6 +267,16 @@ Change the password before any real data enters staging (`supabase auth` → use
 - Customer upsert by phone; `customers.kitchen_note` snapshots to `orders.allergy_note`; delivery address is stored on the profile (first one becomes default).
 - Auto-accept: `authorized`/`paid` ASAP orders with total < `ops.auto_accept_paid_under_cents` go straight to `accepted` (event actor `system`).
 - Status machine in `set_order_status`: `new→accepted|cancelled`, `accepted→preparing|cancelled`, `preparing→ready|cancelled`, `ready→out_for_delivery` (delivery, needs an active driver) `|picked_up` (pickup) `|cancelled`, `out_for_delivery→delivered|cancelled`, `delivered|picked_up→refunded` when paid. Kitchen: `preparing`/`ready` only. Driver: `delivered` on own orders only. Cancel/refund: owner/operator.
+- **Payment trust boundary (S2-04, S7-01 finding 1)** — **nobody but the payment provider may say
+  that money moved.** A guest order is created `pending`; sending any other `payment_status` is
+  refused (`invalid_input`), not coerced, and a guest's `payment_ref` is dropped. `authorized` is
+  reachable only from `record_payment_event` behind the verified Stripe webhook. `owner`/`operator`
+  may record `paid` at order entry for money already in hand, and that writes an `order_events`
+  `note` (`code = 'payment_recorded_by_staff'`) naming the actor. Completion is **not** evidence of
+  payment: a non-cash order with no provider completes with `payment_status` untouched plus a
+  `payment_not_confirmed` note, instead of silently becoming `paid`. Auto-accept keys only off a
+  vouched state. Until this landed, `place_order(payment_status: 'authorized')` from the public anon
+  key was a free meal.
 - **Payments (S2-02, D-011)** — Stripe with manual capture; the DB never holds a provider secret. A
   PaymentIntent is created by the `create-payment-intent` function, `stripe-webhook` moves
   `payment_status` (`authorized` → `paid` → `refunded` / `failed`) and applies the auto-accept rule when
@@ -261,8 +361,8 @@ reconciles against the bank.
 |---|---|
 | **WARENKORB → BEZAHLT** | **Real** — `placed`, `paid`, `placed_to_paid_pct` come straight from `orders`. |
 | **ZUSATZVERKAUF** | **Real** — the option half of every completed line (`line_total − unit_price × qty`), per period in `report_funnel` and per day in `report_revenue_by_day`. |
-| **MENÜ → WARENKORB** | **Not computable. Deliberately absent.** It needs menu impressions / add-to-cart events and no table holds them. The `site_events` sketch in `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` is the route and needs an S0 decision (GDPR) first. No column fakes it. |
-| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholder data until S3 emits attempt rows.** The query is real; nothing calls `record_order_attempt` yet, so they read `0` / `null`. That means "nothing recorded", not "nothing happened" — the Berichte screen should label it that way. |
+| **MENÜ → WARENKORB** | **Not computable. Deliberately absent.** It needs menu impressions / add-to-cart events and no table holds them. `/memory/decisions.md` D-015 (2026-10-06) rules no client-side analytics (`site_events`) is built for v1 — a deliberate ruling, not an open question. No column fakes it. |
+| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholder data until S3 emits attempt rows**, and — since S2-06 — **windowed**: the ratio is computed only over `[attempts_window_from, attempts_window_to]`, the overlap between the requested range and the period `order_attempts` has actually existed for (it only exists from 2026-09-26). A range with no overlap at all returns `attempts`/`attempts_with_problems`/the ratio/both window columns as `null` together — "not yet measurable", never a plausible-looking wrong number (S3-02 found `200.0`, a window mismatch, not an arithmetic bug). A ratio **above 100 % over a fully-comparable window is not suppressed** — `order_attempts` records only rejected/abandoned checkouts, not total attempts, so it is not bounded by `placed`. |
 
 ## `order_attempts` — privacy rules
 
@@ -289,6 +389,73 @@ guests who never became customers, so it is PII-free **by construction**, not by
 - Append-only: no `updated_at`, no update trigger. There is no retention job yet — if S0 wants one,
   it is a one-line `pg_cron` delete of rows older than N days next to the anonymisation job.
 
+## Campaigns, automations, banners, site publish (S2-06)
+
+Tables, the segment resolver and a claim function only — **sending (push/email) and automation
+scheduling are S5's**, not built here. Full contract: api-contracts §8.
+
+- **`campaigns` / `campaign_recipients`** — owner/operator draft a campaign directly (no RPC
+  needed, same shape as `promo_codes`). `campaign_recipients` is staff **read-only**, written only
+  by whatever eventually runs on the service-role connection. The unique
+  `(campaign_id, customer_id)` constraint stops a customer appearing twice *in the same* campaign;
+  it says nothing about two *different* campaigns reaching them inside a week, which is what the
+  design's weekly cap actually means — that needs a `before insert` trigger
+  (`campaign_recipients_enforce_weekly_cap()`) that looks across campaigns, since a per-row CHECK or
+  a two-column UNIQUE index cannot. `failed` contacts are exempt — a bounced send doesn't spend the
+  week's slot.
+- **`resolve_segment(segment jsonb, channel campaign_channel)`** — owner/operator. Two required
+  arguments, not the one-argument shape an earlier sketch used: consent and
+  `anonymised_at is null` are checked **first and unconditionally**, keyed off `channel` (`email`
+  needs `consent_email`, `push` needs `consent_push`, `both` needs either) — not a `segment` key, so
+  no caller-supplied filter can bypass them. "A caller who forgets consent gets fewer rows, never
+  more." `segment` shape and every filter key: api-contracts §8.2.
+- **`claim_campaign_recipients(limit)`** — service_role only, unreachable with anon **or**
+  authenticated (the exact "anon key, service-role authority" shape S7-01/S1 found wrong in
+  `payment-worker`, deliberately not repeated here). Shaped like `claim_payment_jobs`: `for update
+  skip locked`, and a `claimed_at` timeout (10 min) recovers a claim a worker died holding —
+  `campaign_recipient_state` has no `processing` value the way `payment_jobs.status` does, so
+  `claimed_at` alone marks "in flight".
+- **`automations` / `automation_runs`** — one row per kind (`welcome`, `win_back_45d`, `birthday`,
+  `review_after_delivery`), seeded inactive. Owner/operator toggle/tune `automations` directly;
+  `automation_runs` is staff read-only, written by S5's runner.
+- **`report_payments(from, to)`** — owner/operator only, narrower than the other four `report_*`
+  (kitchen/driver get nothing here, unlike revenue/delivery-time figures they already see). Sourced
+  from `orders`, not `payment_jobs`/`payment_events` — a cash refund settles
+  `orders.payment_refunded_cents` directly and never creates a `payment_jobs` row, so sourcing from
+  the job queue alone would silently miss the one payment path actually exercisable on staging
+  today (no Stripe account exists). **Unexercised against real provider data** either way.
+- **`banners` / `banners_live` / bucket `site`** — `banners` is owner/operator only, including the
+  `anon` table grant being revoked outright (belt-and-braces, like `order_attempts`) because it
+  carries unpublished `draft` content. `banners_live` is the *only* anon-reachable surface:
+  `security_invoker = false` (same reasoning as `staff_directory`) with an explicit column list that
+  never selects `draft`. Bucket `site` is the exact policy shape as bucket `menu`.
+- **`settings.draft` / `publish_site()` / `site_publications`** — the smallest model giving the CMS
+  design's publish flow: `settings` and `banners` rows get a `draft jsonb` column; `publish_site()`
+  (owner only) copies every pending `settings.draft` into `value` (a full replacement) and merges
+  every pending `banners.draft` onto its row (a **partial patch** — an absent or JSON-`null` key
+  keeps the live value), clears both, and logs one `site_publications` row (staff read-only, same
+  shape as `payment_events`). **The column-level pitfall this boot named explicitly**: RLS is
+  row-level, so a plain `draft` column on `settings` would, with no further change, hand `anon`
+  every pending edit on the public keys it can already read the *row* for — `select *` doesn't know
+  which columns were "meant" to stay private. The fix is a **column-level `GRANT`**: `anon`'s
+  blanket table grant is revoked and re-granted for exactly `(key, value, created_at, updated_at)` —
+  `draft` is pointedly absent. `banners.draft` needs no such narrowing: the base table has no `anon`
+  policy or grant at all, so there is nothing on it for `anon` to reach regardless of column.
+- **`report_funnel` window fix** — `order_attempts` only exists from 2026-09-26; a requested range
+  reaching earlier was counting pre-recording `orders` rows as "placed" against an attempts count
+  that could not exist yet (S3-02 found `attempts_to_placed_pct: 200.0`). `attempts`,
+  `attempts_with_problems` and the ratio are now computed only over `[attempts_window_from,
+  attempts_window_to]` — the overlap between the request and the period recording has actually
+  existed for — reported back explicitly; all four come back `null` together when there is no
+  overlap at all. `placed`/`paid`/`cancelled`/upsell are untouched. See "Reports (Berichte)" above
+  for what this means for the funnel screen.
+
+Deleted in this boot's PR, fully implemented: `/memory/boots/proposed/S2-03-reports-campaigns-cms.md`
+§2 and §3 (§1 — the four original `report_*` — was already shipped in S2-03). Two small leftover
+items from that file's §4 with no other home, carried into the S2-06 log entry rather than a new
+proposal file: the push/email provider decision campaigns need before S5 can send anything, and a
+private `receipts` storage bucket for invoice PDFs, "when S5 Accounting needs it."
+
 ## RLS in one table
 
 | Table | anon | kitchen | driver | operator | owner |
@@ -304,25 +471,35 @@ guests who never became customers, so it is PII-free **by construction**, not by
 | `promo_codes` | — (validated in RPC) | — | — | all | all |
 | `customer_events`, `payment_events`, `payment_jobs` | — | — | — | read | read |
 | `order_attempts` | — (RPC insert only)⁴ | — | — | read | read |
-| `storage.objects` in bucket `menu` | read | read | read | all | all |
+| `campaigns`, `automations` | — | — | — | all | all |
+| `campaign_recipients`, `automation_runs` | — | — | — | read | read |
+| `banners` | — (base table, belt-and-braces⁵) | — | — | all | all |
+| view `banners_live` | read | read | read | read | read |
+| `site_publications` | — | — | — | read | read |
+| `storage.objects` in bucket `menu`, `site` | read | read | read | all | all |
 
 ¹ `business`, `opening_hours`, `site`, `payments.enabled`, `kitchen.status` (`settings_public_keys()`). `service_role` bypasses RLS.
 ² `settings_staff_keys()` = the public set **plus `ops`**, for every authenticated staff role (S2-03, §6.9 row 1).
 ³ `id, name, role, active` — explicit column list, so `staff.phone` and anything added to `staff` later stay behind the base table's owner/operator policy. Empty for `anon` and non-staff sessions.
 ⁴ `anon`'s table grant is revoked entirely and there is no insert policy: `record_order_attempt()` is the only writer.
+⁵ Same belt-and-braces shape as `order_attempts`: `banners` carries unpublished `draft` content, so `anon`'s table grant is revoked outright rather than relying only on RLS returning zero rows. `settings.draft` is narrower still — a **column-level** grant (§"Settings key sets" below), since `settings` itself stays `anon`-readable for its public keys.
 RPC execute grants: `quote_order`, `place_order`, `get_order_by_token` → anon + authenticated;
 `set_order_status`, `kitchen_pause`, `update_order_items`, `add_customer_event`,
 `anonymise_silent_customers` → authenticated only (role checked inside, `anon` revoked in migration 18);
 `record_order_attempt` → anon + authenticated (§1.7); the four `report_*` functions and `reports_guard`
-→ authenticated only (any active staff role, `anon` revoked);
+→ authenticated only (any active staff role, `anon` revoked); `resolve_segment`, `report_payments`
+→ authenticated only but **owner/operator-only inside** (kitchen/driver get `forbidden_for_role`
+despite having ACL execute — §"Campaigns, automations, banners, site publish" below);
+`publish_site` → authenticated only, **owner-only inside**.
 `record_payment_event`, `enqueue_payment_job`, `claim_payment_jobs`, `finish_payment_job`,
-`run_payment_worker`, `schedule_payment_worker`, the two `ensure_*` installers and
-`is_service_request` → `service_role` only. Supabase's default privileges grant EXECUTE on every new
-`public` function to `anon` and `authenticated`, so a new staff-only function needs an explicit
-`revoke … from anon` — not just `revoke … from public`.
+`run_payment_worker`, `schedule_payment_worker`, the two `ensure_*` installers (`menu` and `site`) and
+`is_service_request` → `service_role` only — joined by `claim_campaign_recipients`, unreachable with
+anon **or** authenticated (the exact shape S7-01/S1 found wrong in `payment-worker`). Supabase's
+default privileges grant EXECUTE on every new `public` function to `anon` and `authenticated`, so a
+new staff-only function needs an explicit `revoke … from anon` — not just `revoke … from public`.
 
 ## CI
 
 `.github/workflows/ci.yml` job `backend`: `supabase start` → `db reset` → `db lint` → seed applied a second
-time (idempotency) → typecheck → vitest (~90 tests) → `gen types` must equal the committed `types/database.ts`.
+time (idempotency) → typecheck → vitest (~110 tests) → `gen types` must equal the committed `types/database.ts`.
 The generated file is also uploaded as the `backend-types` artifact.

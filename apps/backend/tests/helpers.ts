@@ -14,7 +14,11 @@ const opts = { auth: { persistSession: false, autoRefreshToken: false } };
 export const anon = (): Db => createClient(url, anonKey, opts);
 export const admin = (): Db => createClient(url, serviceKey, opts);
 
-export const PASSWORD = "shosho-test-2026";
+// [S2-05] seed.sql no longer sets a known password (a fresh/reset cloud project must never be born
+// with one published in this public repo). `pretest` runs scripts/seed-local-logins.mjs before every
+// `pnpm test`, which sets this exact local-only value on the four local accounts — keep the two in
+// sync. STAFF_PASSWORD lets a non-standard local setup override it; it is never read from a secret.
+export const PASSWORD = process.env.STAFF_PASSWORD ?? "local-dev-only";
 export const STAFF = {
   owner: { email: "owner@shosho.test", id: "10000000-0000-4000-8000-000000000001" },
   operator: { email: "operator@shosho.test", id: "10000000-0000-4000-8000-000000000002" },

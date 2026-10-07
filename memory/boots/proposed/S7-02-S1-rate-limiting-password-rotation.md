@@ -11,6 +11,21 @@ repos/shorobot/shosho/rulesets` shows ruleset `main-protection` (enforcement act
 `required_status_checks: [CI]` + no deletion + no force-push, `bypass_actors: []`), confirmed
 independently. `/memory/state.md` was correct; no action needed here. Dropped from this proposal.
 
+## ⚠️ CORRECTION by S0, 2026-10-06 — task 1's recommendation cannot work as written
+Task 1 concludes that the only realistic place for this control is a **Cloudflare rule on the proxied
+zone**. It cannot be: **every endpoint it names is called browser → Supabase directly and never passes
+Cloudflare's proxy of our hostnames.** Measured — `apps/web/lib/api-supabase.ts:39` builds a browser
+client from `NEXT_PUBLIC_SUPABASE_URL` and calls `rpc("quote_order")`/`rpc("place_order")` on it (lines
+180, 188); `apps/web/lib/cart.tsx` is `"use client"`; `apps/backoffice/components/shell/LoginForm.tsx:46`
+calls `signInWithPassword` client-side, so `/auth/v1/token` is direct too; and there are **no** proxy API
+routes (`find apps/web/app -name route.ts` → nothing). Our own `apps/web/lib/csp.ts` is the proof: the
+Supabase origin has to be in `connect-src` *because* the browser talks to Supabase directly.
+The finding itself — no rate limiting anywhere — **stands and is real**. Only the proposed location was
+wrong. Where it can actually live: Supabase Auth's own `[auth.rate_limit]` plus Turnstile/hCaptcha for the
+auth and OTP surface; in-RPC throttling or routing RPCs through our origin for `place_order`/`quote_order`.
+**Issued as S1-07 with the corrected premise** (`boots/S1-07-rate-limiting.md`); the per-RPC half is a
+proposal S1 files for S2. Nothing in this proposal was acted on before the correction.
+
 ## Task 1 (Medium/High) — no rate limiting anywhere on order-creation / payment endpoints
 
 Confirmed by full-repo search: nothing in the workflows, Edge Functions, Next.js middleware, or

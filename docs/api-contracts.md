@@ -103,8 +103,8 @@ stays empty and the funnel's attempt figures read 0** — see §6.10.
 | Function | Caller | Contract |
 |---|---|---|
 | `quote_order(payload)` | anon (web) | input: items `[{item_id, qty, option_ids[]}]`, `type`, `postal_code?`, `promo_code?`, `scheduled_for?` → returns lines with snapshots, subtotal, discount, fee, total, zone, promised_minutes, problems `[{code, item_id?, reason?}]` (unavailable, invalid_options, below_min_order, out_of_zone, closed, promo_invalid, empty_cart, invalid_input). Pure, no writes. Full shape in §5.2. |
-| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token, status}` (status `accepted` when auto-accept applied). Accepts `payment_status` pending/authorized + `payment_ref` as reported by the client in v1; staff callers may set `channel` (phone). Payment authorization itself = S2-02 (Stripe). |
-| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions and role gates (kitchen: preparing/ready only; driver: delivered on own orders); writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush; `payload.note` also lands on the customer timeline. Returns the full updated `orders` row. **S2-02 payments** (same signature): Stripe orders enqueue `payment_jobs` — delivered/picked_up → `capture` (payment_status stays `authorized` until the webhook reports `paid`), cancelled → `void`, refunded → `refund` (`payload.amount_cents` = partial, absent = full); cash → `payload.cash_received` true → `paid`, false → stays `pending` + a `note` event; orders without a provider keep the v1 behaviour (completion → `paid`). |
+| `place_order(payload)` | anon (web) | same input + `contact {name, phone}`, `address?`, `courier_comment`, `comment_flags[]`, `payment_method`, `tip_cents`. Re-runs quote server-side (never trust client totals), rejects if problems, upserts customer by phone, creates order (+items, +event `created`), returns `{order_id, number, total_cents, tracking_token, status}` (status `accepted` when auto-accept applied). **S2-04**: `payment_status` is not a client input — a guest order is always created `pending` and anything else is refused; `authorized` comes only from the Stripe webhook; staff (`owner`/`operator`) may record `paid` for a phone order, audited with an `order_events` note (`payment_recorded_by_staff`). A guest's `payment_ref` is discarded. Staff callers may set `channel` (phone). |
+| `set_order_status(order_id, new_status, payload?)` | staff | enforces the allowed transitions and role gates (kitchen: preparing/ready only; driver: delivered on own orders); writes event with `actor_id = auth.uid()`; `preparing` sets `promised_minutes` from settings + rush; `payload.note` also lands on the customer timeline. Returns the full updated `orders` row. **S2-02 payments** (same signature): Stripe orders enqueue `payment_jobs` — delivered/picked_up → `capture` (payment_status stays `authorized` until the webhook reports `paid`), cancelled → `void`, refunded → `refund` (`payload.amount_cents` = partial, absent = full); cash → `payload.cash_received` true → `paid`, false → stays `pending` + a `note` event. **S2-04**: an order with no payment provider no longer becomes `paid` on completion — completion is not evidence of payment. It completes, `payment_status` is untouched, and a `note` with `code = 'payment_not_confirmed'` flags the outstanding money. |
 | `get_order_by_token(token)` | anon | guest order tracking (status + ETA), no PII beyond what the guest entered. |
 | `kitchen_pause(paused bool)` | operator/owner | flips `settings.kitchen.paused`, event. |
 | `update_order_items(order_id, items)` — S2-02 | operator/owner | replaces the positions while status ∈ {new, accepted, preparing}, re-quotes server-side with the order's own type/zone/promo/slot/tip, marks changed rows `modified_by_operator`, writes `order_events(item_changed)` with the before/after diff. Full shape in §6.8. |
@@ -205,13 +205,33 @@ payload: quote payload + {
   courier_comment?: string,
   comment_flags?: ('leave_at_door' | 'dont_ring' | 'call_on_arrival' | 'no_wasabi')[],
   payment_method: 'card' | 'apple_pay' | 'google_pay' | 'paypal' | 'bitcoin' | 'cash',
-  payment_status?: 'pending' | 'authorized',   // v1: what the payment step reported; default 'pending'
-  payment_ref?: string,                        // e.g. "Visa ···4417"
+  payment_status?: 'pending',                  // S2-04: guests may only ever create `pending` —
+                                               // anything else is REFUSED (see below). Just omit it.
+  payment_ref?: string,                        // ignored for guests; staff-only (e.g. "Terminal ···9021")
   tip_cents?: number,
 }
 → { order_id: uuid, number: number, total_cents: number, tracking_token: string, status: 'new' | 'accepted' }
 ```
-Failure: PostgREST error with `message = 'order_rejected'` and `details` = JSON string of the same `problems[]` as the quote (parse it). Nothing is written in that case. On success the customer is upserted by phone, the order is `new` (or `accepted` when auto-accept applied: authorized/paid, ASAP, total < 50 €, kitchen not paused). Store `tracking_token` in local storage and route to the tracking page with it.
+Failure: PostgREST error with `message = 'order_rejected'` and `details` = JSON string of the same `problems[]` as the quote (parse it). Nothing is written in that case. On success the customer is upserted by phone and the order is `new`. Store `tracking_token` in local storage and route to the tracking page with it.
+
+**Payment state is not a client input (S2-04, S7-01 finding 1).** Until 2026-09-28 `place_order`
+believed whatever `payment_status` its caller sent, and `anon` is the caller on the guest site — so
+anyone could post `payment_status: 'authorized'` with a card method and get an order that was
+auto-accepted into the kitchen and marked `paid` on delivery, with Stripe never involved. The rule
+now:
+- **A guest order is created `pending`.** Sending any other `payment_status` is refused with
+  `problems: [{code: 'invalid_input', field: 'payment_status'}]` — the order is not created at all.
+  Sending `'pending'`, or omitting the key, is fine. A guest's `payment_ref` is discarded.
+- **`authorized` comes from one place only**: `record_payment_event`, fed by the signature-verified
+  Stripe webhook. No RPC can produce it.
+- **Staff callers** (`owner` / `operator`, i.e. a phone order) may pass `payment_status: 'paid'` to
+  record money already in hand — counter cash, a card terminal — and may set `payment_ref`. Not
+  `authorized`, for them either. Each such order writes an `order_events` `note` with
+  `code = 'payment_recorded_by_staff'` and `actor_id`, so "started out paid" always has a name
+  against it.
+- **Auto-accept** (ASAP, total < 50 €, kitchen not paused) therefore fires only for a staff-recorded
+  `paid` here, or in `record_payment_event` when a real authorization arrives — never off a guest
+  claim. A guest order always comes back `status: 'new'`.
 
 ### 5.4 `rpc('get_order_by_token', { token })` — tracking page (poll every ~15 s; guest realtime since S2-02 — §5.6)
 ```ts
@@ -242,9 +262,11 @@ order reaches `delivered` / `picked_up` ("Payment is captured on delivery confir
 implemented in v1 — hide it unless `settings.payments.enabled.methods` contains it.
 
 **Flow**
-1. `rpc('place_order', …)` as in §5.3 with the chosen `payment_method` and **`payment_status` left at
-   the default `pending`** (do not report `authorized` yourself any more — the webhook does it).
-   → `{order_id, tracking_token, …}`.
+1. `rpc('place_order', …)` as in §5.3 with the chosen `payment_method` and **no `payment_status`**.
+   Since S2-04 this is enforced, not merely advised: sending `authorized` (or `paid`) makes the call
+   fail with `order_rejected` / `invalid_input` on `payment_status` and creates nothing. The shipped
+   checkout already omits it, so nothing changes for a correct client.
+   → `{order_id, tracking_token, …}`, always `status: 'new'`.
 2. For every method except `cash`:
 ```ts
 const { data, error } = await supabase.functions.invoke('create-payment-intent', {
@@ -267,8 +289,8 @@ const { data, error } = await supabase.functions.invoke('create-payment-intent',
    by the `stripe-webhook` function, so the UI waits for `payment_status` to become `authorized`
    (typically < 2 s): poll `get_order_by_token` or subscribe per §3. `failed` means the card was
    declined — offer step 2 again (the same order, a new attempt on the same intent).
-   `status` may already be `accepted` when the authorization arrives (auto-accept: ASAP, total < 50 €,
-   kitchen not paused).
+   `status` may become `accepted` when the authorization arrives (auto-accept: ASAP, total < 50 €,
+   kitchen not paused) — that now happens in the webhook, never at `place_order` time.
 5. Never show a "paid" state before `payment_status = 'paid'`; that only happens after the operator
    confirms delivery and the capture succeeds.
 
@@ -307,7 +329,7 @@ Client: `@supabase/supabase-js` with the anon key + a **staff auth session** (Su
 
 ### 6.6 Settings (Einstellungen) — `settings` rows by key (owner write). Team = `staff` rows (owner write); inviting a user = Supabase Auth admin — S4-01 documents the manual path, automation later.
 
-### 6.7 Not in v1 (later boots): campaigns, automations, banners/site publish (S2-04), devices, payment provider settings (the Stripe keys live in Supabase function secrets, not in `settings`). ~~reports views~~ — shipped in S2-03, see §6.10.
+### 6.7 Not in v1 (later boots): devices, payment provider settings (the Stripe keys live in Supabase function secrets, not in `settings`). ~~reports views~~ — shipped in S2-03, see §6.10. ~~campaigns, automations, banners/site publish~~ — shipped in S2-06, see §8. Sending (push/email) and automation scheduling are still not built — tables + resolver only; S5's.
 
 ### 6.8 Payments & order edits (backoffice) — S2-02
 **Edit positions** — `rpc('update_order_items', { order_id, items })`, operator/owner, while
@@ -336,6 +358,21 @@ cancel and re-order, or take the difference in cash). Below the authorization a 
 still in flight (a `payment_jobs` row with `action = 'capture'`); `payment_jobs.status = 'failed'`
 with `last_error` is the operator's signal that a capture / refund needs a human. Both
 `payment_events` and `payment_jobs` are readable by operator/owner (`select` only).
+
+**Unpaid completion (S2-04)** — a non-cash order that never went through a payment provider does
+**not** become `paid` when staff mark it delivered/picked_up. It completes with `payment_status`
+unchanged (normally `pending`) and an `order_events` `note` carrying
+`code = 'payment_not_confirmed'`, `payment_method`, `payment_status` and `amount_cents`. Surface it
+exactly like the cash flag below — it is the same "money still outstanding" signal, and while no
+Stripe account exists it is the state **every** card / wallet / PayPal order ends in. Before S2-04
+these silently read `paid` (S7-01 finding 1).
+
+**Payment recorded at order entry (S2-04)** — an `owner`/`operator` taking a phone order may pass
+`payment_status: 'paid'` to `place_order` for money already in hand (counter cash, card terminal).
+Those orders carry an `order_events` `note` with `code = 'payment_recorded_by_staff'`, the
+`payment_method`, `amount_cents` and the `actor_id` who recorded it — worth showing in the Verlauf,
+since it is the one way an order can start out paid. No client-side flow reaches it: the guest site
+cannot set `payment_status` at all.
 
 **Cash on delivery** — the driver (or the operator on their behalf) confirms:
 `rpc('set_order_status', { order_id, new_status: 'delivered', payload: { cash_received: true } })`
@@ -419,7 +456,7 @@ rpc('report_delivery_times',   { from_date, to_date })
 |---|---|---|
 | `report_revenue_by_day` | one per Berlin day that has an order | `day`, `orders_count`, `revenue_cents`, `delivery_revenue_cents`, `pickup_revenue_cents`, `upsell_cents`, `delivery_fee_cents`, `tip_cents`, `discount_cents`, `vat_cents`, `avg_basket_cents`, `cancelled_count`, `refunded_cents` |
 | `report_top_items` | one per item, by revenue desc | `item_id`, `sku`, `name`, `name_de`, `qty`, `orders_count`, `revenue_cents`, `cost_cents`, `margin_cents`, `share_pct` |
-| `report_funnel` | exactly one | `attempts`, `attempts_with_problems`, `placed`, `paid`, `cancelled`, `attempts_to_placed_pct`, `placed_to_paid_pct`, `upsell_orders`, `upsell_cents` |
+| `report_funnel` | exactly one | `attempts`, `attempts_with_problems`, `placed`, `paid`, `cancelled`, `attempts_to_placed_pct`, `placed_to_paid_pct`, `upsell_orders`, `upsell_cents`, **`attempts_window_from`, `attempts_window_to`** (S2-06 — the sub-range `attempts_to_placed_pct` is actually computed over; see the honesty note below) |
 | `report_delivery_times` | one per zone + one with `zone_id = null` for pickup / unzoned ("Abholung") | `zone_id`, `zone_code`, `zone_name`, `orders_count`, `avg_actual_minutes`, `avg_promised_minutes`, `delta_minutes`, `overdue_count`, `overdue_share_pct` |
 
 Definitions, so the screen and the DB agree:
@@ -440,8 +477,156 @@ Definitions, so the screen and the DB agree:
 |---|---|
 | **WARENKORB → BEZAHLT** | **Real.** `placed`, `paid` and `placed_to_paid_pct` come straight from `orders`. |
 | **ZUSATZVERKAUF** | **Real.** `upsell_orders` / `upsell_cents`, and the per-day figure in `report_revenue_by_day`. |
-| **MENÜ → WARENKORB** | **Not computable and deliberately absent.** It needs menu impressions / add-to-cart events, which no table holds. The `site_events` proposal in `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` is the route; it needs an S0 decision (GDPR) before S2 builds it. No column pretends to answer it. |
-| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholders until S3-03.** The query is real; the data is not, because nothing calls `record_order_attempt` yet (§1.7 / §6.9 row 5). They read **0 / null**, which means "nothing recorded" — not "nothing happened". |
+| **MENÜ → WARENKORB** | **Not computable and deliberately absent.** It needs menu impressions / add-to-cart events, which no table holds. `/memory/decisions.md` D-015 (2026-10-06) rules that no client-side analytics (`site_events`) is built for v1 — a deliberate ruling, not an open question. No column pretends to answer it. |
+| `attempts`, `attempts_with_problems`, `attempts_to_placed_pct` | **Placeholders until S3-03**, and — since S2-06 — **windowed**. The query is real; the data is not, because nothing calls `record_order_attempt` yet (§1.7 / §6.9 row 5): until S3-03 they read **0 / null**, meaning "nothing recorded", not "nothing happened". **S2-06 fixed a second, independent defect**: `order_attempts` only exists from 2026-09-26 — a window reaching earlier counted every pre-recording `orders` row as "placed" against an attempts count that could not have existed yet, so the ratio could read an impossible-looking number (S3-02 found 200.0 %) that was a window mismatch, not an arithmetic bug. `attempts_to_placed_pct` is now computed only over `[attempts_window_from, attempts_window_to]` — the overlap between the requested range and the period `order_attempts` has actually existed for — and both window columns, plus `attempts`/`attempts_with_problems`/the ratio itself, come back **null together** when the requested range has no overlap with that period at all. `placed`/`paid`/`cancelled`/`upsell_*` are untouched: they stay honest over the full requested range regardless. A ratio **above 100 % over a fully-comparable window is not suppressed** — `order_attempts` records only rejected/abandoned checkouts, so it is not bounded by `placed`, and a healthy store (far more successes than failures) can legitimately produce one. |
 
 `customer_stats` (§1.3) is unchanged in shape apart from the added `cancelled_count`; §6.4's five
 columns still mean what they did, only now counting completed orders only.
+
+## 8. Campaigns, automations, banners, site publish — S2-06
+
+Implements proposal `/memory/boots/proposed/S2-03-reports-campaigns-cms.md` §2 and §3 (that file is
+deleted in this boot's PR — its §1 was already shipped in S2-03, §2/§3 are this section). **Sending**
+(push/email) and **automation scheduling** are explicitly not built here — tables, the segment
+resolver and a claim function only; the runner is S5's. `/memory/decisions.md` D-015 (2026-10-06)
+rules that the MENÜ → WARENKORB funnel step stays unmeasurable in v1 — no `site_events` table exists
+and none is planned; see §6.10's funnel-honesty table.
+
+### 8.1 Campaigns
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `campaigns` | `name`, `channel campaign_channel` (push/email/both), `segment jsonb`, `message_de/en jsonb` (`{title, body, deep_link}`), `status campaign_status` (draft/scheduled/sending/sent/cancelled), `scheduled_for`, `sent_at`, `stats jsonb` (`{recipients, delivered, opened, orders, revenue_cents}`) | owner/operator CRUD directly (RLS `campaigns_staff_all`), no RPC needed to draft one. `segment` shape: §8.2. |
+| `campaign_recipients` | `campaign_id`, `customer_id`, `state campaign_recipient_state` (queued/sent/failed/opened), `sent_at`, `opened_at`, `error`, `claimed_at null` | **unique (campaign_id, customer_id)** — a customer cannot appear twice in the same campaign; schema-enforced, not a client habit. `claimed_at` is additive beyond the proposal's column list, for `claim_campaign_recipients`'s stale-claim recovery (§8.3), the same shape `payment_jobs.started_at` uses. Staff **read-only** (`campaign_recipients_staff_read`) — no insert/update/delete policy for anyone; written only by whatever calls the service-role connection (S5, not built here). |
+
+**The weekly cap** (design rule: "max one automated action per customer per week"). The unique
+constraint above gives exactly one thing — a customer cannot appear twice *in the same campaign* —
+and nothing about two *different* campaigns reaching the same customer days apart, which is what the
+rule actually means and needs to look across `campaign_id` values. A trigger,
+`campaign_recipients_enforce_weekly_cap()` (`before insert`), refuses a new row for a customer who
+already has a non-failed `campaign_recipients` row (any campaign) created in the last 7 days —
+`failed` is exempt, so a bounced send does not spend the week's slot. This makes the cap a property
+of the table: whoever eventually writes these rows (S5) gets it for free.
+
+### 8.2 `resolve_segment(segment jsonb, channel campaign_channel)` — authenticated (owner/operator only)
+
+```ts
+rpc('resolve_segment', { p_segment: {...}, p_channel: 'push' | 'email' | 'both' })
+→ rows: { customer_id, has_email_consent, has_push_consent }[]
+```
+
+**Signature note**: two required arguments, not the one-argument shape the proposal sketched — see
+the migration's own comment (`20261006000029_segments_and_claim.sql`) for why. This is a brand-new
+function in this boot, so there is no shipped signature to preserve.
+
+**Consent and `anonymised_at is null` are checked first, unconditionally** — not a `segment` key, so
+no caller-supplied filter can bypass them. `channel = 'email'` requires `consent_email is not null`;
+`'push'` requires `consent_push is not null`; `'both'` requires either. A customer who fails this
+baseline is never returned, regardless of how permissive `segment` is — "a caller who forgets
+consent gets fewer rows, never more."
+
+`segment` shape (every key optional; an empty `{}` matches every consented, non-anonymised
+customer):
+```ts
+{
+  tags?: string[],              // customer has ANY of these tags (array-overlap, not all-of)
+  is_company?: boolean,
+  min_orders?: number,          // customer_stats.orders_count >=
+  max_orders?: number,          // customer_stats.orders_count <=
+  min_days_silent?: number,     // customer_stats.days_silent >= (the design's "sleeping 60+")
+  max_days_silent?: number,     // customer_stats.days_silent <=
+  created_within_days?: number, // customers.created_at >= now() - N days (the design's "new this month")
+  customer_ids?: string[],      // explicit allow-list (manual selection in the CRM)
+}
+```
+The wizard's "recipients: N" preview and the real send are meant to call this with the campaign's
+own `channel` and count/use the same returned rows — "one implementation" as the proposal asked.
+
+### 8.3 `claim_campaign_recipients(limit integer default 50)` — service_role only
+
+```ts
+rpc('claim_campaign_recipients', { p_limit: 50 }) → campaign_recipients[]  // claimed rows
+```
+Shaped exactly like `claim_payment_jobs` (§2): `for update skip locked` so two workers never claim
+the same row; `claimed_at` (not `status`, since `campaign_recipient_state` has no `processing` value)
+marks a row "in flight," and a claim older than 10 minutes is treated as stale and reclaimed — same
+timeout shape as `payment_jobs.started_at`. **Unreachable with an anon or authenticated JWT** —
+`EXECUTE` is revoked from both explicitly (not just `public`), the exact thing S7-01/S1 found wrong
+in `payment-worker`. Does not create rows — it only claims ones that already exist; populating
+`campaign_recipients` for an actual send is S5's.
+
+### 8.4 Automations
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `automations` | `kind automation_kind` (welcome/win_back_45d/birthday/review_after_delivery, **unique**), `active`, `config jsonb` (`{delay_hours?, message_de?, message_en?, discount?}`), `last_run_at` | One row per kind, seeded inactive by the migration. owner/operator CRUD directly (`automations_staff_all`). S5's runner reads `active`+`config`, writes `last_run_at`; it does not create rows. |
+| `automation_runs` | `automation_id`, `customer_id null`, `at`, `outcome text` (S5's vocabulary — `sent`/`skipped`/`failed`), `detail jsonb` | Audit trail only. Staff read-only (`automation_runs_staff_read`), no write policy — S5's service-role connection writes it. `customer_id` is `on delete set null` so a later GDPR anonymisation never needs to touch this table. |
+
+### 8.5 `report_payments(from_date date, to_date date)` — authenticated, owner/operator only
+
+```ts
+rpc('report_payments', { from_date, to_date })
+→ { payment_method, payment_status, orders_count, total_cents, refunded_cents, failed_jobs_count }[]
+```
+Per `payment_method` × `payment_status` over the requested range (same `from_date`/`to_date`
+defaulting-to-30-days convention as §6.10's other reports). **Not a `security_invoker` view** like
+`customer_stats`/`menu_items_on_sale` — `payment_events`/`payment_jobs` carry no `payment_method` of
+their own, so getting it means joining `orders`, and `orders` RLS lets `kitchen` read every row
+unconditionally; a security_invoker view would have let that join leak through regardless of
+`payment_events`/`payment_jobs`'s own correctly-restrictive RLS. It is a `security definer` function
+with its own inline guard instead — **owner/operator only**, narrower than the other four
+`report_*` functions' `reports_guard()` (any active staff role), because this boot specifically asks
+for "kitchen/driver see nothing" on payment data, unlike the revenue/delivery-time figures they
+already see today.
+
+`orders_count`/`total_cents`/`refunded_cents` are sourced from `orders` directly (not from
+`payment_jobs`/`payment_events`): a cash refund settles `orders.payment_refunded_cents` without ever
+creating a `payment_jobs` row, so sourcing from the job queue alone would silently miss every cash
+refund — the one payment path actually exercisable on staging today. `failed_jobs_count` is the one
+column that needs the provider trail and is sourced from `payment_jobs` accordingly.
+
+**Unexercised against real provider data.** No Stripe account exists on `shosho-staging` — no
+`card`/`apple_pay`/`google_pay`/`paypal` row has ever had a real authorization, capture or refund.
+Correct by reading and by a hand-seeded test, not proven against a live Stripe response.
+
+### 8.6 Banners & the `site` bucket
+
+| Table / view | Key columns | Notes |
+|---|---|---|
+| `banners` | `slot banner_slot` (home_hero/home_strip/product/checkout), `image_path` (bucket `site`), `title_de/en`, `subtitle_de/en`, `cta_label_de/en`, `cta_href`, `valid_from/to`, `sort`, `active`, `draft jsonb null` | **owner/operator only**, including the `anon` table grant being revoked outright (not just RLS-filtered to zero rows) — belt-and-braces, matching `order_attempts` rather than the older RLS-only convention most staff-only tables use, because this table carries unpublished `draft` content. `draft` is a **partial patch**: a key absent (or JSON `null`) keeps the live value on publish (§8.7) — unlike `settings.draft`, which is a full replacement. |
+| `banners_live` | `id, slot, image_path, title_de, title_en, subtitle_de, subtitle_en, cta_label_de, cta_label_en, cta_href, sort` | The **only** anon-reachable surface for banner content — `security_invoker = false` (same reasoning as `staff_directory`, §4), explicit column list (no `draft`, no `active`/`valid_from`/`valid_to` — the view's own `where active and in-window` already applied them). Public read for `anon`. |
+
+Storage bucket `site` — same policy shape as `menu` (§6.5/§6.8): public read, `insert`/`update`/
+`delete` for `owner`/`operator` only (`ensure_site_bucket_policies()`, service_role-only installer,
+idempotent/re-runnable like its `menu` counterpart).
+
+### 8.7 Draft / publish (`settings.draft`, `publish_site()`, `site_publications`)
+
+The smallest model that gives the CMS design's "unpublished changes" counter and a publish action,
+per the S2-03 proposal §3: `settings` and `banners` rows get a `draft jsonb null` column; the guest
+site and every existing consumer keep reading `value` (settings) / the base table through
+`banners_live` (banners) — a draft can never be live until published.
+
+```ts
+rpc('publish_site')  // owner only, no arguments
+→ { id, settings_keys: string[], banner_ids: string[] }
+```
+Copies every pending `settings.draft` straight into `value` (a settings draft is a **full
+replacement**, not a patch — it's already the complete value a key would have) and merges every
+pending `banners.draft` onto its row's live columns (a **partial patch** — see §8.6), clears both,
+and writes one `site_publications` row (`at`, `actor_id`, `summary jsonb` — the keys/ids touched,
+`snapshot jsonb` — `{from, to}` per touched key/banner, captured *before* either update runs).
+`site_publications` is staff read-only (`owner`/`operator`), same shape as `payment_events`/
+`customer_events` — written only by `publish_site()`.
+
+**The column-level pitfall this boot named explicitly, and how it's closed.** RLS is row-level, not
+column-level: `settings_public_read` already admits `anon` to the `business`/`opening_hours`/`site`/
+`payments.enabled`/`kitchen.status` *rows*, so a plain `draft` column on the same table would hand
+`anon` every pending edit on those same rows — RLS does not hide one column within a row it already
+lets through. The fix is a **column-level `GRANT`**: `anon`'s blanket table grant on `settings` is
+revoked and re-granted for exactly `(key, value, created_at, updated_at)` — `draft` is pointedly
+absent from that list. `authenticated` keeps its existing table-level grant unchanged, so owner/
+operator continue to see `draft` on the rows their own row policies already admit them to.
+`banners.draft` needs no equivalent column-grant narrowing: the base `banners` table has **no**
+`anon` policy or grant at all (§8.6), so there is nothing on that table for `anon` to reach regardless
+of column; `banners_live`'s explicit column list is the only surface, and it never selects `draft`.

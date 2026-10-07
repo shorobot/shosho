@@ -101,3 +101,33 @@ deleted category (`menu_items.category_id` is `not null`). Deactivating hides th
 site, which covers the design's intent, but test and retired categories accumulate forever.
 **Request:** either declare deactivate-only as the product rule, or specify the delete (block while
 items remain / move them to a category the operator picks).
+
+## 13. `customer_stats` has no first-order timestamp, so "Neu diesen Monat" is keyed on `created_at`
+Added by S4-03. The Kunden screen's four segments come off `customer_stats` (§6.4), which exposes
+`orders_count`, `spent_cents`, `avg_cents`, `last_order_at`, `days_silent`, `cancelled_count` — but
+nothing for the **first** order. The design's tile is *"Neu diesen Monat · erste Bestellung"*, so S4-03
+keys it on `customers.created_at` in Europe/Berlin instead, which coincides because `place_order`
+creates the profile when the phone number is new (§1.3).
+
+It is an assumption the schema does not enforce: a profile created by hand, or imported, counts as
+"new this month" with no order at all, and a customer whose first order is re-created after an
+anonymisation would date from the wrong month.
+**Request:** add `first_order_at timestamptz` to `customer_stats` (same `filter (where status in
+('delivered','picked_up'))` as the other five) and S4 will switch the predicate to it in one line. Low
+priority — the current behaviour is right for every row that exists today.
+
+## 14. No single-customer GDPR erasure (restating §6.8's own note, now with a shipped workaround)
+§6.8 says on-request erasure "is not in S2-02 — S4 should surface the request and S0 will schedule an
+RPC for it", and `S2-single-customer-erasure.md` proposes one. S4-03 has shipped the surfacing half:
+"Daten löschen" writes a `note` with `payload.kind = 'erasure_request'`, `requested_at` and
+`requested_by` onto the customer's own timeline, and the profile renders it as pending until something
+clears it.
+**Request:** when that RPC is specified, have it (a) look for those marker notes so a request filed by
+hand is not lost, and (b) write an `anonymised` event, which is what the profile already watches for.
+The marker key is `erasure_request`, defined as `ERASURE_REQUEST_KIND` in
+`apps/backoffice/lib/crm.ts`.
+
+## 15. `order_items` has no option snapshot on the CRM's "most ordered" path — not a request, a note
+"Bestellt am häufigsten" counts `order_items.name` (the snapshot column), which is correct, but it
+means two orders of the same item with different options collapse into one line. That is what the
+design shows and S4-03 keeps it. Recorded only so nobody reads the figure as option-level demand.

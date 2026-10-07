@@ -9,6 +9,254 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      automation_runs: {
+        Row: {
+          at: string
+          automation_id: string
+          created_at: string
+          customer_id: string | null
+          detail: Json
+          id: string
+          outcome: string
+        }
+        Insert: {
+          at?: string
+          automation_id: string
+          created_at?: string
+          customer_id?: string | null
+          detail?: Json
+          id?: string
+          outcome: string
+        }
+        Update: {
+          at?: string
+          automation_id?: string
+          created_at?: string
+          customer_id?: string | null
+          detail?: Json
+          id?: string
+          outcome?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "automation_runs_automation_id_fkey"
+            columns: ["automation_id"]
+            isOneToOne: false
+            referencedRelation: "automations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "automation_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "automation_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      automations: {
+        Row: {
+          active: boolean
+          config: Json
+          created_at: string
+          id: string
+          kind: Database["public"]["Enums"]["automation_kind"]
+          last_run_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          kind: Database["public"]["Enums"]["automation_kind"]
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          kind?: Database["public"]["Enums"]["automation_kind"]
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      banners: {
+        Row: {
+          active: boolean
+          created_at: string
+          cta_href: string | null
+          cta_label_de: string | null
+          cta_label_en: string | null
+          draft: Json | null
+          id: string
+          image_path: string | null
+          slot: Database["public"]["Enums"]["banner_slot"]
+          sort: number
+          subtitle_de: string | null
+          subtitle_en: string | null
+          title_de: string | null
+          title_en: string | null
+          updated_at: string
+          valid_from: string | null
+          valid_to: string | null
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          cta_href?: string | null
+          cta_label_de?: string | null
+          cta_label_en?: string | null
+          draft?: Json | null
+          id?: string
+          image_path?: string | null
+          slot: Database["public"]["Enums"]["banner_slot"]
+          sort?: number
+          subtitle_de?: string | null
+          subtitle_en?: string | null
+          title_de?: string | null
+          title_en?: string | null
+          updated_at?: string
+          valid_from?: string | null
+          valid_to?: string | null
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          cta_href?: string | null
+          cta_label_de?: string | null
+          cta_label_en?: string | null
+          draft?: Json | null
+          id?: string
+          image_path?: string | null
+          slot?: Database["public"]["Enums"]["banner_slot"]
+          sort?: number
+          subtitle_de?: string | null
+          subtitle_en?: string | null
+          title_de?: string | null
+          title_en?: string | null
+          updated_at?: string
+          valid_from?: string | null
+          valid_to?: string | null
+        }
+        Relationships: []
+      }
+      campaign_recipients: {
+        Row: {
+          campaign_id: string
+          claimed_at: string | null
+          created_at: string
+          customer_id: string
+          error: string | null
+          id: string
+          opened_at: string | null
+          sent_at: string | null
+          state: Database["public"]["Enums"]["campaign_recipient_state"]
+          updated_at: string
+        }
+        Insert: {
+          campaign_id: string
+          claimed_at?: string | null
+          created_at?: string
+          customer_id: string
+          error?: string | null
+          id?: string
+          opened_at?: string | null
+          sent_at?: string | null
+          state?: Database["public"]["Enums"]["campaign_recipient_state"]
+          updated_at?: string
+        }
+        Update: {
+          campaign_id?: string
+          claimed_at?: string | null
+          created_at?: string
+          customer_id?: string
+          error?: string | null
+          id?: string
+          opened_at?: string | null
+          sent_at?: string | null
+          state?: Database["public"]["Enums"]["campaign_recipient_state"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "campaign_recipients_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "campaign_recipients_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "campaign_recipients_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaigns: {
+        Row: {
+          channel: Database["public"]["Enums"]["campaign_channel"]
+          created_at: string
+          id: string
+          message_de: Json
+          message_en: Json
+          name: string
+          scheduled_for: string | null
+          segment: Json
+          sent_at: string | null
+          stats: Json
+          status: Database["public"]["Enums"]["campaign_status"]
+          updated_at: string
+        }
+        Insert: {
+          channel: Database["public"]["Enums"]["campaign_channel"]
+          created_at?: string
+          id?: string
+          message_de?: Json
+          message_en?: Json
+          name: string
+          scheduled_for?: string | null
+          segment?: Json
+          sent_at?: string | null
+          stats?: Json
+          status?: Database["public"]["Enums"]["campaign_status"]
+          updated_at?: string
+        }
+        Update: {
+          channel?: Database["public"]["Enums"]["campaign_channel"]
+          created_at?: string
+          id?: string
+          message_de?: Json
+          message_en?: Json
+          name?: string
+          scheduled_for?: string | null
+          segment?: Json
+          sent_at?: string | null
+          stats?: Json
+          status?: Database["public"]["Enums"]["campaign_status"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
       customer_addresses: {
         Row: {
           city: string
@@ -959,23 +1207,65 @@ export type Database = {
       settings: {
         Row: {
           created_at: string
+          draft: Json | null
           key: string
           updated_at: string
           value: Json
         }
         Insert: {
           created_at?: string
+          draft?: Json | null
           key: string
           updated_at?: string
           value?: Json
         }
         Update: {
           created_at?: string
+          draft?: Json | null
           key?: string
           updated_at?: string
           value?: Json
         }
         Relationships: []
+      }
+      site_publications: {
+        Row: {
+          actor_id: string | null
+          at: string
+          id: string
+          snapshot: Json
+          summary: Json
+        }
+        Insert: {
+          actor_id?: string | null
+          at?: string
+          id?: string
+          snapshot?: Json
+          summary?: Json
+        }
+        Update: {
+          actor_id?: string | null
+          at?: string
+          id?: string
+          snapshot?: Json
+          summary?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "site_publications_actor_id_fkey"
+            columns: ["actor_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "site_publications_actor_id_fkey"
+            columns: ["actor_id"]
+            isOneToOne: false
+            referencedRelation: "staff_directory"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       staff: {
         Row: {
@@ -1009,6 +1299,48 @@ export type Database = {
       }
     }
     Views: {
+      banners_live: {
+        Row: {
+          cta_href: string | null
+          cta_label_de: string | null
+          cta_label_en: string | null
+          id: string | null
+          image_path: string | null
+          slot: Database["public"]["Enums"]["banner_slot"] | null
+          sort: number | null
+          subtitle_de: string | null
+          subtitle_en: string | null
+          title_de: string | null
+          title_en: string | null
+        }
+        Insert: {
+          cta_href?: string | null
+          cta_label_de?: string | null
+          cta_label_en?: string | null
+          id?: string | null
+          image_path?: string | null
+          slot?: Database["public"]["Enums"]["banner_slot"] | null
+          sort?: number | null
+          subtitle_de?: string | null
+          subtitle_en?: string | null
+          title_de?: string | null
+          title_en?: string | null
+        }
+        Update: {
+          cta_href?: string | null
+          cta_label_de?: string | null
+          cta_label_en?: string | null
+          id?: string | null
+          image_path?: string | null
+          slot?: Database["public"]["Enums"]["banner_slot"] | null
+          sort?: number | null
+          subtitle_de?: string | null
+          subtitle_en?: string | null
+          title_de?: string | null
+          title_en?: string | null
+        }
+        Relationships: []
+      }
       customer_stats: {
         Row: {
           avg_cents: number | null
@@ -1157,6 +1489,27 @@ export type Database = {
         Args: never
         Returns: Database["public"]["Enums"]["staff_role"]
       }
+      claim_campaign_recipients: {
+        Args: { p_limit?: number }
+        Returns: {
+          campaign_id: string
+          claimed_at: string | null
+          created_at: string
+          customer_id: string
+          error: string | null
+          id: string
+          opened_at: string | null
+          sent_at: string | null
+          state: Database["public"]["Enums"]["campaign_recipient_state"]
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "campaign_recipients"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       claim_payment_jobs: {
         Args: { p_limit?: number }
         Returns: {
@@ -1191,6 +1544,7 @@ export type Database = {
       }
       ensure_guest_realtime_policy: { Args: never; Returns: Json }
       ensure_menu_bucket_policies: { Args: never; Returns: boolean }
+      ensure_site_bucket_policies: { Args: never; Returns: boolean }
       finish_payment_job: {
         Args: {
           p_error?: string
@@ -1242,7 +1596,9 @@ export type Database = {
         }
         Returns: boolean
       }
+      payment_worker_secret: { Args: never; Returns: string }
       place_order: { Args: { payload: Json }; Returns: Json }
+      publish_site: { Args: never; Returns: Json }
       quote_order: { Args: { payload: Json }; Returns: Json }
       record_order_attempt: { Args: { payload: Json }; Returns: Json }
       record_payment_event: {
@@ -1277,6 +1633,8 @@ export type Database = {
         Returns: {
           attempts: number
           attempts_to_placed_pct: number
+          attempts_window_from: string
+          attempts_window_to: string
           attempts_with_problems: number
           cancelled: number
           paid: number
@@ -1284,6 +1642,17 @@ export type Database = {
           placed_to_paid_pct: number
           upsell_cents: number
           upsell_orders: number
+        }[]
+      }
+      report_payments: {
+        Args: { from_date?: string; to_date?: string }
+        Returns: {
+          failed_jobs_count: number
+          orders_count: number
+          payment_method: Database["public"]["Enums"]["payment_method"]
+          payment_status: Database["public"]["Enums"]["payment_status"]
+          refunded_cents: number
+          total_cents: number
         }[]
       }
       report_revenue_by_day: {
@@ -1320,6 +1689,17 @@ export type Database = {
         }[]
       }
       reports_guard: { Args: never; Returns: undefined }
+      resolve_segment: {
+        Args: {
+          p_channel: Database["public"]["Enums"]["campaign_channel"]
+          p_segment: Json
+        }
+        Returns: {
+          customer_id: string
+          has_email_consent: boolean
+          has_push_consent: boolean
+        }[]
+      }
       run_payment_worker: { Args: never; Returns: undefined }
       schedule_payment_worker: {
         Args: { p_anon_key: string; p_url: string }
@@ -1379,6 +1759,15 @@ export type Database = {
     }
     Enums: {
       actor_type: "customer" | "staff" | "system"
+      automation_kind:
+        | "welcome"
+        | "win_back_45d"
+        | "birthday"
+        | "review_after_delivery"
+      banner_slot: "home_hero" | "home_strip" | "product" | "checkout"
+      campaign_channel: "push" | "email" | "both"
+      campaign_recipient_state: "queued" | "sent" | "failed" | "opened"
+      campaign_status: "draft" | "scheduled" | "sending" | "sent" | "cancelled"
       order_channel:
         | "website"
         | "phone"
@@ -1537,6 +1926,16 @@ export const Constants = {
   public: {
     Enums: {
       actor_type: ["customer", "staff", "system"],
+      automation_kind: [
+        "welcome",
+        "win_back_45d",
+        "birthday",
+        "review_after_delivery",
+      ],
+      banner_slot: ["home_hero", "home_strip", "product", "checkout"],
+      campaign_channel: ["push", "email", "both"],
+      campaign_recipient_state: ["queued", "sent", "failed", "opened"],
+      campaign_status: ["draft", "scheduled", "sending", "sent", "cancelled"],
       order_channel: [
         "website",
         "phone",

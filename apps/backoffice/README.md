@@ -37,9 +37,21 @@ service-role key must never reach this app.
 
 ## Test logins
 
-The four seed accounts from [`apps/backend/README.md`](../backend/README.md) → *Test logins*
-(`owner@` / `operator@` / `kitchen@` / `driver@shosho.test`, shared password there). They exist in
-both the local stack and `shosho-staging`.
+The four seed accounts (`owner@` / `operator@` / `kitchen@` / `driver@shosho.test`) exist in both the
+local stack and `shosho-staging`. **How you get a password changed in S2-05** — the seed no longer
+sets a known one, so a fresh or reset project is never born with a credential that is in this public
+repo:
+
+- **Locally**, after `supabase db reset`, run `pnpm --filter @shosho/backend seed:local-logins` once
+  (or just `pnpm test`, which runs it). It sets a documented local-only password on all four accounts
+  and refuses to run against anything but a loopback Supabase URL, so run it freely. The value is in
+  [`apps/backend/README.md`](../backend/README.md) → *Test logins*.
+- **On `shosho-staging`**, the old shared password is still live — the seed's `on conflict do nothing`
+  could not touch rows that already existed — and should be treated as a known-compromised credential
+  that happens to still work. Once the owner runs `apps/backend/scripts/rotate-staging-passwords.mjs`
+  the new values exist only in a gitignored file on their machine: **ask the owner**, there is no
+  script either app can run to retrieve them. A staging login that suddenly fails is almost certainly
+  this, not a bug to debug.
 
 | Role | Lands on | May do |
 |---|---|---|
@@ -66,7 +78,9 @@ Automation is a later boot.
 | `/menu` | owner, operator | Speisekarte: categories (kana, counts, drag-sort, `schedule`, activate), items table (thumb, price, cost, margin, availability, stoplist, completeness flags), filters + search, bulk actions, shared option groups |
 | `/menu/item/[id]`, `/menu/item/new` | owner, operator | Artikel editor: Basis, Fotos, Verkauf, Küche, Recht, Optionen, Empfohlen dazu, live card/detail preview, margin panel, unsaved guard, Duplizieren |
 | `/menu/options` | owner, operator | shared option groups with usage counts; saving one warns how many items it changes |
-| `/customers`, `/website`, `/marketing`, `/reports`, `/settings` | owner, operator | "coming soon" placeholders (S4-03+) |
+| `/customers` | owner, operator | Kunden: search from the first character (name / phone / e-mail / address), four segment tiles with live counts, sort on every stat column, tag filter, multi-select → bulk tag (one upsert + Rückgängig) and CSV export |
+| `/customers/[id]` | owner, operator | Profil: contacts, both addresses, kitchen note, GDPR consents with date + source, stats, most-ordered items, merged `customer_events` timeline, note / complaint / compensation, data export, erasure request |
+| `/website`, `/marketing`, `/reports`, `/settings` | owner, operator | "coming soon" placeholders (S4-04+) |
 
 ## How the data flows
 
@@ -148,6 +162,86 @@ groups are created and edited inside the Artikel editor and are never listed as 
   out rather than filled with a number the operator would trust.
 - **`Importieren`** on the Speisekarte header — no import format is specified anywhere yet.
 
+## Security headers, CSP and the session cookie (S4-03)
+
+`middleware.ts` sets this app's own headers on every response — the app no longer inherits whatever
+Cloudflare happens to add (S7-01 finding 5). The policy and the reasoning live in
+[`lib/csp.ts`](lib/csp.ts); read that file before changing any of it. The short version:
+
+- **CSP is nonce-based and enforcing**, including `frame-ancestors 'none'` — the back-office must
+  never be iframe-able. This depends on `app/layout.tsx` being `dynamic = "force-dynamic"`, which it
+  already is for an independent reason (the image is built without Supabase values, so `publicEnv()`
+  has to be read per request). **Do not make a route under `app/` static or ISR**: its cached HTML
+  would carry a stale nonce and every script on the page would be blocked with no useful error.
+- **HSTS, `upgrade-insecure-requests` and the `Secure` cookie flag are skipped on loopback.** Over the
+  ssh tunnel the browser sees `http://localhost:8202`; HSTS with `includeSubDomains` there would pin
+  *every* localhost port to https in that browser profile, and a `Secure` cookie would never come
+  back, so sign-in would loop with no error. The decision is `isSecureContext()`, which reads the
+  forwarded headers and fails closed. It deliberately does **not** use `request.nextUrl.hostname` —
+  on Next 15.5.25 that is `"localhost"` for every request regardless of `Host`, which would mark
+  production as loopback and silently drop both protections there.
+- **Expect HSTS twice on `bo-shos.hellfiresol.com`.** TETA+PI's nginx sends its own
+  (`max-age=86400`) in front of this app. Per RFC 6797 a user agent processes only the first, so it is
+  a duplicate-header smell rather than a bug, and the host is S1's boundary (D-004) — not ours to fix.
+- **The session cookie is not `HttpOnly`, on purpose.** `@supabase/ssr`'s browser client stores the
+  session in `document.cookie`, and this app reads its data from client components through that
+  client, so the token has to stay readable from JavaScript. A server-written `HttpOnly` cookie would
+  be invisible to it at the first token refresh and every RLS-filtered query would quietly return
+  empty. Full reasoning in [`lib/supabase/cookies.ts`](lib/supabase/cookies.ts); the finding is filed
+  back to S7 in `/memory/boots/proposed/S7-S4-03-httponly-correction.md`.
+
+The post-login `?next=` redirect is validated in [`lib/safeRedirect.ts`](lib/safeRedirect.ts) —
+same-origin relative paths only. `tests/security.test.ts` covers each bypass (`//evil.example`,
+`/\evil.example`, scheme payloads, tab/newline forms a browser strips before parsing).
+
+### Checking the headers yourself
+
+```bash
+# over the tunnel: no HSTS, no upgrade-insecure-requests (both correct on loopback)
+curl -sI http://127.0.0.1:8202/login | grep -iE 'content-security-policy|x-frame|referrer|permissions|strict-transport'
+
+# how the real host is treated (the forwarded headers are what decide)
+curl -sI -H 'X-Forwarded-Proto: https' http://127.0.0.1:8202/login | grep -i strict-transport
+```
+
+## Kunden / Profil (S4-03)
+
+Pure logic lives in [`lib/crm.ts`](lib/crm.ts) and is unit-tested in `tests/crm.test.ts`; the data
+layer is [`lib/crmStore.tsx`](lib/crmStore.tsx) (one load for the list, a per-profile loader with a
+realtime subscription for the timeline).
+
+- **Segments** come off `customer_stats`, which counts **completed orders only** (`delivered` +
+  `picked_up`, §6.9 row 8): Stammkunden `orders_count >= 3`, schlafend `days_silent >= 60`, Firmen
+  `is_company`. "Neu diesen Monat" is keyed on `customers.created_at` in Europe/Berlin, because the
+  view exposes no first-order timestamp and a profile is created by `place_order` when the phone
+  number is new — so the two coincide in practice. Stated because it is an assumption, not something
+  the schema enforces.
+- **`days_silent`** mirrors the view's SQL (`extract(day from now() - last_order_at)`), i.e. whole
+  *elapsed* days, not a calendar-date difference. 47 hours ago is 1, not 2. Getting that wrong would
+  move customers in and out of "schlafend" by time of day and disagree with the DB for the same row.
+- **The timeline is a union, not a concatenation.** A trigger already writes one `order` event per
+  order, so appending the orders as a second stream would show every one of them twice. `mergeTimeline`
+  keys on order id, enriches each `order` event with the live order row (the event payload is written
+  `after insert`, when the status is always `new`, but the design shows the current status), and
+  synthesises an entry for any order with no event of its own.
+- **Writes go through the RPC.** `customer_events` has a staff *read* policy and no write policy for
+  anyone — a direct insert is refused with `42501` even for the owner. Use
+  `rpc('add_customer_event', …)`; `payload.text` is required for a note and a complaint.
+- **Consents are written through**, never patched locally, so the `customers_consent_changed` trigger
+  records who changed which channel and from what source.
+- **Unavailable actions are disabled with a reason.** "Push senden" / "Nachricht" have no messaging
+  channel — per **D-016** customer messaging arrives with customer accounts (the notification bell
+  first, then push), not with S5 — and "Gutschein senden" has no voucher issuing until S2-06. Both
+  render disabled with a tooltip naming what is missing rather than as buttons that do nothing.
+- **Erasure is a request, not an act.** There is no server-side single-customer erasure — only the
+  nightly 24-month job (§6.8). "Daten löschen" files an auditable `note`
+  (`payload.kind = 'erasure_request'`) on the customer's own timeline for an operator to action by
+  hand, and the profile shows it as pending. GDPR Art. 17 starts a clock on the *date of the request*,
+  so losing that date is the one outcome worth avoiding; a disabled button records nothing.
+- **Completed orders may legitimately show as unpaid.** Since S2-04 a non-cash order with no payment
+  provider reaches `delivered`/`picked_up` with `payment_status` untouched. Until the owner's Stripe
+  keys exist that is correct — the profile says so in a note rather than hiding or coercing it.
+
 ## End-to-end smoke
 
 `e2e/smoke.spec.ts` signs in with the seed logins and checks the board, the DE/EN toggle, role
@@ -199,12 +293,6 @@ machine — the forwarded port only serves the app itself.
 
 ## Known gaps (v1)
 
-- **The storefront does not render uploaded photos yet.** `apps/web/components/ui/Photo.tsx`
-  treats `photos[0]` as an image only when it is an absolute URL, but the contract stores
-  bucket-qualified paths (`menu/<item_id>/<n>.webp`, §1.2/§6.8), so every card falls back to the
-  placeholder. Verified on staging 2026-09-27. The fix is one `getPublicUrl` call in `apps/web`,
-  which this session may not touch — filed for S3 in
-  [`/memory/boots/proposed/S4-contract-request.md`](../../memory/boots/proposed/S4-contract-request.md).
 - Menu changes reach the storefront after up to **60 s** — `apps/web` caches its Supabase reads with
   `next: { revalidate: 60 }`. Expected, not a bug; worth knowing before someone reports it as one.
 - Categories can be created, renamed and deactivated, not deleted — deletion needs a rule for the
@@ -213,6 +301,15 @@ machine — the forwarded port only serves the app itself.
 - Kitchen load is a placeholder (`accepted + preparing` against a nominal capacity of 8) — there is
   no capacity model yet.
 - "Info" (notify the customer) on an out-for-delivery order is not wired — no messaging channel yet.
-- The CRM link on the detail screen is a placeholder until S4-03.
+- Bulk tagging sends the customer rows this screen loaded, so a column another operator changed in
+  the meantime is written back as we saw it. One upsert per action is the established pattern (never a
+  per-row loop) and a single `update` cannot express a different tag array per row; the window is
+  seconds and "Rückgängig" restores the prior snapshot.
+- The Kunden list loads every customer and filters in the browser. Fine at the current scale (single
+  digits on staging, ~1 000 in the design) and wrong at ten times that — move search and segments
+  server-side before it gets there.
+- "Importieren" on the empty Kunden state is not rendered: there is no import path yet, and the design's
+  CTA would be a button that does nothing.
+- Single-customer GDPR erasure is a filed request, not an execution — see above.
 - XLSX export is a later boot; CSV is client-side.
 - Gaps found in §6 are written up in `/memory/boots/proposed/S4-contract-request.md`.

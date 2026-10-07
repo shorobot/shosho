@@ -1,9 +1,22 @@
 // [S2-02] payment-worker — drains public.payment_jobs against Stripe (D-011).
 // Invoked by: pg_cron every minute + the payment_jobs insert trigger (both via pg_net with the
 // anon key from Vault — see migration 17), or by hand (`supabase functions invoke payment-worker`).
-// verify_jwt stays on: the gateway wants a project JWT (anon is enough); the work itself uses the
-// service role from the function environment. Every Stripe call carries an idempotency key
-// `job:<id>:<attempt>` so a retried job can never capture / refund twice.
+// CALLER RULE (S2-04, S7-01 findings 3 and 7 — S1 found the same thing in S1-04). `verify_jwt` only
+// proves the caller has *some* project JWT, and the anon key qualifies — it ships in the public guest
+// web bundle. Draining the queue is a money operation, so it now additionally requires one of:
+//   · `Authorization: Bearer <service-role key>`, or
+//   · `x-worker-secret: <public.payment_worker_secret()>` — a 32-byte secret only the DB and this
+//     function can read; `run_payment_worker()` sends it with every pg_cron POST (migration 26).
+// `{"action":"install"}` is still reachable with the anon key **for now**: `migrate-staging.yml`
+// calls it that way and S1 owns workflows, so that token swap is routed as a proposal
+// (`/memory/boots/proposed/S2-04-S1-payment-worker-install-token.md`). Its parameters are entirely
+// server-side constants, so the residual surface is "a stranger can re-run our own cron install".
+// Install also rewrites the Vault key to the service-role key, so the drain path becomes strict the
+// first time it runs after deploy.
+//
+// Every Stripe call carries an idempotency key. Capture / void / update use `job:<id>:<attempt>`;
+// **refunds use a key that is stable across attempts** (`refund:job:<id>`) plus a pre-check against
+// the refunds already on the intent — see `_shared/refund-plan.ts` for why.
 //
 // POST {}                    → process up to 10 queued jobs, returns a summary
 // POST {"action":"install"}  → schedule_payment_worker(<this function's URL>, anon key): writes the
@@ -12,10 +25,11 @@
 import Stripe from "npm:stripe@17";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, problem } from "../_shared/http.ts";
+import { bearerToken, timingSafeEqual } from "../_shared/secure-compare.ts";
+import { planRefund, type ExistingRefund } from "../_shared/refund-plan.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
 
 type Job = {
@@ -50,11 +64,18 @@ async function runJob(stripe: Stripe, job: Job, order: { payment_intent_id: stri
       return { ok: true, result: { status: canceled.status } };
     }
     case "refund": {
-      if (pi.status !== "succeeded") return { ok: false, final: pi.status === "canceled", error: `cannot refund: intent is ${pi.status}` };
-      const remaining = (pi.amount_received ?? 0) - order.payment_refunded_cents;
-      const amount = job.amount_cents ?? remaining;
-      if (amount <= 0 || amount > remaining) return { ok: false, final: true, error: `refund amount ${amount} outside 1..${remaining}` };
-      const refund = await stripe.refunds.create({ payment_intent: piId, amount, metadata: { order_id: job.order_id, job_id: job.id } }, idem);
+      // Ask Stripe what already happened before doing anything — the same shape capture/void use.
+      const listed = await stripe.refunds.list({ payment_intent: piId, limit: 100 });
+      const plan = planRefund(job, { status: pi.status, amount_received: pi.amount_received ?? null },
+        { payment_refunded_cents: order.payment_refunded_cents }, listed.data as unknown as ExistingRefund[]);
+      if (plan.kind === "error") return { ok: false, final: plan.final, error: plan.error };
+      if (plan.kind === "already") {
+        return { ok: true, result: { already: "refunded", refund_id: plan.refund_id, amount: plan.amount, status: plan.status } };
+      }
+      const refund = await stripe.refunds.create(
+        { payment_intent: piId, amount: plan.amount, metadata: { order_id: job.order_id, job_id: job.id } },
+        { idempotencyKey: plan.idempotencyKey },
+      );
       return { ok: true, result: { refund_id: refund.id, amount: refund.amount, status: refund.status } };
     }
     case "update_amount": {
@@ -77,6 +98,18 @@ async function runJob(stripe: Stripe, job: Job, order: { payment_intent_id: stri
   }
 }
 
+/**
+ * Is this caller allowed to move money? Service-role bearer, or the DB-held worker secret.
+ * The anon key — public, in the web bundle — is explicitly not enough.
+ */
+async function isTrustedCaller(req: Request, admin: ReturnType<typeof createClient>): Promise<boolean> {
+  if (timingSafeEqual(bearerToken(req), SERVICE_KEY)) return true;
+  const presented = req.headers.get("x-worker-secret");
+  if (!presented) return false;
+  const { data: secret } = await admin.rpc("payment_worker_secret");
+  return typeof secret === "string" && secret.length > 0 && timingSafeEqual(presented, secret);
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return problem("method_not_allowed", 405);
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
@@ -89,12 +122,23 @@ Deno.serve(async (req) => {
   }
 
   if (body.action === "install") {
+    // Still anon-reachable during the transition (see CALLER RULE above). Note what it writes:
+    // the *service-role* key, not the anon key, so pg_cron stops presenting a public credential
+    // and the drain path below starts passing its check.
     const { data, error } = await admin.rpc("schedule_payment_worker", {
       p_url: `${SUPABASE_URL}/functions/v1/payment-worker`,
-      p_anon_key: ANON_KEY,
+      p_anon_key: SERVICE_KEY,
     });
     if (error) return problem("db_error", 500, { message: error.message });
+    // Make sure the secret exists before the first cron tick needs it.
+    await admin.rpc("payment_worker_secret");
     return json({ installed: true, ...data });
+  }
+
+  if (!(await isTrustedCaller(req, admin))) {
+    return problem("forbidden", 403, {
+      hint: "payment-worker needs the service-role key or x-worker-secret; the anon key is not enough",
+    });
   }
 
   if (!STRIPE_SECRET_KEY) return problem("stripe_not_configured", 503, { hint: "set function secret STRIPE_SECRET_KEY" });

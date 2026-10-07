@@ -66,7 +66,7 @@ export function ProductClient({ item, category, recommended }: { item: MenuItem;
           <div className="grid items-start gap-[34px] md:grid-cols-[repeat(auto-fit,minmax(330px,1fr))]">
             <div className="flex flex-col gap-3">
               <div className="relative aspect-square overflow-hidden rounded-[22px] bg-[#F7F3EF]">
-                <Photo item={item} index={0} />
+                <Photo item={item} index={0} sizes="(max-width: 768px) 100vw, 520px" priority />
               </div>
               <div className="flex gap-2.5" aria-hidden>
                 <div className="aspect-square flex-1 rounded-[14px] border-2 border-orange photo-sand" />
@@ -167,8 +167,8 @@ function Pairing({ item, index, disabled }: { item: MenuItem; index: number; dis
   };
   return (
     <div className="flex items-center gap-3 rounded-[18px] border border-[#EFEAE4] p-3">
-      <Link href={`/menu/${itemSlug(item)}`} className="h-14 w-14 flex-none overflow-hidden rounded-[14px]" aria-label={item.name_en}>
-        <Photo item={item} index={index + 1} />
+      <Link href={`/menu/${itemSlug(item)}`} className="relative h-14 w-14 flex-none overflow-hidden rounded-[14px]" aria-label={item.name_en}>
+        <Photo item={item} index={index + 1} sizes="56px" />
       </Link>
       <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <Link href={`/menu/${itemSlug(item)}`} className="text-[13px] font-extrabold leading-[1.2] hover:text-orange">{item.name_en}</Link>

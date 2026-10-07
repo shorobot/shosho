@@ -587,3 +587,1106 @@ changed and for the components this boot leaves behind. Not executed — waiting
 Merged S1-05 (PR #36 — `api` placeholder dropped per D-013, pipefail sweep across the workflows), S2-03 (PR #34 — §6.9 implemented, `order_attempts`, report views; it also absorbed S2-04's renumber and the `db lint` fix, so `s2-04` starts green) and S4-02 (PR #37 — Speisekarte, Artikel editor, photo upload; its memory conflict resolved by S0 per D-009).
 S4-02 surfaced the kind of defect this project had no one looking for: the back-office writes bucket-qualified photo paths exactly as §6.8 says, the storefront's `Photo.tsx` only renders absolute URLs, **both sides' tests pass, and no menu photo has ever been visible to a guest**. Filed by S4 as contract request §9 and now the headline task of **S3-02**, together with calling `record_order_attempt` (S2 built the table in S2-03; nothing writes to it, so every funnel figure reads 0) and S7's security-headers finding. Payments UI is deliberately held back to S3-03 until S2-04 lands and a Stripe account exists.
 Issued **S6-01**, the first QA boot, aimed squarely at that class of bug: seams between sessions, independent re-verification of the load-bearing claims in this log rather than trust, the twelve product rules checked literally against the design, and a verdict with numbers on the `guest_realtime` flake that has now cost three unrelated PRs a re-run. S6 fixes nothing outside its own suite — a QA session that patches the code it tests stops being one.
+
+## 2026-09-27 — S1 DevOps — S1-05
+`api` is gone from staging and the deploy is green without it. The back-office host is **still
+owner-blocked** — DNS does not resolve, so I did nothing to it. Reported in two PRs on purpose:
+#36 carried the change, this entry needs numbers that only exist after the change is on `main`.
+
+**The trim (task 1) — done, and `.env` got smaller too.** Removed the `api` service from
+`docker-compose.staging.yml`, its build/push from `_deploy.yml`, the `:8201` health probe, and
+`api_port` from both callers. On the server the container went with `--remove-orphans`; I deleted
+`ghcr.io/shorobot/shosho-api:staging` by hand (`docker image prune -f` only touches dangling images),
+which also returned ~200 MB of disk to a box we share. **I left the GHCR package alone** — deleting a
+package version is not cheap to undo and costs nothing to keep, so `shosho-api` stays in the registry
+with its last `staging` tag; S5 overwrites it. Nothing listens on 8201 any more (`curl` → 000) and
+`ss` confirms only 8200 and 8202 are bound, loopback-only.
+
+One thing beyond the literal task, worth a look: `_deploy.yml` was rendering
+`SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` into the server's `.env`, and the `api` container
+was **their only consumer**. They now have no reader at all, so I stopped rendering them. Verified on
+the server — `.env` holds seven keys, none of them a service-role key. A service-role key sitting in a
+file on a shared host with nothing reading it is pure exposure; this is not a finding about anyone's
+code, just cleanup that D-013 made obvious. If S5 needs them, they go back scoped to that service, not
+as a blanket render.
+
+Kept on purpose: the **local** `docker-compose.yml` placeholder, `placeholder-api/`, and its CI jobs.
+D-013 is about 160 MiB of staging RAM, not about local dev. Restore instructions for S5 are commented
+in place in both `docker-compose.staging.yml` and `_deploy.yml`, naming D-013.
+
+**Capacity (task 2) — the prediction held, but `memory.current` is the wrong number and I want to say
+so plainly.** Both readings are mine, same box, same command, before and after the deploy:
+
+| | before (3 containers) | after (2) | change |
+|---|---|---|---|
+| `memory.current` | 455.9 MiB | **456.4 MiB** | **+0.5 — it did not move** |
+| `memory.peak` | 515.1 MiB | 515.2 MiB | +0.1 (historic) |
+| `memory.events.max` | 7899 | 12749 | +4850 (this deploy) |
+| `anon` (non-reclaimable) | 249.7 MiB | **191.5 MiB** | **−58.2** |
+| `file` (reclaimable cache) | 170.7 MiB | 234.3 MiB | +63.6 |
+| `kernel` | 35.7 MiB | 30.7 MiB | −5.0 |
+| containers, actual | api 35.5 + web 58.8 + bo 53.8 = 148.1 | web 55.4 + bo 63.3 = **118.7** | −29.4 |
+| containers, declared ceilings | 96+96+160 = 352 MiB | **192 MiB** | **−160** |
+
+**Anyone checking this trim by reading `memory.current` will conclude it did nothing.** It sat at
+~456 MiB before and after, because the kernel immediately took the freed memory as page cache — `file`
+rose 63.6 MiB, almost exactly what `anon` gave up. In a cgroup with a hard `memory.max`, page cache
+expands to the ceiling by design; `memory.current` measures how much cache the kernel felt like
+holding, not how close we are to a kill. The number that protects us is **`anon` + `kernel`, which
+fell from 285.4 to 222.2 MiB**.
+
+**New worst case at declared limits: ~296 MiB of 512 MiB** (192 container ceilings + 72.8 non-container
+anon — dockerd/containerd/rootlesskit/systemd/ssh — + 30.7 kernel), leaving ~216 MiB. Using S1-04's
+more conservative overhead figure of ~142 MiB instead of today's measured 103.5, it is **~334 MiB**,
+leaving ~178 MiB. So: prediction ~334, actual 296–334 depending on which overhead number you trust,
+against a prior 494. **The prediction was met.** The cleanest way to state why it is exact: we removed
+a 160 MiB ceiling, and 494 − 160 = 334.
+
+Two things I am *not* dressing up. `memory.events.max` rose by **4850** during this deploy (S1-04's
+deploy moved it by ~50): pulling two fresh ~330 MB images churns page cache against the ceiling, and
+each reclaim counts. And `memory.peak` ticked up 96 KB, so the slice **did** touch ~515 MiB again
+during the pull. Neither is an OOM: `oom_kill` is still **1** — TETA+PI's own cap test of 2026-09-20,
+per the S1-04 addendum — and both containers report `oom_kill 0`. The trim was never going to reduce
+`max` events, because cache will always grow into whatever ceiling exists. It reduced the floor, which
+is the part that kills you.
+
+**Back-office host (task 3) — still owner-blocked, but the origin half is now verified, not assumed.**
+`dig bo.shos.hellfiresol.com` is empty for both A and CNAME — checked at the start of this boot, again
+at the end, and again on 2026-09-28; `curl` → 000. Per the boot I did not force it, invented no
+workaround, gave out no URL, and did not re-ask TETA+PI.
+
+**Correction to what I first wrote here (TETA+PI, 2026-09-28):** I had this entry saying their vhost was
+"approved and queued". It is not queued — **it has been live on the origin since 2026-09-26**
+(teta-pi/infra #129), and I verified that myself rather than taking it on trust, which the boot
+explicitly requires for the gate. No DNS is needed to test it:
+
+```
+curl -D - -H 'Host: bo.shos.hellfiresol.com' http://164.90.235.66/
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"
+Strict-Transport-Security / X-Content-Type-Options: nosniff / X-Frame-Options: DENY
+```
+
+`/` and `/login` both answer **401 before the app renders anything** — the gate challenges, and it went
+up in the same change as the vhost, so the no-unguarded-window condition I asked for in S1-04 held in
+practice and not just on paper. Credentials are on the owner's machine only
+(`~/.tetapi/shos-bo-basicauth`, 600); I did not request them and they belong nowhere near chat or git.
+
+What this changes: **only the Cloudflare side is left.** I still cannot verify the edge half — valid
+TLS at `bo.shos.…`, the challenge surviving the proxy, 200 behind the gate, the four seed logins — and
+I will not claim any of it until DNS exists. Task 3 therefore stays on its "does not resolve" branch.
+
+The guest site is unaffected and re-verified: `https://shos.hellfiresol.com/` → **200, valid TLS**
+(`ssl_verify_result=0`), correct S3-01 title. No public plain-http login form exists, confirmed rather
+than assumed: the only public hostname serving the back-office would be `bo.shos.…`, which does not
+resolve, and `/login` on the guest host is 404. Over the ssh tunnel the back-office is healthy —
+`:8202/login` 200 (`<title>Anmelden · SHOSHO BO`), `:8202/` 307 to login.
+
+**The four owner actions, unchanged, in one block:**
+1. **DNS** — Cloudflare → zone `hellfiresol.com` → DNS → Add record: `CNAME`, name `bo.shos`, target
+   `shos.hellfiresol.com`, **Proxied (orange cloud) ON**, TTL Auto.
+2. **Configuration Rule** — duplicate the rule added 2026-09-26 that fixed `https://shos.…` landing on
+   the hellfire apex, changing only the hostname match to `bo.shos.hellfiresol.com`. Copy the settings,
+   do not re-derive them.
+3. **"Always Use HTTPS"** for that hostname (SSL/TLS → Edge Certificates, or a Configuration Rule
+   scoped to it). This must be at the edge — an origin `:80→https` redirect would loop under CF Full
+   (S1-04 addendum). This is what stops a staff password crossing plain http.
+4. **Cloudflare Access** — Zero Trust → Access → Applications → self-hosted app,
+   `bo.shos.hellfiresol.com`, policy Allow → include → Emails (your address + each staff address).
+   Free ≤ 50 users. If it paywalls, stop and say so; we stay on TETA+PI's basic-auth. If it goes live,
+   tell me and I ask TETA+PI to drop basic-auth — not before.
+
+**A gate that did not exist when this boot was written.** S7-01 landed mid-boot and its
+`S7-02-S1-…` proposal, task 2, says the four seed staff logins share one password that is **published
+in this public repo** (`apps/backend/README.md`), and that `bo.shos.hellfiresol.com` must not go live
+before it is rotated. I agree, and it changes the finish line: when DNS appears, the Cloudflare gate is
+**necessary but no longer sufficient**. Rotation is not mine (it is seed data in `apps/backend`, S2's
+file, and the live values are S7's item), so I did nothing to it — but whoever gets the "DNS is up"
+boot must treat it as a precondition, not a follow-up. Flagging to S0 rather than acting.
+
+**Pipefail sweep (task 4) — three more live instances of the class, all fixed.** The runner's shell is
+`bash -e {0}`: errexit only, no pipefail, no nounset.
+1. **`ci.yml`, the co-tenant port guard.** `grep … | grep -oE … | while read` reported only the
+   while-loop's status, and ran the loop in a subshell. A staging compose that published **no ports at
+   all** walked through this guard green — the guard that exists to keep us inside 8200–8299 for
+   TETA+PI. Rewritten with `awk` (exit 0 on no match) and an explicit empty-list failure; tested both
+   ways locally, and the negative case fails as it should.
+2. **`ci.yml`, backend, two steps.** `eval "$(pnpm exec supabase status -o env | sed …)"` reports
+   *eval's* status: a failed `supabase status` evaluated to nothing, exited 0, and the step ran on with
+   `DB_URL` unset. **`pipefail` cannot fix this shape** — the substitution's status is discarded by
+   `eval` regardless — so the fix is to assign first, then eval, and let `set -u` catch a missing var.
+   Worth knowing for anyone who greps for `| tee` and thinks they are done.
+3. **`migrate-staging.yml`, the plan step.** `last=$(git ls-tree … | sed | sort | tail -1 | cut …)`
+   reported `cut`'s status, so a failing `git` left `last` empty and `${last:-0}` made every new
+   migration's timestamp look newer — the migration-ordering guard would have passed silently.
+
+Also upgraded the `_deploy.yml` health step from `set -e` to `set -euo pipefail` on **both** sides of
+the ssh boundary; the remote `bash -s` is not the runner's shell and needs saying separately. Note
+added to `apps/infra/README.md` covering all three shapes plus the ssh-heredoc case. Checked and left
+alone: the compose smoke loop, where `[ "$api" = 200 ] && break` is an AND-list and correctly does not
+trip `set -e`.
+
+**`S1-06-prod-target.md` refreshed (task 5) — still a proposal.** Gap 1: env-only secrets are now a
+proven shape, not advice, and `PROD_SUPABASE_SERVICE_ROLE_KEY` has no reader on a prod host either.
+Gap 2: staging is two containers at ~296–334 MiB worst case, not three at ~494 — but that margin is
+earmarked for S5's real FastAPI service, **not** for co-locating prod; D-004 stands. Gap 4:
+`migrate-prod.yml` still does not exist, and must be written with `set -euo pipefail` throughout —
+on prod this bug class is a silent partial release. Gap 6: the "does the api placeholder ship" question
+is settled by D-013. **Gap 7, new: the `payment-worker` finding is a hard pre-prod gate — no `v*` tag
+until S7 confirms it is fixed, and I will not build a pipeline that can ship it.** Also recorded the
+ruleset-vs-classic-protection caveat so the prod-gate audit does not re-derive S7's false positive.
+
+**CI honesty note.** `backend (supabase)` failed once on my branch on the known `guest_realtime` flake
+(`partitions_created: []`, the exact signature in state.md) and passed on re-run. It was not my change:
+the step reached vitest and ran 71 tests, 70 passing, so the rewritten `eval` exported `API_URL` and
+the keys correctly. S2-03 has since made that test deterministic.
+
+**On 8201, for the record.** TETA+PI observed 8201 still bound and flagged it, hedging that my deploy
+might not have landed — their hedge was the right one. A full `ss -ltn` on the box (all users, not just
+mine) shows **nothing bound to 8201**; only 8200 and 8202 are, both loopback, both `rootlesskit`. Their
+reading predates the deploy. They confirm 8200–8299 stays ours and 8201 stays reserved.
+
+**Blockers:** the back-office host needs the **owner's four Cloudflare actions** and nothing else —
+TETA+PI's side is done and verified. The seed-password rotation above is now a second precondition
+before it goes live. TETA+PI were told 8201 is idle and reserved — informational, no request, and I did
+**not** ask for a cap increase; the trim was the answer.
+
+## 2026-09-28 — S0 Orchestrator — S1-05 reviewed and independently verified; S4-03 issued
+Re-verified S1-05's load-bearing claims rather than taking them: a `Host:`-header request to the origin returns `401 WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"` on `/login`; the guest site still answers 200; `ss -ltn` shows only `127.0.0.1:8200` and `:8202` with `8201` free; two containers running; slice `anon` 216.7 MiB + slab 22.6 MiB. All as reported.
+Two things in S1's report deserve recording. Its capacity note is the useful kind: `memory.current` did **not** move after the trim (455.9 → 456.4 MiB) because page cache expands into whatever a hard `memory.max` frees — reading that metric alone would have said the change did nothing, while the protective figure `anon`+`kernel` fell 285.4 → 222.2 MiB. And it went one step past the task for the right reason: `SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` were being rendered into the server `.env` for the `api` placeholder that was their only reader, so it stopped rendering them — a service-role key sitting on a shared host with no consumer is pure exposure.
+Corrected my own stale text: state.md still described the `api` placeholder on `:8201` and `shosho-api` in the pipeline, and implied the back-office vhost was queued when it had been live on the origin since 2026-09-26 — so the host was less blocked than this file claimed for two days. Also recorded the **second** go-live precondition that was only in S7's findings: the four staff seed logins share one password published in this public repo and must be rotated before `bo.` resolves.
+Issued **S4-03**: S7's back-office hardening first (the `?next=` open redirect accepts `//evil.example`, no app-set security headers, cookie flags) because a DNS record could appear any day, then the CRM screens — with an explicit instruction not to ship buttons that lie: push, vouchers and on-request erasure have no backend yet and must render as unavailable rather than as controls that silently do nothing.
+
+## 2026-09-28 — S2 Backend — S2-04
+
+All four S7-01 backend findings fixed. PR #41 → `main`. Migrations **25–26**. `backend` CI green.
+
+**Finding 1 (CRITICAL) — the payment trust boundary.** `place_order` believed whatever
+`payment_status` its caller sent, and `anon` is the caller on the guest site. So
+`rpc('place_order', { payment_method: 'card', payment_status: 'authorized' })` bought a free meal: a
+`payment_authorized` event nobody had authorized, auto-accept straight into the kitchen queue when
+under `auto_accept_paid_under_cents`, and `paid` the moment staff marked it delivered — Stripe never
+involved at any point. Live on staging since S2-01.
+
+It survived S2-01, S2-02 and two reviews for one reason worth naming: **a passing test asserted it
+worked.** `place_order.test.ts` "auto-accepts authorized orders under 50 €" was green on every run.
+A test that locks in a vulnerability is worse than no test, because it converts "nobody checked" into
+"somebody checked and it was fine". S7 found it by reading the trust boundary rather than the suite.
+
+Three things were each independently sufficient to cause it, so all three changed:
+- **A guest order is created `pending`, full stop.** Anything else is **refused**
+  (`problems: [{code: 'invalid_input', field: 'payment_status'}]`, nothing written) rather than
+  silently coerced — a coerced order would look to an attacker like it had worked and would leave no
+  trace; a rejected one is visible. A guest's `payment_ref` is dropped: unverified display text.
+- **`authorized` is reachable from exactly one place** — `record_payment_event`, behind the
+  signature-verified Stripe webhook. Not from any RPC, not for staff either. That word means "a
+  provider is holding money we can capture", and only the provider can say it.
+- **Completion is not evidence of payment.** `set_order_status`'s "v1 client-reported" branch marked
+  any non-cash order without a provider `paid` on delivered/picked_up. Fixing the first two points
+  would not have fixed this: today **no Stripe account exists**, so every card order on staging has
+  `payment_provider is null` and was completing as `paid` having never been charged. It now completes
+  with `payment_status` untouched plus an `order_events` note `code = 'payment_not_confirmed'` — the
+  same shape as the cash `cash_not_received` flag the back-office already renders.
+
+Staff keep one narrow power, because a phone order can genuinely be paid at the counter: `owner` /
+`operator` may pass `payment_status: 'paid'` and a `payment_ref`. Not `authorized`. Every such order
+writes an `order_events` `note` with `code = 'payment_recorded_by_staff'`, the method, the amount and
+`actor_id = auth.uid()`, so "this order started out paid" always has a name against it. Auto-accept
+now keys only off that, or off a real authorization arriving in the webhook.
+
+**Finding 2 — refunds could pay out twice.** `capture` and `void` always asked Stripe for the
+intent's live status first; `refund` had no equivalent, and `payment_jobs` re-claims after 10 minutes
+with a *new* idempotency key (`job:<id>:<attempt>`), which Stripe treats as a genuinely new request.
+Die between `refunds.create()` resolving and `finish_payment_job` committing and the customer is
+refunded twice. Two guards: an **attempt-stable** key (`refund:job:<id>` — Stripe replays the
+original response for 24 h, and this is the half that actually closes the race because it needs no
+state of ours), plus a pre-check listing the intent's refunds for `metadata.job_id`, which still
+works after the 24 h window has passed. The planner is a pure function, so
+`tests/refund_idempotency.test.ts` plays the crash-then-reclaim sequence exactly — no Stripe account,
+no network, no flakiness.
+
+**Findings 3/7 — `payment-worker` accepted the public anon key.** `verify_jwt = true` only proves
+*some* project JWT, and the anon key ships in the guest web bundle. Draining the queue now requires
+the service-role key or `x-worker-secret` — 32 bytes the DB generates and keeps in Vault
+(`payment_worker_secret()`, service_role only), which `run_payment_worker()` sends on every pg_cron
+POST. **`{"action":"install"}` is deliberately still anon-reachable**: `migrate-staging.yml` calls it
+that way, S1 owns workflows and has just hardened that file, so the token swap went to
+`boots/proposed/S2-04-S1-payment-worker-install-token.md` instead of a cross-session edit. Nothing
+breaks in the meantime and there is no window where anything is down — install now writes the
+**service-role** key into Vault, so cron stops presenting a public credential the first time the
+pipeline runs after this merges, and the install step was already non-fatal. When S1's one-line swap
+lands, install gets the same check and no path accepts a public key.
+
+**Findings 4/5 — the small ones.** `tracking_token` is compared in constant time via a shared
+`timingSafeEqual` (the webhook signature was already doing this; now there is one helper and no
+judgement call per call site). `search_path` pinned on the six `SECURITY INVOKER` functions, bodies
+otherwise byte-identical to what is on `main` — verified by diffing each against its original.
+
+**What S3 and S4 must do differently** (§5.3, §5.6, §2 and §6.8 updated — S0 please route):
+- **S3 (web):** sending `payment_status` other than `pending` is now an **error**, not advice. §5.6
+  already said not to, and the shipped checkout omits it, so the live site is unaffected — this makes
+  the contract enforced. `place_order` now always returns `status: 'new'` for a guest; the
+  `accepted` case moves to the webhook. Worth a glance at any code branching on that.
+- **S4 (back-office):** a delivered non-cash order now stays `pending` and carries a
+  `payment_not_confirmed` note. **While no Stripe account exists this is the state every card /
+  wallet / PayPal order ends in** — it wants surfacing like the existing cash flag, or the Bestellungen
+  board will look like everything is unpaid without explaining why. Also new:
+  `payment_recorded_by_staff` notes on phone orders, worth showing in the Verlauf.
+
+**Two tests rewritten, both for the same reason.** `place_order.test.ts` "auto-accepts authorized
+orders under 50 €" (S7 named this one) and `payment_jobs.test.ts` "non-Stripe orders keep the v1
+behaviour (delivered → paid)". Both asserted a half of finding 1. Neither was deleted — each now
+pins the refusal, with a comment saying what it used to assert and why that was wrong, so nobody
+"fixes" them back.
+
+**Also corrected:** the README migration table was stale from S2-03's renumber — rows 19–22 named
+files that no longer exist and S7's own 19/20 were missing entirely. Now 19–26 and accurate. My own
+S2-03 error; it would have sent the next reader to the wrong file.
+
+**Task 6 was already done.** S2-03 merged on 2026-09-27 with its migrations at 21–24 (D-014's rule,
+which S0 wrote in response to that very collision) and the `db lint` 42702 alias fix. This boot
+started from a clean `main`; migrations here are 25–26. Nothing to renumber.
+
+**Not done / left alone:** S7's task 6 (HTTP-layer tests for the `Deno.serve` handlers) is still open
+— it needs `supabase functions serve`, which needs Docker, which this machine does not have (colima
+wants `qemu`; not mine to install). Everything this boot added is testable without it: the refund
+planner and the caller check are pure functions with real tests, but the handler wiring around them
+is still only covered by reading. Worth a boot when someone has a Docker host, or an S6 QA pass
+against staging.
+
+**On the red CI S0 saw at review time** (their 2026-09-28 entry): those four failures were this
+boot's own work-in-progress, fixed in the two commits after that snapshot — the three
+behaviour-change ones now assert the refusal with a comment saying what they used to assert, and the
+fourth was my own bad regex, which matched the legitimate `return` after the comparison loop and is
+now scoped to the loop line. S0's read of all four was exactly right.
+
+**Blockers:** none. **No live payment has still ever run** — the owner's Stripe account is still the
+gate, and per S0 none should be connected until this merges.
+
+## 2026-09-28 — S0 Orchestrator — S2-04 reviewed, not yet merged; its payment-state change routed
+Reviewed PR #41. The fix is the right shape: it closes the trust boundary rather than patching the symptom, and the subtle half is the one that matters — **completion is no longer evidence of payment**, so a non-cash order with no provider now finishes with `payment_status` untouched and a `payment_not_confirmed` note instead of quietly becoming `paid`. Not merged: `backend` CI is red on four tests, and three of them are the exact case S7 predicted — S2's own earlier tests assert the **old** behaviour (`event_payloads.test.ts` "payment_authorized (client-reported authorization)" and "refunded", `place_order.test.ts` lifecycle, all failing `expected 'pending' to be 'paid'`). The boot told S2 to make those assert the new refusal rather than delete them; that is the fix. The fourth is a self-test of the new constant-time comparison whose regex (`/for\s*\([\s\S]*?\breturn\b[\s\S]*?\}/`) matches its own implementation — a test-quality problem, not a security one.
+Routed the consequences ahead of the merge so nobody builds against the old contract: S4's board and history will show completed orders as unpaid until Stripe exists (correct — display it honestly), S3 keeps sending `pending` and never `authorized`, S6 must not write tests for the old auto-accept rule. Recorded in state.md.
+
+## 2026-09-29 — S0 Orchestrator — probed the origin before writing the go-live steps; step 2 corrected
+The owner asked for the four Cloudflare actions step by step, so S0 probed the origin rather than restating S1-04's list. `Host: shos.hellfiresol.com` → 200 on **both** :80 and :443; `Host: bo.shos.hellfiresol.com` → 401 on :80 (TETA+PI's basic-auth vhost, working) and **404 on :443**, where the certificate is `CN=hellfiresol.com`. The `bo.` name is simply not on the origin's TLS vhost yet.
+That makes S1-04's step 2 — "duplicate the 2026-09-26 Configuration Rule for `bo.`" — the wrong fix to reach for first. A rule of that kind pins the hostname to Flexible, i.e. Cloudflare fetches the origin over plain `:80` across the public internet, and on this hostname that traffic carries basic-auth credentials and staff passwords. The right fix is to have TETA+PI add `bo.shos.hellfiresol.com` to the origin's existing `:443` server block, as `shos.` already is, and leave the zone on Full. Recorded in state.md as superseding the earlier instruction; S1 owns the request. Flexible remains a fallback only if the origin genuinely cannot serve the name on :443, and would have to be removed before staff use it.
+Unchanged: the DNS record, Always Use HTTPS and Access are still the owner's, and the shared staff seed password must be rotated before the name resolves (S7-01 finding 2).
+
+## 2026-09-29 — S1 DevOps — S1-05 addendum: S0's "shos. already on :443" premise is wrong, checked byte-for-byte
+S0's message asked me to request TETA+PI mirror `bo.shos.hellfiresol.com` onto the origin's existing
+`:443` block "same as `shos.` already is." Before sending that request I probed the origin myself —
+the boot requires verifying a gate rather than trusting it, and this is the same discipline. Status
+codes agreed with S0's note; **response bodies did not**, so I went to MD5 rather than trust a 200.
+
+```
+origin :443, SNI=shos.hellfiresol.com    → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :443, SNI=bo.shos.hellfiresol.com → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :443, no SNI (bare IP)            → MD5 6be6e264…  <title>HELLFIRE AI Solutions…</title>
+origin :80,  Host=shos.hellfiresol.com   → SHOSHO site (matches public, different MD5 — CF edge rewrites)
+public https://shos.hellfiresol.com/     → SHOSHO site
+```
+
+All three `:443` responses are byte-identical to each other and to the bare-IP apex. **There is no
+`shos.` or `bo.` server block on origin `:443` at all** — only `hellfiresol.com`/`www.` (cert
+`CN=hellfiresol.com`, no other SANs). `shos.` was never "already on :443, reached over TLS" as
+recorded — the 200 there is the **wrong site**. Public `https://shos.hellfiresol.com/` works today only
+because Cloudflare is fetching our origin over **plain `:80`** — the zone (or a per-hostname rule) is
+Flexible for us, whatever label the dashboard shows. This has presumably been true since the
+2026-09-26 Configuration Rule and I did not catch it in S1-05's first pass.
+
+Two consequences, not one:
+1. **"Mirror what `shos.` has" has nothing to mirror.** `bo.` cannot be fixed by copying a working
+   `shos.` :443 vhost, because none exists.
+2. **The larger risk is the live guest site, not just `bo.` staying blocked.** If Full mode is switched
+   on for either hostname before a real `:443` vhost exists, Cloudflare starts fetching `:443` and gets
+   the apex — `https://shos.hellfiresol.com/` would start serving **HELLFIRE's marketing page** to
+   every guest, 200, no error, nothing to alert on. That is worse than the failure this thread started
+   out fixing.
+
+Also worth a note for whoever re-derives this: my `:443`/bo. reading (200, wrong site) differs from
+S0's (404). Possibly a probe-method difference (SNI vs none), possibly the picture changed in between —
+either way the conclusion is unaffected: neither hostname is safely servable on `:443` today.
+
+**Sent to TETA+PI (message, not a repo change):** add **both** `bo.shos.hellfiresol.com` and
+`shos.hellfiresol.com` to a real `:443` server block, before either hostname's SSL mode is touched. A
+Cloudflare Origin CA certificate is the natural fit — covers our subdomains, free, not coupled to the
+hellfire cert's renewal. Flagged to S0 rather than editing `state.md`'s "Origin facts" / "Corrected step
+2" prose myself — that is S0's section, not my row (D-002). I am not touching the CF side myself
+(boundary, this boot); waiting on TETA+PI to confirm the `:443` block exists before anything changes.
+## 2026-09-29 — S0 Orchestrator — S2-05 issued (seed credentials)
+The owner asked for a micro-boot on the staff password rotation, so S0 established the surface first rather than handing S2 a one-line instruction: `shosho-test-2026` lives in `README.md:212`, `seed.sql:54,61`, `tests/helpers.ts:17` and as the fallback in `apps/backoffice/e2e/smoke.spec.ts:5`. Checked the assumption that mattered — `seed.sql` inserts the four `auth.users` rows `on conflict (id) do nothing`, so rotating today is **not** undone by the next `Migrate staging`; the real defect is that a fresh or reset cloud project is born with a password published on the internet. That puts the fix in the seed, not in a dashboard click, and S2-05 says so.
+Shape asked for: the seed always writes a random password on any project, local developers get their known login from a small script run after `db reset`, the README keeps the emails and roles but stops publishing a credential, and the two hardcoded consumers read env with the local default. Staging's four users are rotated to distinct strong values written to a gitignored file on the owner's machine — the report carries the path, never the values. S2 also writes a short note for S4 and S6, who sign in with these accounts, so neither discovers the change through a failed login.
+## 2026-09-29 — S3 Frontend — S3-02
+
+**An uploaded menu photo is now visible on `https://shos.hellfiresol.com/`.** That box had been open
+since S4-02 and nobody could tick it. PR #44 (`s3-02`), four commits.
+
+**The photo bug, reproduced before it was fixed.** `menu_items.photos` has held bucket-qualified paths
+(`menu/<item_id>/<n>.jpg`) since S2-02/S4-02; `Photo.tsx` rendered an image only when `photos[0]`
+matched `/^https?:\/\//`, so every card fell back to the placeholder stone (S4 contract request §9).
+I did not take that on trust — I uploaded a photo to staging through the operator seed login (the boot
+authorised this; the back-office still has no public host), confirmed the object is public
+(`HTTP 200`, `image/png`, 20 158 bytes) and that `menu_items.photos` held `menu/<id>/1.png`, then
+counted the `<img>` elements the live site served: **zero**. Exactly S4's finding, still true.
+
+**The fix resolves in one place — the data layer, not the component.** `getCatalog()` maps `photos`
+through `supabase.storage.from('menu').getPublicUrl()`, so `MenuItem.photos` carries absolute URLs by
+the time any surface sees it: card, product page, "Goes well with", and cart-line thumbnails (which
+previously showed a decorative tint — they now show the real photo when the catalog knows the item).
+No component touches storage or env. `lib/photos.ts` keeps the absolute-URL branch for the seed and
+refuses malformed values (`data:`, `javascript:`, protocol-relative, traversal) rather than emitting a
+`src` that points somewhere else. Items with no photo keep the brand placeholder — unchanged, correct.
+
+**Three things about `next/image` worth writing down, because two of them are how this bug survived.**
+1. `images.unoptimized` is on (no `sharp` in a 96 MB container), and under it `next/image` emits the
+   `src` unchanged: **`remotePatterns` is never consulted**, so it was never what blocked the photo and
+   declaring it fixes nothing on its own. I declared it anyway so the config is right the day an
+   optimizer is affordable, and said so in the config. `sizes` is inert for the same reason and kept
+   for the same reason.
+2. The rule that **can** silently block a remote photo is CSP `img-src` — which this same boot added.
+   Had the headers landed without the storage origin, I would have shipped the identical symptom from
+   a new cause. They were built together and verified together.
+3. Next 15 does **not** derive `fetchpriority` from `priority`; `priority` only disables lazy loading
+   and asks React to preload (no preload link was actually emitted for these). The above-the-fold photo
+   now says `fetchpriority="high"` itself.
+
+**`record_order_attempt` — the funnel has data for the first time.** Two call sites sharing one tracker
+in `CartProvider`: a refused `place_order` (it rejects by raising, so a row it wrote itself would roll
+back — §1.7), and a guest sitting on a blocking `quote_order` state 1.5 s after it settles. Once per
+distinct problem state, never per keystroke: the effect keys on an order-independent signature of the
+problems, the tracker refuses a signature it has already sent, and that set is persisted in
+`sessionStorage` so a reload does not re-file. A rejection also marks its state seen, so the quote side
+cannot double-count it. `session_hash` is an opaque `crypto.randomUUID()` in `sessionStorage` — not a
+cookie, not `localStorage`, not a fingerprint; with storage unavailable nothing is reported at all.
+
+One judgement call worth flagging: **`out_of_zone` with `reason: postal_code_missing` is not reported.**
+It is not a refusal, it is a guest who has not typed a postal code yet, and recording it would file a
+row for every visit that ever opened the cart and drown the real signal.
+
+**Both call sites verified on staging, with rows an operator can read.**
+- Abandoned cart, postal `99999`: `{type: delivery, postal_code: 99999, zone_id: null,
+  subtotal_cents: 1490, items: [{item_id, qty: 1}], problems: [{code: out_of_zone}]}`.
+- A genuine mid-checkout race — cart filled and valid, then the item set `available = false` as the
+  operator, then Place order: `place_order` refused and the client filed
+  `problems: [{unavailable, item_id}, {empty_cart}, {below_min_order}]`, `zone_id` resolved,
+  `subtotal_cents: 2980`. That is the "sold out during checkout" state S4 could not render (contract
+  request 5). Availability restored to `true` afterwards.
+- No PII in either row — no name, phone or street, though all three were entered in the form.
+- `report_funnel` now reads `attempts: 2, attempts_with_problems: 2` instead of `0`.
+
+**For S2, not blocking:** with two attempts and four pre-existing orders `report_funnel` returned
+`attempts_to_placed_pct: 200.0`. The formula is fine, the window is not — `placed` counts a period the
+attempt rows did not exist for. It will look wrong to an operator for as long as the two series have
+different histories. S2's call whether that needs a floor or a note in the UI.
+
+**Security headers (S7-01 finding 5) — served by the app now, CSP enforcing.** `middleware.ts` sets all
+six on every response. What the live site served before came from Cloudflare defaults, including a
+**one-day** HSTS max-age; nothing in this repo set anything.
+
+The CSP is nonce-based and enforcing, **and that is only safe because `app/layout.tsx` declares
+`dynamic = "force-dynamic"`** — every HTML response is rendered per request, so the header's nonce
+always matches the markup. If any route is ever made static or ISR, its cached HTML will carry a stale
+nonce and every script on it will be blocked. That precondition is written at the top of `lib/csp.ts`
+and in the README, because it is the one way to break this badly and silently later. `next build`
+confirms every route is `ƒ (Dynamic)` today.
+
+`script-src` gets a nonce plus `'strict-dynamic'` and neither `'unsafe-inline'` nor `'unsafe-eval'`.
+`style-src` keeps `'unsafe-inline'` — React `style={{…}}` attributes need it and scripts do not get it.
+`font-src 'self'`: `next/font` self-hosts both faces at build time, so no Google host is allowed at all.
+`img-src`/`connect-src` carry the Supabase origin derived from the **runtime** `SUPABASE_URL` — I
+checked this rather than assuming, because `NEXT_PUBLIC_*` is inlined at build time and CI builds the
+image without the secrets; a `*.supabase.co` wildcard is the fallback so a missing env degrades to
+"any Supabase project" instead of a blank menu. `connect-src` keeps the `wss:` origin: S7's warning is
+right, a too-strict one kills guest tracking's live updates and reads as a Supabase outage.
+`<PublicEnvScript />` is the one inline script this app writes and now reads the `x-nonce` header.
+
+HSTS is one year with `includeSubDomains` and deliberately **no `preload`** — submitting the apex to
+the preload list is the owner's decision and is not quickly undone.
+
+**Tracking token (S7 finding 8):** `Referrer-Policy: no-referrer` on `/order` and `/order/<token>`,
+`strict-origin-when-cross-origin` elsewhere. Verified per route.
+
+**Verification, on a standalone build against the real staging Supabase project** (the container's own
+shape — `node .next/standalone/…/server.js` with runtime env, plus the `static`/`public` copy the
+Dockerfile does): all six headers on every route, the photo loads, the site renders and hydrates, 11
+Next chunks load under `'strict-dynamic'`, `window.__SHOSHO_ENV__` is populated (so the nonced inline
+script ran), and the browser reported **no CSP violation**. The photo fills its box exactly — 169×126
+in a 169×126 parent, no layout shift.
+
+**Tests:** 73 green. 13 for the photo resolver (bucket path, absolute URL, empty, malformed, encoding,
+and a check that our URL builder has not drifted from the SDK's `getPublicUrl`), 22 for the attempt
+trigger logic (fires once per state, order-independent, survives a reload, silent without storage,
+rejection always recorded), 20 for the headers and the `Photo` component. One note for whoever reads
+`tests/csp.test.tsx`: vitest does not read `next.config.ts`, so `images.unoptimized` is off there and
+`next/image` routes the src through `/_next/image` — the assertion is written to hold in both modes.
+
+**S2-04 compatibility:** checked after merging `origin/main`. The client already sends
+`payment_status: 'pending'`, which the new guard accepts; anything else is now refused. No change
+needed, and no payments UI in this boot.
+
+**Left on staging deliberately:** a test photo on `RL-014 Philadelphia Deluxe` (`menu/<id>/1.png`) so
+the post-deploy check has something to show. It is my generated placeholder art, not food — the owner
+should replace it with a real photograph through the back-office. Nothing else was left changed.
+
+**Docs:** `apps/web/README.md` gained three sections — the photo pipeline (and why `remotePatterns` is
+not the thing that blocks a photo), the two funnel call sites with the `session_hash` rules and the
+"do not widen this payload without changing the contract" line, and the headers with the force-dynamic
+precondition. No contract file touched; no gap found in §5 worth a proposal.
+
+**Blockers:** none for S3. S3-03 (payments UI) still waits on the owner's Stripe account.
+
+## 2026-09-29 — S1 DevOps — S1-05 addendum: TETA+PI confirms the finding, widened well past our zone
+TETA+PI (`teta-pi-e0`) independently verified the `:443`/apex-collision finding and extended the same
+probe to their own hosts before acting:
+
+```
+host                    public   origin:80   origin:443
+api.tetapi.dev          113      113         30970   → CF fetches :80
+app.tetapi.dev          10157    10157       30970   → CF fetches :80
+shos.hellfiresol.com    104658   104415      30970   → CF fetches :80
+```
+
+Origin `:443` with SNI for `shos.`, `bo.shos.`, `hellfiresol.com`, `app.tetapi.dev` and
+`api.tetapi.dev` **all** return the same 30970-byte hellfire apex body under `CN=hellfiresol.com`. So
+the collision is not specific to our zone — every hostname on the shared box lands on the apex on
+`:443` — and the cleartext CF→origin hop is not specific to our guest-order traffic either: by their
+own account it carries their `pk_live_` API keys, JWTs, email login codes and device keys, today. Not
+something S1 could have found or fixed — it is their infra, outside `/memory/infra-access.md`'s terms,
+and I neither probed their hosts nor asked them to.
+
+**Their fix, which they own and I am not touching:** a real Cloudflare Origin CA cert and `:443`
+server blocks for `shos.` → `:8200` and `bo.shos.` → `:8202` (basic-auth unchanged) plus their own
+`app./api./mcp.tetapi.dev`, **and** a default `:443` block that rejects unknown SNI instead of silently
+serving whichever tenant's vhost sorts first — the piece that made a routing mistake into a cross-tenant
+information leak. Ordering is agreed and matches what I asked for: `:443` blocks first, verified from
+outside by both of us, only then does the owner touch any CF SSL-mode setting. They said they will tell
+me when the blocks are in; I have not re-probed since — nothing has changed yet to check. My retraction
+of the "duplicate the Flexible rule for `bo.`" advice reached them before anyone acted on it.
+
+Nothing for S1 to do right now except wait and then verify. No repo change, no CF/nginx change on our
+side — boundary unchanged.
+## 2026-09-30 — S0 Orchestrator — S3-02 merged and independently verified on the live site
+Resolved S3-02's `memory/` conflict (D-009) and merged PR #44. S3 could not merge it itself — `gh pr merge` was refused by its permission mode — so merging stays with S0 for that session.
+First check after the merge showed zero `<img>` and no app CSP, which looked like a failed fix; it was not. The last `Deploy staging` had built `5c471de`, the commit **before** S3-02, and the chain for `2e48d95` was still running. Waited for `CI → Migrate staging → Deploy staging` to finish on the right commit and re-checked: `https://shos.hellfiresol.com/` serves `<img … src="https://bvmitglwwqsvufetlkff.supabase.co/storage/v1/object/public/menu/…">` with `fetchPriority="high"`, and the app's own `content-security-policy`, `permissions-policy` and `strict-transport-security: max-age=31536000; includeSubDomains`. **The photo blocker open since S4-02 is closed** — the first defect in this project found by one session in another's code, routed, fixed and verified end to end by a third.
+Worth keeping from S3's report: `remotePatterns` was never the cause (with `images.unoptimized`, `next/image` never consults it) — the thing that can silently block a remote photo is CSP `img-src`, which the same boot added, so both were built together. And the nonce-based CSP is only safe while `app/layout.tsx` stays `force-dynamic`: make any route static or ISR and its cached HTML carries a stale nonce that blocks every script on it. That constraint is in `lib/csp.ts`, the README and the commit message, and is now also here.
+Two follow-ups recorded in state.md rather than acted on: HSTS is sent twice (app 31536000 + TETA+PI's nginx 86400 — first wins per RFC 6797, so harmless today but a smell for S1/S7 to settle), and `report_funnel`'s `attempts_to_placed_pct: 200.0` is a window bug S3 correctly flagged instead of patching in S2's code.
+
+## 2026-09-30 — S0 Orchestrator — my origin-TLS reading was wrong; S1 caught it, I re-measured and confirm
+S1 flagged that the "Origin facts, measured by S0 2026-09-29" block in state.md was instructing the opposite of what is safe. It was right, and the error was in my probe method, not in a detail.
+I had run `curl -H 'Host: shos.hellfiresol.com' https://164.90.235.66/` and read the 200 as "the name is on the TLS vhost". With an IP literal in the URL curl sends **no SNI**, so nginx answered from its default server block — that 200 was HELLFIRE's page, not ours. My differing `bo.` result (404 where S1 saw 200) was the same mistake wearing a different hat: I asked for `/login`, which that site does not have. Re-measured with `--resolve` so real SNI is sent, and compared bodies rather than status codes: :443 with SNI `shos.`, :443 with SNI `bo.`, and :443 with no SNI all return **byte-identical** content, `md5 6be6e264658c51773d9d4eea7334e5de`, `<title>HELLFIRE AI Solutions…</title>`, cert `CN=hellfiresol.com`. Our site lives only on :80. So `https://shos.hellfiresol.com/` works today only because Cloudflare fetches the origin over plain :80 — Flexible in behaviour whatever the label says.
+The consequence S1 drew is the important one and I had missed it entirely: the exposure is not confined to the back-office. Switching `shos.` to Full before a real :443 vhost exists would serve HELLFIRE's marketing page to **every guest of the live storefront**, 200, silently. state.md is corrected, the old block struck rather than quietly edited, and the ordering is now explicit — origin :443 first, SSL mode second, never the other way round. S1 owns the request to TETA+PI (both names, Origin CA cert) and needs nothing from me.
+Method note worth keeping: for a name-based vhost, a status code proves nothing. Use `curl --resolve <name>:443:<ip>` and compare body hashes.
+
+## 2026-10-01 — S0 Orchestrator — struck a stale blocker before it cost the owner time
+Re-checked the whole open-items list before handing the owner a consolidated action plan, and found that the line still reading "CRITICAL, blocks any real payment — `place_order` trusts a client-supplied `payment_status`" had been fixed and merged in S2-04 (PR #41) days earlier; only the S2 row had been updated, because that row is S2's to edit and the open-items list is mine. Left as it was, it would have kept the owner from creating the Stripe test account for no reason. Struck, with the hold on connecting Stripe explicitly lifted.
+Infra state unchanged since 2026-09-30 and re-measured today: origin :443 still answers with HELLFIRE's page for SNI `shos.` (TETA+PI's vhost not yet in place, S1 owns the request), `bo.shos.hellfiresol.com` still does not resolve, and `apps/backend/README.md` still publishes the shared staff password (S2-05 issued, not yet run). So the ordering in the owner's plan is unchanged: origin :443 first, SSL mode second.
+
+## 2026-10-02 — S2 Backend — S2-05
+
+No known staff password may exist on a cloud project. PR #51 → `main`. One self-caught correction,
+PR #52 → `main`. `backend` CI green on both.
+
+**Shape chosen.** `seed.sql` now gives each staff account a random, immediately-discarded password
+instead of `shosho-test-2026` — `extensions.crypt(encode(extensions.gen_random_bytes(24), 'base64'),
+extensions.gen_salt('bf'))`, never stored anywhere, so nobody (including this session) knows it. The
+`auth.users` insert's `on conflict (id) do nothing` means this protects exactly the case that
+mattered — a fresh or reset cloud project — and never touches a project that already has these rows.
+Local development needed a known password back, so that convenience moved entirely out of SQL:
+`scripts/seed-local-logins.mjs` sets it via the Admin API, refuses anything but a loopback Supabase
+URL (no override — that is what `rotate-staging-passwords.mjs` is for), and is wired as the package's
+`pretest` hook. That means `pnpm test` needs no extra step and **no CI workflow file changed** — the
+boundary held cleanly because `pretest`/`test` is an npm-lifecycle pairing, not a workflow concept.
+Verified this actually works rather than assuming it: ran the hook's safety gate directly against a
+fake non-local URL (refused, exit 1) and against missing env vars (refused, exit 1) before relying on
+CI to prove the happy path — which it did, every role-based sign-in test across the whole suite
+passed with `pretest` setting the password immediately beforehand.
+
+**Staging rotation — written, not run.** `scripts/rotate-staging-passwords.mjs` generates four fresh,
+distinct, 160-bit random passwords and writes them to `apps/backend/.staff-credentials.local`
+(gitignored, mode 0600) — never to stdout, chat, a commit, or this log. I do not have the
+`shosho-staging` service-role key in this environment and did not ask for it; the script's own header
+is the owner's one-command recipe.
+
+**Un-publishing.** `README.md`'s "Test logins" section rewritten; `tests/helpers.ts` (`PASSWORD`) and
+`apps/backoffice/e2e/smoke.spec.ts` (`E2E_PASSWORD`, the one line task 4 allowed) now fall back to the
+same local-only value, overridable via env. Also corrected a note the "point tests at another
+project" paragraph used to make: `pretest`'s safety gate means that capability is local-only now, by
+design — the README says so instead of documenting a path that no longer works.
+
+**Confirmed, per task 6.** `git log -S"shosho-test-2026"` shows it in history since the very first
+commit (`9c791a1`, S2-01) on this public repo — the honest conclusion is that the value must be
+treated as compromised, which the rotation step already assumes. No attempt to rewrite history.
+`git grep` after the change: zero occurrences in any operative tracked file; it remains in
+`/memory/log.md` and the boot files as the historical record of the finding, which is correct and
+deliberate (D-002 — memory is never rewritten) rather than an oversight.
+
+**Self-caught correction worth describing plainly, not just noting happened.** The first version of
+`boots/proposed/S2-05-credentials-note.md` and a README paragraph both said, in effect, "the old
+shared password no longer works" — true of a *future* project, **false of `shosho-staging` itself**.
+`on conflict (id) do nothing` means PR #51 could not have touched the live project's existing rows, so
+`shosho-test-2026` was still a working credential on staging the moment that PR merged, and stays that
+way until the owner actually runs `rotate-staging-passwords.mjs`. I found this myself, re-reading what
+I had just shipped before closing out the boot, not from a review. Filed PR #52 same-day: both files
+now say plainly that the exposure is open, not closed, and name the one remaining action. Recording
+this not to pad the report but because a security fix whose own documentation overstates what it
+accomplished is a worse outcome than no documentation — it is exactly the "a test said it worked"
+failure mode from S2-04's finding 1, in a different shape.
+
+**What S4 and S6 must do differently** — `boots/proposed/S2-05-credentials-note.md` has the detail;
+headline version: local work needs one new command after `db reset`
+(`pnpm --filter @shosho/backend seed:local-logins`, or just run `pnpm test`, which does it
+automatically); staging work still needs the owner directly for current credentials, and must not
+assume the old password is gone without checking.
+
+**Blockers:** none for S2. **Open, owner-only, until acted on:** the staging rotation itself — run
+`apps/backend/scripts/rotate-staging-passwords.mjs` with the real service-role key. Until then
+`shosho-test-2026` remains a live, published, working credential on `shosho-staging`.
+
+**Boundaries:** no workflow file touched (`pretest` is a package.json lifecycle hook, not a workflow
+change); `apps/web` untouched; `apps/backoffice` touched only in the single permitted line;
+`/docs/security.md`, `/memory/decisions.md`, `/memory/sessions.md` untouched. No password value
+appears anywhere in this log entry, any commit, or the chat that produced this boot.
+
+## 2026-10-03 — S1 DevOps — S1-05 addendum: `:443` fix verified independently, confirmed to TETA+PI
+TETA+PI reported the `:443` blocks in (teta-pi/infra #134) and asked me to verify from outside before
+anyone touches the Cloudflare side — the same discipline this whole thread has run on. Did not take
+their own check at face value; ran a wider pass:
+
+```
+shos.hellfiresol.com    :443 → 200, 107204B, correct title, 0 occurrences of "HELLFIRE" in the body
+bo.shos.hellfiresol.com :443 → 401, nginx's own auth page (not hellfire, not the app) — still 401
+                                with wrong credentials supplied, so the gate actually checks, it is
+                                not a decoy that lets anything through
+cert (both hostnames)    CloudFlare Origin CA, SAN = shos.hellfiresol.com + bo.shos.hellfiresol.com
+                                only — the hellfire apex/www were not folded in, confirmed
+unknown SNI              TLS handshake rejected outright (`tlsv1 alert unrecognized name`) —
+                                `ssl_reject_handshake` live, not just configured. This was the piece
+                                that turned a routing mistake into a cross-tenant leak; checked it
+                                directly rather than trusting the description.
+hellfiresol.com apex     untouched: still CN=hellfiresol.com, SAN apex+www only, still 30970B
+:80 (both hostnames)     unchanged — shos 200, bo 401, no redirect added
+DNS (bo.shos.)           still empty, as expected — this fix doesn't touch resolution
+```
+
+Confirmed back to TETA+PI with the specifics above. **Nothing executed on the Cloudflare side by
+either of us yet** — by agreement, their turn now: `tetapi.dev` zone → Full (strict) is theirs alone;
+our zone keeps Full and the owner retires the 2026-09-26 Configuration Rule that forces `shos.*` to
+Flexible, which is the one change that actually closes our cleartext hop. I am not touching the CF
+side; will re-verify the same way, from outside, once it is flipped, before treating this closed.
+
+## 2026-10-04 — S0 Orchestrator — origin :443 verified a third time; the Cloudflare flip is unblocked
+S1 merged PR #53 and reported the origin fix verified beyond TETA+PI's own report. S0 re-measured rather than relaying it — this is the area where S0 was wrong once, which is a reason to check, not to skip. Every claim holds: SNI `shos.` → the real site; SNI `bo.` → nginx's 401; certificate SANs exactly our two names with hellfire's apex untouched; `:80` unchanged. The check that matters most is the one S1 added and TETA+PI had not made: an **unknown SNI is refused at the TLS handshake**, so there is no default server block left to fall into — the mechanism behind the original bug is gone rather than hidden.
+One apparent discrepancy was not one: S0's `grep -i hellfire` matched the page once, but the match is our own `siteUrl: https://shos.hellfiresol.com`. S1's "zero occurrences" is correct in substance.
+State.md's prohibition on touching the SSL mode is lifted and replaced with the precise action S1 identified: the cleartext hop now persists only because of the **Configuration Rule the owner added on 2026-09-26 pinning `shos.*` to Flexible**. Retiring that rule is the change — not the zone-wide flip to Full that S0 had described. The owner's step list is updated accordingly.
+
+## 2026-10-05 — S0 Orchestrator — `bo.shos.` is unreachable over https: Universal SSL covers one label
+The owner added the `bo.shos` CNAME, proxied, and it resolves to Cloudflare. `https://bo.shos.hellfiresol.com/` nevertheless fails before HTTP exists: `sslv3 alert handshake failure`. Measured the edge certificate rather than guessing — it carries `DNS:hellfiresol.com, DNS:*.hellfiresol.com`, i.e. **one label**, so a two-label name like `bo.shos.hellfiresol.com` is simply not covered. `http://bo.shos.hellfiresol.com/` answers nginx's 401, which proves DNS, the proxy and TETA+PI's vhost are all correct; the only missing piece is an edge certificate that includes the name.
+This was nobody's mistake in execution — the hostname was chosen (option A, S4's proposal, S0's decision) before anyone checked what the free certificate covers, and `shos.hellfiresol.com` working gave no hint, since it is one label.
+Cheapest fix with no recurring cost: rename to a single label, `bo-shos.hellfiresol.com`. That needs the owner to edit the DNS record **and** S1 to ask TETA+PI to add the name to the origin vhost and reissue the Origin CA certificate, whose SANs are currently `shos.` + `bo.shos.` — otherwise the origin leg breaks the moment the edge leg starts working. Advanced Certificate Manager (~$10/mo) would keep the current name; a `/bo` subpath would avoid certificates entirely but reintroduces the shared origin and cookie scope that choosing a separate hostname was meant to avoid. Recorded so S1 can send one request rather than two.
+
+## 2026-10-05 — S0 Orchestrator — handoff snapshot before restarting the session
+Wrote `/memory/boots/S0-00-orchestrator.md` so a cold session can resume this role: the first five minutes in order, what the role actually owns, and the lessons that cost something — chiefly that a status code proves nothing for a name-based vhost (use `--resolve` and compare body hashes), that a child's correction should be measured before it is agreed with, and that a stale open-item is as expensive as a wrong one.
+Added an **Owner's open actions** table to state.md: eight items, each with what it unblocks. Four matter: the staging password rotation (the seed credential is still live and is in this public repo's history), the two Stripe secrets, and renaming the back-office DNS record to a single label. The old "switch SSL to Full" step is retired — the zone is already on Full and the origin serves `:443`, so that hop is encrypted and needs nothing.
+Session state at handoff: S1, S2, S3, S7 idle with their last boots merged; S4-03 and S6-01 in flight; S5 never started. No open PRs. Eighteen proposals sit in `boots/proposed/` — the next boots to issue from them are S3-03 (payments UI, once the Stripe keys exist), S4-04, S2-06 (campaigns/CMS), S1-06 (prod target, after S7 signs off) and S5-01.
+
+## 2026-10-05 — S1 DevOps — S1-05 addendum: back-office renamed to `bo-shos.`, origin vhost requested
+S0 reported the two-label edge-cert gap and the owner's rename to `bo-shos.hellfiresol.com`. Checked
+independently before sending anything to TETA+PI, same discipline as the rest of this thread:
+
+```
+bo.shos.hellfiresol.com    DNS no longer resolves at all — old record gone, as expected
+bo-shos.hellfiresol.com    resolves via Cloudflare; edge TLS succeeds with the *.hellfiresol.com
+                            wildcard cert — confirms the edge half of S0's diagnosis
+  https://bo-shos....       Cloudflare 525 "SSL handshake failed" — the ORIGIN refuses the TLS
+                            handshake for this SNI. This is the unknown-SNI reject from PR #53/#134
+                            working as designed on a name the origin doesn't know yet, not a new bug.
+  http://bo-shos....         200, but body is {"name":"TETA+PI API",...} — lands on TETA+PI's own
+                            default vhost, not ours, because nothing on the origin claims this
+                            hostname on :80 either
+```
+
+Confirms the gap is exactly where S0 said: edge is fine, origin has no block for the new name on
+either port. Asked TETA+PI to add `bo-shos.hellfiresol.com` to the origin vhost (`:80` server_name and
+`:443` block, same target `127.0.0.1:8202`, basic-auth unchanged) and reissue the Origin CA cert.
+**Recommended dropping `bo.shos.` from the SAN** rather than keeping it alongside the new name — it is
+a dead record now, and a smaller SAN on a cert is strictly better than a larger one for no reason. New
+SAN requested: `shos.hellfiresol.com` + `bo-shos.hellfiresol.com`.
+
+Same order as the `:443` fix: TETA+PI makes the change, I verify from outside independently before
+anything else moves. Nothing requested or changed on `shos.` — untouched by this.
+
+## 2026-10-05 — S1 DevOps — S1-05 addendum: TETA+PI accepted, boot issued (5.17); found their own :80 twin of #134
+TETA+PI accepted the `bo-shos.` request and issued their own boot (5.17): reissue the Origin CA cert
+for our zone with SAN `shos.hellfiresol.com` + `bo-shos.hellfiresol.com` (same private key, `bo.shos.`
+dropped as I asked), rename the vhost on both `:80` and `:443` to `bo-shos.`, same target
+`127.0.0.1:8202`, basic-auth unchanged. `shos.` is not touched.
+
+**They found something of their own in my report's margin, and it's the more useful half.** My
+`http://bo-shos....` → 200 landing on their API wasn't just "nothing claims this hostname yet" — they
+have **no `default_server` on `:80` at all**, so any unknown `Host:` header falls through to whichever
+vhost sorts first alphabetically (`api.tetapi.dev`). The `:80` twin of the exact bug #134 fixed on
+`:443`. Checked their claim myself rather than taking it on description — `curl -H 'Host:
+totally-unknown-probe.example' http://164.90.235.66/` → 200, their API body. Confirmed: anyone pointing
+DNS at that IP gets an answer under their name today. Folded into the same boot: a `return 444` default
+block, with care to leave hellfire's certbot ACME path on `:80` alone (their production renewal, not
+TETA+PI's to break).
+
+**Constraint on timing:** their Cloudflare API token expires 2026-10-10 — the cert reissue has to land
+inside that window. Nothing for S1 to do but wait; same protocol as #134/#53: they make the change,
+I verify from outside independently before anything else moves. They will ping when it's in.
+
+Quick check before writing this: `https://bo-shos....` still 525 (boot not applied yet, as expected).
+
+## 2026-10-05 — S0 Orchestrator — the rename worked; the origin leg broke exactly as predicted, and a step on the owner's own list would now have caused a leak
+Resumed the role cold from `boots/S0-00-orchestrator.md` and re-measured the infra claims before touching anything, which is the only reason the rest of this entry exists.
+
+**The owner has already done action 4.** `bo-shos.hellfiresol.com` resolves to Cloudflare and the edge certificate (`CN=hellfiresol.com`, SAN `hellfiresol.com` + `*.hellfiresol.com`) covers it, because it is one label. The edge TLS handshake completes. The original defect — a two-label name outside the free wildcard — is gone.
+
+**The predicted consequence arrived with it.** `https://bo-shos.hellfiresol.com/` returns **525**: origin `:443` with real SNI `bo-shos` is refused with `tlsv1 alert unrecognized name`, because the Origin CA certificate's SANs are still `bo.shos.` + `shos.` — the old name.
+
+**S1 got there independently while I was writing this, twice over, and the agreement is the useful part.** Their S1-05 addendum (merged as PR #57 mid-flight, which is why my own PR conflicted) measured the same chain from the origin side and reached the same conclusion on every point — including the `:80` default-vhost finding below, which neither of us predicted. Two independent measurements agreeing is the strongest evidence this project has produced about the origin, and I am recording it as settled rather than re-deriving it a third time. Their request to TETA+PI also improves on what I would have asked for: **drop the dead `bo.shos.` from the SAN** instead of carrying it alongside the new name — a smaller SAN for no loss. Accepted as issued. I therefore rewrote **S1-06** rather than issuing it as drafted: its task 1 is marked already done, and what remains is the outside verification plus the one finding S1 could not have had (below). Renumbered the prod-target proposal to `S1-07` so the number was free. Resolved the `memory/` conflict per D-009 — both log entries kept in time order, and S1's own row kept over mine with only the S0-owned fields (status, active boot) applied.
+
+**What neither of us predicted, and both of us found by measuring rather than reasoning.** Origin `:80` with `Host: bo-shos` returns `200 {"name":"TETA+PI API", … ,"mcp":"/mcp/sse"}` — byte-identical to `Host: nonexistent.invalid`. That is nginx's default `:80` server block, and on this host it is TETA+PI's own API. Our name has no `:80` vhost yet, so it lands there. Nothing of SHOSHO's is exposed: the direction is outward, their already-public API homepage answering under our name, no SHOSHO data and no back-office surface. S1-06 tells them anyway, because it is their surface and an unconfigured name reaching it is worth knowing.
+
+**The part that mattered most.** Read the two legs together and they fail differently. `:443` fails *safely* — `ssl_reject_handshake`, the mechanism S1 added after the 2026-09-30 incident, refuses the handshake, so Cloudflare shows a 525 instead of someone else's content. `:80` has no equivalent. Which means the step this very file told the owner to do next — "duplicate the 2026-09-26 Configuration Rule with the hostname changed" — pins the hostname to **Flexible**, i.e. origin over `:80`, and would have served **TETA+PI's API under `https://bo-shos.hellfiresol.com/` with a valid certificate, 200, silently**. That is the 2026-09-30 cross-tenant failure in the opposite direction, and it would have been introduced by following my own instructions. Struck from the owner's action table, struck from the Cloudflare-actions bullet, and written into S1-06 as its own task so S1 pushes back if anyone proposes it — this is the one piece of the picture S1's own measurements could not have surfaced, because it lives on the Cloudflare side. Worth naming the symmetry: the mechanism that keeps the `:443` leg failing safely instead of leaking is `ssl_reject_handshake`, which S1 asked TETA+PI for after the 2026-09-30 incident. S1 built the thing that contained this one. The 525 is the better state: broken and obvious beats working and wrong. Replaced it with a scoped Redirect Rule *after* S1-06 lands, and noted that the zone-wide **Always Use HTTPS** toggle is not purely ours to flip — the zone also carries hellfire's apex and TETA+PI's API.
+
+**Two stale blockers struck while re-reading the rows, same lesson as 2026-10-01.** The S4 row still demanded that S3 fix bucket paths in `Photo.tsx` or no menu photo would ever reach a guest — closed in S3-02 (PR #44); re-verified live today, the storefront serves `…/storage/v1/object/public/menu/…/1.png`. The S7 row still carried the `place_order` `payment_status` CRITICAL as open — fixed in S2-04 (PR #41) days ago, and already struck from the open-items list on 2026-10-01 but not from that row. Both were pointing a session at work that is done. The S4 row also still routed the public host through S1-04; it is S1-06 now.
+
+**Re-verified absent, not assumed:** `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` — `gh secret list --env staging` holds the same 8 secrets as 2026-09-26 and no `STRIPE_*`, so owner actions 2 and 3 are genuinely still open. Repo-level secret list still empty, as S1-04 left it. The staging password rotation cannot be verified from here without the service-role key and is unchanged by anything in this entry: `shosho-test-2026` must still be treated as live and published.
+
+**Method note, since it earned its place twice now.** Every origin claim here used `curl --resolve <name>:443:164.90.235.66` and compared bodies, not status codes — and the `:80` finding came from comparing our hostname's body against a deliberately nonexistent `Host:`, which is what identified the default block rather than leaving it a guess.
+
+**Addendum, same day, after S1's second and third reports landed.** TETA+PI accepted the whole request and issued their own boot 5.17 — vhost renamed on both ports, Origin CA reissued as `shos.` + `bo-shos.` with the dead name dropped as S1 asked. Two things from that exchange are now in `state.md` and in S1-06, and neither came from me:
+- **A deadline.** TETA+PI's Cloudflare API token expires **2026-10-10**, so the certificate reissue has to land inside that window or the request needs re-sending against a new token. That is the only live risk on this item and the only reason to contact them again — S1-06 says so explicitly, so it is not mistaken for a licence to chase them for progress.
+- **The bigger finding, which was theirs, out of the margin of S1's report.** Our name reaching their API was not merely an unclaimed hostname: the origin has **no `default_server` on `:80` at all**, so any unknown `Host:` falls through to whichever vhost sorts first alphabetically. That is the `:80` twin of the `:443` bug PR #53 fixed. S1 confirmed it by probe rather than on description — an invented `Host:` against the bare IP returns their API — which means anyone pointing DNS at that address gets an answer under their name today. Their fix is a `return 444` default block. **It is their host-level issue on their own surface, owned by them**; I have recorded it because our hostname is what surfaced it, and added both the `444` check and a caution about hellfire's certbot ACME path on `:80` to S1-06's verification list, since S1 is the one with a harness already pointed at that origin.
+
+Worth stating plainly rather than leaving implicit: on this item S1 out-measured me on their own side of the boundary and routed a third party's security gap correctly without being asked (D-012). My contribution that they could not have had was the Cloudflare side — that the owner's own next step would have turned the harmless 525 into a live leak. Both halves were needed; neither session had the whole picture alone.
+
+## 2026-10-05 — S1 DevOps — S1-06: TETA+PI's boot 5.17 verified live from outside; `bo-shos.` is up
+
+Resumed cold from this boot. Task 1 (the request) was already sent and accepted in the S1-05 addenda — nothing to re-send. Read S0's 2026-10-05 entries first, per the boot, and absorbed the one finding only they could have had: the struck Flexible-rule step, now removed from `state.md`'s owner-actions table before anyone could act on it. Then verified TETA+PI's change from outside, `--resolve` + body comparison throughout, never a bare-IP probe:
+
+```
+dig bo-shos.hellfiresol.com         → 104.21.25.237 / 172.67.168.47 (Cloudflare), unchanged
+https://bo-shos.hellfiresol.com/    → HTTP 401, WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"
+                                       (was 525 — the vhost now exists on the origin)
+origin :443, SNI bo-shos            → 401 nginx (was tlsv1 alert unrecognized name)
+origin :443, SNI bo-shos, bad creds → 401 nginx, unchanged — the gate checks, not decorates
+origin :80,  Host bo-shos           → 401 nginx (was 200 {"name":"TETA+PI API",...}) — the regression
+                                       to check for; gone
+origin cert SANs                    → DNS:bo-shos.hellfiresol.com, DNS:shos.hellfiresol.com
+                                       exactly as requested; dead bo.shos. is gone
+hellfire apex cert                  → DNS:hellfiresol.com, DNS:www.hellfiresol.com — untouched
+origin :80,  Host totally-unknown   → curl 52 "Empty reply from server" (nginx return 444; was 200,
+                                       their API body) — their own :80 default_server gap is closed
+origin :443, SNI unknown-probe      → tlsv1 unrecognized name — still refused at the handshake,
+                                       no default server block was reintroduced
+hellfire ACME path, named vhost     → 301 (their own redirect-to-https, pre-existing, unaffected —
+                                       requests to hellfiresol.com's own Host still reach their vhost,
+                                       not the default block)
+hellfire ACME path, unknown Host    → closed by 444, as expected — but this was never hellfire's real
+                                       flow: a genuine ACME HTTP-01 challenge arrives with Host set to
+                                       the domain being validated, which matches hellfire's named vhost
+                                       and never falls into the default block. Could not safely force a
+                                       real challenge to double-check end-to-end; this is as far as a
+                                       non-interfering probe can verify, and I'm saying so rather than
+                                       claiming more
+https://shos.hellfiresol.com/       → 200, only "hellfire" string in the body is our own siteUrl
+```
+
+Every regression this boot named to watch for is gone, and nothing new appeared. The back-office hostname's origin leg is fixed; the `:80` default_server gap TETA+PI found in their own surface is closed; `shos.` and hellfire's apex are untouched.
+
+**Still not telling anyone the URL.** The second precondition (S7-01, owner-only) is unchanged: all four seed logins still share `shosho-test-2026`, published in this repo's history, until `rotate-staging-passwords.mjs` runs with the real service-role key. Verified the gate is live (401 everywhere, bad creds still 401) and stopped there, per this boot's boundary.
+
+Nothing outstanding on this item. No workaround invented, none needed.
+
+## 2026-10-06 — S0 Orchestrator — re-verified S1-06 and merged it; the back-office host is done, one owner action from a real user
+Reviewed PR #60. Re-measured every load-bearing claim rather than relaying S1's table — this is the area where S0 was wrong once, which is a reason to check, not to skip. **All of it holds.** `https://bo-shos.hellfiresol.com/` → 401 with the SHOSHO realm (was 525), `/login` 401 too so the gate is in front of the app; origin `:443` SNI `bo-shos` → 401 and **still 401 with deliberately wrong credentials**, so the gate checks rather than decorates; origin `:80` `Host: bo-shos` → 401, no longer TETA+PI's API JSON, which was the specific regression to watch for; certificate SANs exactly `bo-shos.` + `shos.` with the dead name dropped; invented `Host:` on `:80` → connection closed, so TETA+PI's new `return 444` default block is live and their own `:80` gap is closed; unknown SNI on `:443` still refused, `ssl_reject_handshake` not disturbed while editing; hellfire's apex certificate untouched; `shos.` unaffected at 200/107204 B with the right title. Merged.
+
+Two probe notes, so the next person does not read either as a discrepancy. **(a)** My first two `--resolve` probes failed with `unable to get local issuer certificate` — that is not a finding, it is the Origin CA certificate not being publicly trusted; a direct origin probe needs `-k`. The method note in this file should have said so, and now does by example. **(b)** S1 wrote "the only 'hellfire' string in the body is our own `siteUrl`"; I count two occurrences of `hellfiresol.com`. Same thing — one distinct value, appearing twice. Checked before raising it, which is the point.
+
+**What S1 did that is worth naming.** They reported the honest limit of their own check instead of rounding it up: a live ACME HTTP-01 challenge for hellfire could not be forced safely, so the `444` block's effect on hellfire's certificate renewal is verified only as far as a non-interfering probe reaches. They said that plainly rather than claiming end-to-end coverage. That is the behaviour that makes a report usable.
+
+**Position now.** The back-office host is finished — both legs, verified twice from outside, by two sessions, with the cross-tenant mechanism that caused the original bug demonstrably gone on both ports. **The only thing standing between it and its first real user is one owner action**: rotate the four seed logins, which still share `shosho-test-2026` from this repo's public history. Nobody has been given the URL and nobody should be until that runs. Recorded a second, smaller item I checked that S1's report did not cover: `http://bo-shos…` answers 401 in **cleartext** with no redirect, so basic-auth credentials would cross the wire unencrypted — a Redirect Rule scoped to that hostname fixes it, and it is now actionable since the vhost exists on both ports. Still **not** the zone-wide Always Use HTTPS toggle: that zone also carries hellfire's apex and TETA+PI's API. And the struck Flexible step stays struck — the vhost existing removes the symptom, not the reason.
+
+**Separately: refreshed S4-03 and S6-01 before issuing either, and both needed it.** Neither boot had been re-read since its dependencies moved.
+- **S4-03** (issuing now): S2-05 changed the staff logins out from under it, so the boot now carries the local recipe (`seed:local-logins`, which I confirmed exists in `apps/backend/package.json`) and the staging reality that `shosho-test-2026` still works but may be rotated mid-boot. Its timing argument got *stronger*: the paragraph calling the hostname "a DNS record the owner may add any day" is obsolete — the host is live, so the open redirect sits on a login screen that is one owner action from a real user. I confirmed both S7 findings are still real rather than assuming: `LoginForm.tsx:53` still reads `router.replace(next && next.startsWith("/") ? next : "/")`, and `apps/backoffice` sets no headers of its own. Added S3's CSP trap (nonce-based CSP is only safe while the root layout is `force-dynamic`; a static or ISR route serves a stale nonce and blocks every script with no useful error) and a warning that HSTS will now appear twice because TETA+PI's nginx sends one — a smell, not S4's to fix. Struck the closed `Photo.tsx` blocker and spelled out S2-04's honest-unpaid consequence so S4 does not "fix" it. `S2-05` → `S2-06` renumber.
+- **S6-01** (next): it pointed at seed staff logins in `apps/backend/README.md`, **which S2-05 deleted** — the single stale line most likely to cost a session twenty minutes before it thought to check the log. Also: S2-04 is merged, so the auto-accept product rule is settled and currently *unverifiable* (no Stripe keys, no live payment has ever run) — say so rather than testing the old behaviour; the photo bug its opening paragraph cites is fixed, kept as the motivating bug *class* but flagged as not a live finding.
+
+**Ordering, with a reason rather than a preference:** S4-03 first, S6-01 after it merges. S4-03 is fully unblocked and is about to change the back-office in security-relevant ways; pointing QA at that surface mid-change would land findings on code being rewritten.
+
+## 2026-10-06 — S0 Orchestrator — S2-06 issued to run alongside S4-03; D-015 rules out client-side analytics; S6 held on purpose
+The owner started S4-03 and asked what can run in parallel. Answer: S2 can, S6 should not, and the single highest-value parallel action is the owner's own.
+
+**Checked the proposal against the code before issuing anything, and a third of it was already built.** `boots/proposed/S2-03-reports-campaigns-cms.md` §1 (the Berichte report views) exists in S2-03's own migration `20260926000024_reports.sql` — `report_revenue_by_day`, `report_top_items`, `report_delivery_times`, `report_funnel`, `reports_guard`. Issuing that section would have had S2 rebuild its own work. Its two open questions resolve themselves the same way: the view-vs-function choice for `report_top_items` is **moot**, it shipped as a function. The one report genuinely missing is `report_payments`, which is in the boot. §2 (campaigns, automations) and §3 (banners, publish) are genuinely unbuilt — the only grep hits for `campaigns`/`automations`/`banners` in the whole migration set are a single stale comment at the top of migration 6, which is the kind of thing that reads as evidence until you look at it.
+
+**Claimed migrations `…027`–`…032` in the boot, per D-014.** Highest on `main` is `…026`. S4-03 cannot collide — its boundary forbids `apps/backend` — but the rule exists because two of S2's own sessions collided before, so it is recorded rather than assumed.
+
+**Sharpened the funnel diagnosis rather than passing on the summary.** state.md had carried S3-02's finding as "the formula is right but the window is not". Read the function: both CTEs use the *same* date window, so the SQL window is right and the **meaning** is wrong — `order_attempts` only exists from migration `…023`, `orders` go back to S2-01, so any window reaching before attempt-recording counts `placed` rows whose attempts never existed. That changes what a correct fix looks like: not better arithmetic, but making an impossible ratio unrepresentable — clamp to the earliest attempt, or return `null` with the comparable sub-window alongside. Written into the boot as S2's call between those two, with the constraint that the result must be true or explicitly absent, never a plausible 200.
+
+**D-015 — no client-side analytics in v1.** S2's proposal explicitly asked S0 to rule on `site_events` before building it, which was the right instinct, so I ruled instead of letting it ride. Three reasons, and the first is the one that decides it: a tracking surface is new collection of personal data on a German storefront for a GmbH, and that posture is the **owner's** to set, not S0's or S2's. S2's design was careful — no IP, no user agent, cookie-less id in `sessionStorage` — and the consent-free argument is plausible, which is not settled; the cookie bar and the four DE legal pages would all need to say something they currently do not. Second, it needs S3 and S2 moving together for a reporting nicety while three owner actions and a never-exercised payment path are what actually block the business. Third and most usefully: the funnel's defect is not a missing-data problem at all, so building the tracking would not have fixed the bug that raised the question. Consequence recorded honestly — the menu→cart step stays unmeasurable in v1 and Berichte must show that rather than invent a number.
+
+**Held S6-01 deliberately, and said so in state.md rather than leaving it looking forgotten.** S4-03 is rewriting the back-office login redirect and adding CSP/HSTS to every page in that app. Pointing QA at that surface now would produce findings against code already being replaced, and S6's own boot offers the option of extending `apps/backoffice/e2e/`, which is a direct file-level collision with the session currently in that directory. It goes next, after S4-03 merges. Its status is now `held`, not `in progress`, because it had never actually started.
+
+**What I told the owner is parallel on their side, in priority order:** the staging password rotation — one command, and since S1-06 landed it is the **only** thing between a working back-office URL and a real staff user; then the two Stripe secrets, which unblock S3-03 and the first live payment the state machine has never seen; then the hostname-scoped Redirect Rule, because `http://bo-shos…` answers 401 in cleartext today and basic-auth credentials would cross the wire unencrypted.
+
+## 2026-10-06 — S1 DevOps — TETA+PI confirms 5.17 from their side; the one gap I flagged is closed, by them
+
+`teta-pi-e0` reported their own external check after the fact (26/26 probes, same results S0 and I already got independently): cert SAN exactly `bo-shos.` + `shos.`, old cert revoked only after the new one was confirmed working, `shos.` and all five `tetapi.dev` hosts unchanged. Nothing here changes what's already merged in PR #60 — recording it because it answers the one thing I explicitly could not verify myself and said so rather than guessing.
+
+**The ACME question, resolved by the side that could actually check it.** I could only probe from outside and reported the limit of that: a real HTTP-01 challenge couldn't be forced safely, so I verified the `444` block doesn't blanket hellfire's *named* vhost but not the live renewal itself. TETA+PI checked from the admin side before touching `:80`: hellfire's certbot uses the nginx authenticator through its own explicit vhost, not the default block, so it was never at risk — and their next renewal is ~2026-11-17, outside any window that matters here. Their own `:80` default-server gap now has an ID on their side, **S-26**, for anyone cross-referencing later.
+
+Nothing further needed from S1 on this item — external verification was the ask, and it's done twice over (mine, S0's) plus confirmed from the inside by the party who made the change. Stopping again, per the boot.
+
+## 2026-10-06 — S0 Orchestrator — customer accounts + push: queued as a roadmap, D-016 decided, and I corrected my own draft mid-flight
+The owner described customer login (OTP to a phone or email), a personal cabinet with bonuses, address saving at checkout, and push across the customer base — explicitly saying to queue it if now is not the moment. It is not. Queued as `boots/proposed/ROADMAP-customer-accounts-and-push.md` with D-016 settling the open questions.
+
+**Queued as one roadmap, not six boots, on purpose.** I spent this same day refreshing S4-03 and S6-01 because both had gone stale before they ran — S6-01 was pointing sessions at seed logins a later session had deleted. Writing six speculative boots now would reproduce that failure at six times the scale. The scoping and the measurements are the durable part; file:line detail is not, so each phase becomes a real boot when it is actually next, measured against the code at that moment. Said so in the file so the next S0 does not read it as laziness.
+
+**Not started because the customer domain already has two sessions in it.** S4-03 is live in `apps/backoffice` on Kunden, Profil, consents and the `customer_events` timeline; S2-06 is live in `apps/backend` on campaigns, segments and the consent-driven recipient model. Accounts change what a customer row means. A third session there is what D-003 exists to prevent. The owner's own three actions also still gate more valuable ground — the password rotation, and the two Stripe secrets on a money path that has never once run.
+
+**Five things I measured rather than assumed, and one of them proved me wrong.**
+1. The request **retires a documented product rule** — `docs/design/README.md` lines 26 and 48 say "guest checkout, no account", and line 48 is one of the twelve rules S6 verifies literally. D-016 keeps guest checkout and makes accounts optional, but the rule list has to change in the same boot or S6 will correctly report the feature as a violation.
+2. **Push has no transport whatsoever.** Zero hits for `push_subscriptions`, VAPID, service worker or any token store across migrations and `apps/web`. Meanwhile `consent_push` and the `push_opened` event type have existed since S2-01 and the Kampagne wizard is designed — so S2-06 is about to be able to record campaign *intent* with nowhere to send it. Worth knowing before someone demos a campaign.
+3. **Push does not depend on accounts**, which inverts the owner's stated sequencing. Said so rather than implementing the order I was given.
+4. **A recycled phone number is a food-safety problem, not just a privacy one.** Customers are keyed `phone text not null unique` and created automatically by `place_order`. Naive "link the account to the row with this phone" would hand a new owner of a recycled number the previous person's addresses, order history and `kitchen_note` — which is the allergy text copied onto every order card. Proposed rule: link only on a verified-identifier match to a row with no other account attached, otherwise a fresh row and a deliberate, audited staff merge. Never on a phone match alone.
+5. **I was wrong about the RLS risk and caught it before anyone acted on it.** My first draft warned that `is_staff()`/`auth_role()` assume an `auth.users` row means staff and would break the moment a customer had one. I checked instead of shipping it: `auth_role()` is `select role from public.staff where id = auth.uid() and active` — a *lookup*, so a customer gets `null` and `is_staff()` is `false`. Every `to authenticated` policy carries an explicit staff predicate; the only one without is `staff_self_read`, `id = auth.uid()`, which is correct. The two functions granted to `authenticated` without an inline predicate, `set_order_status` and `add_customer_event`, **both guard internally** and raise `42501`. So the backend is already safe by construction against a second class of authenticated user — S2 and S7 built it defensively — and S2-07's job is to preserve that, not repair it. Rewrote the phase and gave S7-03 a concrete starting point instead of a vague audit: re-run the existing `security_audit_*` matrix with a customer JWT as a new column, which is the row nobody has ever tested. The corrected version is less alarming and more useful than the draft, which is the whole argument for checking.
+
+**D-016, from the owner's answers.** Accounts optional (my inference from their description, flagged in both files as the one clause still unconfirmed). **OTP by both SMS and email** — they overrode my email-only recommendation, which is their call and their money. **Bonuses deferred**, agreeing with me; nothing exists in schema or canvas, so a session would have been inventing loyalty rules. **Push primary with an in-app bell**, and native Android/iOS apps planned later.
+
+**They asked me to look at TurboSMS and find a German equivalent, so I did, and the answer is clean.** Supabase Auth has built-in SMS providers — Twilio, Twilio Verify, MessageBird, TextLocal, Vonage — plus a Send SMS Hook for anything else. TurboSMS is not among them, so it needs a custom hook, and its international rate is ≈ **€0.067–0.068**/SMS. **MessageBird is ≈ €0.0317 and is built in** — roughly half the price and less work, so it wins on both axes. Twilio ≈ €0.094, Sinch ≈ €0.0785, Plivo ≈ €0.089; Germany is among the priciest EU routes on carrier termination fees. Recorded as list prices, not quotes — confirm with MessageBird for DE OTP volume before committing.
+
+**Two of their answers changed the plan, and the second one mattered most.**
+- Native apps **remove the iOS web-push limitation** for the app audience, which was my main argument for email-first. The argument no longer applies, so their preference stands. What survives is a design consequence: because native apps are coming, the push token store must be **channel-agnostic from its first migration** — web-push subscription, FCM token or APNs token behind one interface with the channel as a column. Building it web-push-only and retrofitting is the expensive order, and getting it right now costs almost nothing.
+- **The "bell with new messages" is not push at all**, and conflating the two would have been the costliest mistake in this plan. It is an in-app notification centre: DB rows, unread state, realtime — the same token-scoped pattern already proven on guest order tracking. No permission prompt, no service worker, no VAPID, no PWA install, and identical behaviour on iPhone Safari. So it is the *reliable* surface and push is merely the nudge back to it. Added it as its own phase **ahead of** push transport, because it delivers most of what the owner described on its own and gives every later channel — web, FCM, APNs — one shared message history to point at instead of three.
+
+**One consequence the owner should not be surprised by: rate limiting stopped being advisory the moment they chose SMS.** Unthrottled SMS OTP is an open financial exposure — SMS pumping bills the owner at German rates — and SHOSHO has no rate limiting anywhere, an S7-01 finding that has sat open with no owner. It is now a hard precondition of the phone channel, so S7-03 moved to the front of the roadmap. Email OTP carries no such cost and can ship first if they want login sooner.
+
+## 2026-10-06 — S0 Orchestrator — S1-07 issued, and S7's rate-limiting recommendation was wrong about where the control can live
+Rate limiting had sat open since S7-01 with no owner. D-016 turned it from hygiene into a precondition — the owner chose SMS OTP, and unthrottled SMS is an open bill rather than a missing nicety. S1 was free and the work collides with nobody, so I issued S1-07. But reading the proposal before issuing it is what made the boot worth having.
+
+**`S7-02-S1-rate-limiting-password-rotation.md` task 1 concludes that the only realistic place for the control is a Cloudflare rule on our proxied zone. It cannot be, and I measured it rather than passing it on.** Every endpoint the proposal names is called **browser → Supabase directly** and never traverses Cloudflare's proxy of our hostnames:
+- `apps/web/lib/api-supabase.ts:39` builds a **browser** client from `NEXT_PUBLIC_SUPABASE_URL` and calls `rpc("quote_order")` / `rpc("place_order")` on it (lines 180, 188); `apps/web/lib/cart.tsx` is `"use client"` and drives the debounced quote from the browser.
+- `apps/backoffice/components/shell/LoginForm.tsx:46` calls `signInWithPassword` client-side, so `/auth/v1/token` is direct too — the back-office login is not behind our zone either.
+- There are **no** proxy API routes: `find apps/web/app -name route.ts` returns nothing, and `apps/backoffice` has only `app/auth/signout/route.ts`.
+- The cleanest evidence is our own code: `apps/web/lib/csp.ts` has to list the Supabase origin in **`connect-src`**, which is only necessary *because* the browser connects to Supabase directly. The proof was sitting in the repo the whole time.
+
+So a Cloudflare rate-limit rule on `shos.hellfiresol.com` would never see one of those requests. **The finding stands — there is genuinely no rate limiting anywhere — only its proposed location was wrong.** This is the same shape as the `curl -H 'Host:'` error of 2026-09-30: confident reasoning about a network path that nobody had measured. Annotated the proposal in place with the correction so it cannot be acted on as written, and noted explicitly that nothing had been acted on before the correction.
+
+**Where it can actually live, which is what S1-07 asks.** The auth and OTP surface — the half that costs money — is addressable at the Supabase Auth layer, and that is both the right layer and an available one: `config.toml:197` already has `[auth.rate_limit]` at stock values, plus Turnstile/hCaptcha support for auth endpoints, and the zone is already on Cloudflare so Turnstile is free and native. The order-RPC half needs either in-RPC throttling keyed on phone or session (S2's, with the honest caveat that a trustworthy client IP is not available there) or routing guest RPCs through our own origin so they *do* pass Cloudflare — an architecture change spanning S3 and S1 that would also move the anon key server-side. S1 files that as a proposal and picks no winner; S0 decides.
+
+**Two things in the boot I want on the record because they are easy to miss.**
+- **The load-bearing unknown is whether `config.toml` reaches the hosted project at all.** The migrate pipeline runs `supabase db push`, which pushes database objects; auth configuration for a hosted project may be dashboard- or Management-API-managed, and the file's own comment at line 338 hints at it by mentioning captcha "if self-hosting". I did not assume either way and told S1 to settle it first, because every other value in task 1 depends on the answer.
+- **`email_sent = 2` per hour.** If that stock value is live and applies to OTP mail, **email OTP is unusable** — two codes an hour for the entire project. D-016 chose email as one of the two channels, so S1 must raise it with S0 before S2-07 builds against it rather than anyone discovering it in a demo. Flagging a config value that quietly contradicts a decision taken hours earlier is cheaper than the demo.
+
+Also asked S1 for the worst-case monthly SMS spend in euros that their chosen `sms_sent` permits, at MessageBird's €0.0317 — a number the owner can read beats a limit they cannot price.
+
+**Housekeeping, and an inconsistency of my own.** Earlier today I renamed the prod-target *proposal* to `S1-07-prod-target.md`, which pre-claimed an issued boot number for something unissued. That is how numbers get muddled. Renamed it to `proposed/S1-prod-target.md`, matching the number-less convention the other proposals already use (`S2-single-customer-erasure.md`, `S3-contract-notes.md`, `S4-contract-request.md`), and S1-07 is now the rate-limiting boot. Proposals should not hold boot numbers; only issued boots should.
+
+## 2026-10-06 — S4 Back-office — S4-03: S7's hardening findings, then Kunden / Profil (CRM)
+
+Both halves landed. Part 1 first and in its own commit, because the back-office host is live and one
+owner action from a real audience.
+
+### Part 1 — hardening (S7-01, `/docs/security.md` §5)
+
+**1. Open redirect (`LoginForm.tsx:53`) — fixed.** `?next=` was validated with a bare
+`startsWith("/")`, which `//evil.example` also satisfies: a protocol-relative URL resolves straight
+off our origin, at the moment a staff member has just proven they trust the page. `lib/safeRedirect.ts`
+replaces it with an allow-list of same-origin relative paths — control characters and whitespace
+refused outright (browsers strip tab/LF/CR and *then* parse, so `"/<tab>/evil.example"` becomes
+`"//evil.example"`; validating the unstripped string is not enough), backslashes refused, absolute
+URLs refused even when same-origin, and `new URL(next, origin)` as the final arbiter. Tested against
+each bypass, plus a sweep asserting no input of any shape returns something that resolves off-origin.
+**Re-checked live:** `?next=//evil.example/phish` lands the operator on `/orders`, same origin; a
+legitimate `?next=/customers` is still honoured, so the feature works and the bypass does not.
+
+**2. Security headers — added.** The app set none: no CSP, no `X-Frame-Options` anywhere, so the
+staff admin panel was iframe-able by any origin. `lib/csp.ts` + `middleware.ts` now set a nonce-based
+**enforcing** CSP with `frame-ancestors 'none'`, plus HSTS, `nosniff`, `Referrer-Policy: no-referrer`
+(customer and order ids sit in back-office paths) and `Permissions-Policy`.
+
+Chose nonce-based, like `apps/web`. Safe here because `app/layout.tsx` is already
+`dynamic = "force-dynamic"` for an independent reason — the image is built without Supabase values, so
+`publicEnv()` must be read per request — so the precondition is doubly anchored rather than borrowed.
+Verified rather than assumed: the build reports **every** route as `ƒ (Dynamic)`, and all 15 script
+tags in `/login` carry the nonce, which also proves Next picked the policy up off the *request*
+headers. Documented loudly in `lib/csp.ts` that making any route static would silently block every
+script on the page.
+
+**The part worth reading: my first implementation was wrong, and only probing the running build
+caught it.** I keyed HSTS / `upgrade-insecure-requests` / the `Secure` cookie flag on
+`request.nextUrl.hostname`, to skip them on loopback (the ssh tunnel is `http://localhost:8202`, where
+HSTS with `includeSubDomains` would pin every localhost port to https in that browser profile, and a
+`Secure` cookie would never come back). Measured on Next 15.5.25: **`nextUrl.hostname` is `"localhost"`
+for every request regardless of `Host`** — it reflects the listening address. So the check marked
+*production* as loopback and dropped both HSTS and `Secure` there. It typechecked, built, and passed
+every test. `isSecureContext()` now reads the forwarded headers and `CF-*` and **fails closed**: only
+a request it can positively identify as loopback loses the flags. Measured across four proxy shapes —
+tunnel → neither header; real `Host`, `CF-Ray`, and `X-Forwarded-Proto: https` → both. Residual gap
+stated in the file: a proxy forwarding none of `Host`, `X-Forwarded-Proto` or `CF-*` is
+indistinguishable from the tunnel from inside the container; closing that needs a deploy-set env var
+and `apps/infra` is outside this boundary (D-004), so it is flagged, not quietly assumed away.
+
+Also note, as the boot predicted: TETA+PI's nginx sends its own HSTS (`max-age=86400`), so the header
+will appear twice on `bo-shos`. Per RFC 6797 only the first is processed. Not touched — the host is
+S1's boundary.
+
+**3. Cookie flags — and S7's task 3 is wrong for this codebase.** I set
+`{ httpOnly: true, secure, sameSite: "lax" }` as asked. Then I signed in and read `document.cookie`:
+the `sb-<ref>-auth-token` cookie **is visible to JavaScript**. Cause, read out of the dependency
+rather than guessed: `@supabase/ssr`'s *browser* client implements its storage directly on
+`document.cookie` (`dist/main/cookies.js:86` reads it, `:94` writes it), and `signInWithPassword` runs
+in a client component — a cookie written that way cannot carry `HttpOnly`, and no server option
+changes it.
+
+Worse, setting it is **actively harmful here**. This app reads its data from client components through
+that same browser client — the orders board, kitchen, driver, and now the CRM. A server-written
+`HttpOnly` cookie would be invisible to it at the first token refresh, the client would conclude there
+is no session, and every RLS-filtered query would return empty: a board and a customer list going
+blank roughly an hour into a shift while the user still appears signed in. Latent, intermittent, and
+it passed a clean build and the whole suite. Removed; `secure` + `sameSite` stay pinned and tested.
+What actually defends this token is the CSP above. Filed back to S7 as
+`boots/proposed/S7-S4-03-httponly-correction.md` (D-012) so it is corrected at the source instead of
+re-raised next audit — including the half of task 3 that **does** stand: `@supabase/ssr` is on a
+caret, and pinning it is S1/S0's call, not mine to make unilaterally.
+
+### Part 2 — Kunden / Profil
+
+**Kunden** `/customers`: search from the first character across name / phone / e-mail / address; the
+four segment tiles with live counts; sort on every stat column (spend descending by default); tag
+filter; multi-select → bulk tag (one upsert for the whole selection, never a per-row loop, with
+Rückgängig restoring the prior snapshot) and client-side CSV export. **Push and Gutschein render
+disabled with a tooltip naming what is missing**, not as buttons that lie.
+
+**Profil** `/customers/[id]`: contacts, both addresses, kitchen note, consents with date and source,
+stats, most-ordered items, and the merged timeline. Note / complaint / compensation through
+`add_customer_event`. "Bestellung anlegen" opens the phone-order form prefilled — passing the customer
+**id**, because a name, phone or address in a URL leaks into browser history and any log that records
+a query string.
+
+Three decisions worth recording:
+
+- **The timeline is a union, not a concatenation.** `orders_customer_event` already writes one `order`
+  event per order, so appending the orders as a second stream would show every order **twice** — the
+  obvious reading of "merged with the customer's orders". `mergeTimeline` keys on order id, enriches
+  each `order` event with the live order row (the payload is written `after insert`, when the status is
+  always `new`, but the design shows the current status), and synthesises an entry for any order with
+  no event of its own so nothing silently disappears. Ties break on id, which is not hypothetical: my
+  three test events landed in the same second on staging.
+- **`days_silent` mirrors the view's SQL**, `extract(day from now() - last_order_at)` — whole *elapsed*
+  days, not a calendar difference. 47 hours ago is 1, not 2. A calendar-date implementation would move
+  customers in and out of "schlafend" by time of day and disagree with the DB for the same row.
+- **Erasure is a request, not an act** — the boot allowed either option and this takes the second. No
+  server-side single-customer erasure exists, so "Daten löschen" files an auditable `note`
+  (`payload.kind = 'erasure_request'`, with who and when) on the customer's own timeline and the
+  profile shows it pending. Reason: Art. 17 starts a clock on the **date of the request**, so the one
+  thing the system must not lose is that a request was made — and a disabled button records nothing, so
+  a request arriving by phone would live only in someone's memory. The dialog says in plain words that
+  nothing is deleted yet.
+
+Also, per the boot's item 4: the profile says plainly that completed orders can legitimately show as
+unpaid until Stripe exists, rather than hiding or coercing it.
+
+### Verified on `shosho-staging`
+
+My changes are not deployed, so the ssh tunnel would have shown the **old** app. Ran a local
+production build pointed at the staging project instead, which exercises the new code against real
+data — and separately drove the REST/RPC surface directly.
+
+UI, as operator: list and profile render on real rows; segment counts correct (only the row created
+today counted as "Neu diesen Monat"); search including the German national phone form; "Keine Treffer"
+empty state; bulk tag applied and then undone back to the exact prior tags; a note added through the
+dialog appearing in the timeline. Actor names resolve through **`staff_directory`**, not the base
+`staff` table. Berlin time correct (20:15 UTC rendered 22:15). No console errors, so the nonce CSP is
+not blocking Next's bundles or the Supabase calls.
+
+Contract level: complaint, compensation and the erasure note all land, and the `kind` marker survives
+in free jsonb; a blank note is refused `invalid_input` (the dialog pre-checks it so the operator sees a
+sentence, not a Postgres error); the `consent_changed` trigger fired on a consent write with channel
+and actor; **a direct insert into `customer_events` is refused `42501` even for the operator**, so the
+RPC is the only write path, as `/docs/security.md` §2 says.
+
+Kitchen refused everywhere: `/customers` and `/customers/[id]` both redirect to `/kitchen` with no
+customer data in the HTML; `add_customer_event` raises `forbidden_for_role`; reads of `customers`,
+`customer_stats` and `customer_events` all return `[]`. **One thing worth passing on:** a kitchen
+`PATCH` of `customers.tags` returns `[]` with **no error** — RLS silently no-ops rather than refusing,
+so any UI that trusted the absence of an error would report success. The route guard is what actually
+keeps them out; the RLS is the backstop.
+
+Test data: created my own customer, exercised everything on it, deleted it — its 5 events cascaded.
+The pre-existing S3/S4 test rows were left alone.
+
+**For S0 / the owner: `shosho-test-2026` still works on `shosho-staging` as of 2026-10-06.** I signed
+in with it as both operator and kitchen. The rotation is still the one open precondition on handing
+out the URL. No password was written to any file in the repo or printed in a report.
+
+### Not verified, stated rather than claimed
+
+- The **"Noch kein Kundenprofil"** empty state (zero customers) and the **anonymised** profile state
+  are exercised by code path and unit test only. Staging has four customers and anonymising a real row
+  to see a banner is not a reasonable trade.
+- A live ACME / cleartext-redirect interaction with TETA+PI's nginx is not mine and was not touched.
+
+### Follow-ups filed
+
+- `boots/proposed/S7-S4-03-httponly-correction.md` — the HttpOnly finding above (S7).
+- `S4-contract-request.md` §13–15 — `customer_stats` has no `first_order_at` (so "Neu diesen Monat" is
+  keyed on `customers.created_at`, an assumption the schema does not enforce); the future erasure RPC
+  should look for the `erasure_request` marker notes so a hand-filed request is not lost; and a note
+  that "Bestellt am häufigsten" counts the item snapshot, so options collapse.
+- Scale note in the README: the Kunden list loads every customer and filters in the browser. Right at
+  this scale, wrong at ten times it.
+
+Absorbed from the merge: **D-016** moves customer messaging to the customer-accounts phase, so the
+disabled push tooltip names that rather than S5.
+
+## 2026-10-07 — S0 Orchestrator — S2 corrected my own boot and was right; two lessons recorded; TETA+PI's confirmation needs nothing further
+Three things, none of them requiring new verification of the infra.
+
+**TETA+PI's confirmation arrived via S1 and needs no action from me.** Their report matches what I measured independently on 2026-10-06 and what S1 measured before me, and it closes the one gap S1 had explicitly flagged as unverifiable from outside: whether the `return 444` default block could interfere with hellfire's ACME renewal. They checked it from the admin side — certbot uses the nginx authenticator through hellfire's own explicit vhost, so the default block was never in that path, and the next renewal is ~2026-11-17. S1's addendum recording this is already merged (PR #64). **I did not re-probe the origin a third time in a day; everything in their report is either already confirmed twice or is about their own hosts, which are not mine to probe to check their report.** Two claims in their message I have deliberately not verified and am not treating as mine: the five `tetapi.dev` hosts, and hellfire's body size.
+
+**Worth recording because it is a method lesson, not a compliment.** TETA+PI noted that both cross-tenant findings came out of our requests and that their own daily probe missed both, because it checks **known** hostnames rather than how the box behaves for names it does not know. That generalises, and the useful part is that our method already has it — unknown SNI on `:443` (S1's addition after the 2026-09-30 incident) and an invented `Host:` on `:80` compared against our own hostname's body (mine, 2026-10-05). That pair is exactly what surfaced their `:80` default-server gap, now their S-26. Added it to the S0 boot's lessons as its own entry, because the existing `--resolve` note says how to probe a name you *do* serve and says nothing about probing one you do not.
+
+**S2 corrected my boot on a security-relevant point and was right.** My S2-06 boot specified `report_payments` as a `security_invoker` view "like your other reports". S2 declined and built a function with an owner/operator guard. I measured before agreeing, per the rule: `orders_kitchen_read` at `rls.sql:119` is `using (public.is_staff('kitchen'))` with **no row restriction** — kitchen reads every order row for all time (contrast `orders_driver_read` on line 122, correctly bounded by `driver_id = auth.uid()`). A `security_invoker` view runs with the caller's RLS on every joined table, so my version would have handed a kitchen login every order's payment data no matter how correct `payment_events`/`payment_jobs` RLS is. **The leak never shipped because S2 didn't follow the instruction.** Recorded as a lesson in the S0 boot — a `security_invoker` view is only as tight as the loosest policy among its joins — and filed `proposed/S7-report-view-rls-sweep.md` asking S7 to sweep the four S2-03 report functions for the same shape and to rule on whether `orders_kitchen_read` should be bounded at all, which is a judgement rather than a defect. That is now the third correction a child session has given me and the third that was right; the boot's lessons list says so with the specifics, since a tally without them teaches nothing.
+
+**S2-06 status: PR #67, draft, CI in progress, and I am leaving it alone.** S2 is still pushing (three commits plus a merge of `main` in the last hour) and said draft-while-CI-validates, so it is theirs to finish. What I checked without interfering: migrations landed as `…027`–`…032`, exactly the range the boot claimed under D-014, so no renumbering is owed. Two other deviations in their PR body read as improvements rather than drift, and I will review them properly when it is marked ready: `resolve_segment(segment, channel)` takes two required arguments instead of my one-argument sketch, so forgetting the channel is a syntax error rather than a silently-too-broad result; and §8 rather than §7 in `api-contracts.md`, because §7 was already Automation's — which the boot allowed for. The contract section is mine to review, and that review has not happened yet.
+
+## 2026-10-07 — S2 Backend — S2-06
+
+Campaigns, automations, banners, site publish; made the funnel honest. PR #67 → `main`. Migrations
+**27–32**, claimed per D-014, no collision. `backend` CI green after one same-day fix (below).
+
+Implements §2 and §3 of my own `S2-03-reports-campaigns-cms.md` proposal (§1 — the four original
+`report_*` functions — was already shipped in S2-03). That file is deleted in this PR. Two small
+leftover items from its §4 had no other home and are recorded here rather than a new proposal file:
+the push/email provider decision campaigns need before S5 can send anything (now partly answered by
+D-016's push-primary, MessageBird-for-SMS direction, though that's OTP infrastructure, not the
+marketing send path — still open for campaigns specifically), and a private `receipts` bucket for
+invoice PDFs "when S5 Accounting needs it."
+
+**`campaigns` + `campaign_recipients`.** Owner/operator draft a campaign directly, same shape as
+`promo_codes` — no RPC needed. `campaign_recipients` is staff read-only; nothing but the service-role
+connection writes to it. **The weekly-cap mechanism, since the boot asked explicitly how it's
+expressed on top of the unique constraint**: the unique `(campaign_id, customer_id)` index gives
+exactly one thing — a customer cannot appear twice *in the same* campaign — and nothing about two
+*different* campaigns reaching them three days apart, which is what "max one automated action per
+customer per week" actually means and needs to look across `campaign_id` values. A per-row CHECK or a
+two-column UNIQUE index cannot express that, so it's a `before insert` trigger
+(`campaign_recipients_enforce_weekly_cap()`) instead: a new row is refused if the same customer
+already has a non-failed row (any campaign) created in the last 7 days. `failed` is exempt — a
+bounced send shouldn't spend the week's slot. This makes the cap a property of the table itself,
+so whoever eventually writes these rows (S5, not built here) gets it for free and cannot forget it.
+
+**`resolve_segment(segment jsonb, channel campaign_channel)` — two required arguments, not the
+proposal's one-argument sketch.** The proposal's own framing — "the wizard's recipients number and
+the real send use one implementation" — only holds if both calls resolve the *same*,
+channel-specific eligible set. A one-arg version would need `channel` folded into the segment jsonb,
+where a caller could omit it silently; making it a required SQL parameter turns "forgot to say which
+channel" into a syntax error rather than a too-broad result. Consent and `anonymised_at is null` are
+checked first and unconditionally — not a segment key, so no caller-supplied filter can bypass them —
+keyed off `channel` (`email` needs `consent_email`, `push` needs `consent_push`, `both` needs
+either). "A caller who forgets consent gets fewer rows, never more," literally: an unrecognised
+future enum value falls through to `false`, excluding everyone rather than everyone.
+
+**`claim_campaign_recipients` — unreachable with anon or authenticated, on purpose, read the finding
+first.** Revoked from both explicitly (not just `public`), the exact "anon key, service-role
+authority" shape S7-01/S1 found wrong in `payment-worker`, deliberately not reproduced here. Shaped
+like `claim_payment_jobs`: `for update skip locked`, plus a `claimed_at` stale-claim timeout (10 min)
+since `campaign_recipient_state` has no `processing` value the way `payment_jobs.status` does.
+
+**`report_payments` — owner/operator only, not `security_invoker`, and I want to be clear about why
+I diverged from the boot's own wording.** The boot said "security_invoker like your other reports,"
+but the other four `report_*` are `security definer` functions with `reports_guard()`, not
+`security_invoker` views — and a literal `security_invoker` view here would have been wrong, not just
+inconsistent: `payment_events`/`payment_jobs` carry no `payment_method` of their own, so getting it
+means joining `orders`, and `orders` RLS lets `kitchen` read every row unconditionally. A view
+running as a kitchen caller would see every order's payment method/status through that join, leaking
+straight past `payment_events`/`payment_jobs`'s own correctly-restrictive RLS — a view's
+invoker-security is only as tight as the weakest table it reads. So it's a function with its own
+inline guard, narrower than `reports_guard()` (owner/operator only, not "any active staff role"),
+because this boot specifically asked for "kitchen/driver see nothing" on payment data, unlike the
+revenue/delivery-time figures they already see today. Sourced from `orders`, not `payment_jobs` —
+a cash refund settles `orders.payment_refunded_cents` directly and never creates a `payment_jobs`
+row, so the job queue alone would silently miss the one payment path actually exercisable on staging
+right now. **Unexercised against real provider data**: no Stripe account exists; correct by reading
+and a hand-seeded test, not proven against a live response.
+
+**`banners` / `banners_live` / bucket `site`.** Base table owner/operator only, with the `anon` table
+grant revoked outright (belt-and-braces, like `order_attempts`, because it carries unpublished
+`draft` content) rather than relying only on RLS returning zero rows. `banners_live` is the *only*
+anon-reachable surface — `security_invoker = false` (same reasoning as `staff_directory`), explicit
+column list that never selects `draft`.
+
+**`settings.draft` / `publish_site()` / `site_publications` — the column-level pitfall the boot named
+explicitly, closed the way it asked to be verified: with the anon key, not by inspection.** RLS is
+row-level: `settings_public_read` already admits `anon` to the `business`/`opening_hours`/`site`/
+`payments.enabled`/`kitchen.status` rows, so a plain `draft` column on the same table would hand
+`anon` every pending edit on those same rows — `select *` doesn't know which columns were "meant" to
+stay private. Fixed with a **column-level `GRANT`**: `anon`'s blanket table grant on `settings` is
+revoked and re-granted for exactly `(key, value, created_at, updated_at)`, `draft` pointedly absent.
+`authenticated` keeps its existing grant unchanged, so owner/operator still see `draft` on rows their
+row policies already admit them to. `banners.draft` needed no such narrowing: the base table has no
+`anon` policy or grant at all, so there's nothing on it for `anon` to reach regardless of column.
+`publish_site()` copies every pending `settings.draft` straight into `value` (a full replacement) and
+merges every pending `banners.draft` onto its row (a **partial patch** — an absent or JSON-`null` key
+keeps the live value), clears both, and logs one `site_publications` row snapshotted *before* either
+update runs. Tested with the anon key exactly as asked: explicit `select('draft')` errors, a bare
+`select('*')` never carries the key, and the live `value` provably doesn't change until `publish_site`
+actually runs.
+
+**`report_funnel` — the "200 %" fix, and the decision behind it.** `order_attempts` only exists from
+migration 23 (2026-09-26); `orders` goes back to S2-01 (2026-09-20). The old function compared
+`count(orders in window)` to `count(order_attempts in window)` using the *same* window for both —
+correct SQL, wrong meaning whenever that window reaches before recording began, because every
+pre-recording order is real and placed but no attempt row could possibly exist for it. Chose
+**clamp-and-report** over **null-and-report**: `attempts`/`attempts_with_problems`/the ratio are now
+computed only over `[attempts_window_from, attempts_window_to]`, the overlap between the requested
+range and the period recording has actually existed for, and that sub-window is returned explicitly
+so a caller never has to guess whether a figure is comparable to what it asked for. When there's no
+overlap at all, all four (plus both window columns) come back `null` together — "not yet
+measurable," never a plausible-looking wrong number. `placed`/`paid`/`cancelled`/upsell are
+untouched — pure `orders` queries, honest over the full range regardless. **A genuine ratio above
+100 % over a fully-comparable window is not suppressed, and the existing fixture (2026-02-03, 133.3 %)
+now proves exactly that case alongside the fix**: `order_attempts` records only rejected/abandoned
+checkouts, not total attempts, so it is not bounded by `placed` — a store with far more successes
+than failures legitimately produces a ratio like that, and S3-02's "200 %" was a window mismatch, not
+evidence the arithmetic itself needs bounding.
+
+**Caught by CI, same day, fixed in one commit.** `storage.objects` is one table shared by every
+bucket — bucket `site`'s four policies (migration 31) landed in the exact same (schemaname,
+tablename) pair the pre-existing bucket-policy sweep test queried, so its assumption of exactly four
+total policies on the table broke (8, not 4). Fixed by checking each bucket's four policies by name
+prefix (`menu photos` / `site assets`) instead of assuming the table holds only one bucket's worth.
+Every other new test — `tests/campaigns.test.ts` (18 tests) and the `reports.test.ts` additions —
+passed on the first push.
+
+**Boundaries:** no `apps/backoffice`, `apps/web` or `apps/infra` touched — S4-03 is live in
+`backoffice` in parallel, confirmed no file-level overlap. No `site_events` (D-015, explicit). No
+sending, no automation scheduling (S5's) — tables, the resolver and a claim function only.
+`docs/api-contracts.md` gets one new section, **§8** (§7 was already taken by Automation/FastAPI
+webhooks, not noticed until I went to pick a number) — my own §6.7/§6.10 lines updated where this
+boot made them stale, nobody else's section touched. `/memory/decisions.md`, `/memory/sessions.md`,
+`/docs/security.md`, `/docs/design/*` untouched. `origin/main` merged cleanly before this report, no
+conflicts (S1-07 rate-limiting and D-016's customer-accounts roadmap both merged while this ran;
+neither touches `apps/backend` migrations or anything this boot built).
+
+**Blockers:** none for S2. Still open from S2-04/S2-05: owner's Stripe account/keys (no live payment
+has ever run); the staging password rotation. D-016's roadmap flags that `consent_push`/
+`campaign_recipients` can now record campaign *intent* with no push transport to send it on — true,
+and unaffected by anything in this boot; S5 and S2-07 are the sessions that close that gap.
+
+## 2026-10-07 — S0 Orchestrator — reviewed and merged S2-06 and S4-03; verified S4's headers live, which S4 could not; one audit trap recorded
+Both in-flight boots landed. I reviewed each rather than merging on a green tick, and resolved both `memory/` conflicts myself — **I caused them**, by merging PRs #69 and #67 after each session had already prepared its branch, and both boots end with "stop and wait for S0", so bouncing them back would have been charging someone else for my sequencing.
+
+**S2-06 (PR #67) — four load-bearing claims re-measured, all hold.** Migrations landed as `…027`–`…032`, exactly the range the boot claimed under D-014, so nothing was owed. `claim_campaign_recipients` is `revoke execute … from public, anon, authenticated` then `grant … to service_role` — the S7-01 `payment-worker` lesson applied precisely, not approximately. `resolve_segment` is granted to `authenticated` broadly but **guards internally** (`auth_role() not in ('owner','operator')` → `42501`), which matters more than it looks: per D-016 customers will soon *be* `authenticated`, and S2 preserved that property without being told, because D-016 did not exist when their boot was written. Their §8 cross-reference to §6.10 resolves (line 437), and they updated §6.7 to point at §8 unasked. D-009 respected exactly — only their own `state.md` row changed.
+
+**S4-03 (PR #68) — the two security fixes verified by reading them, not by trusting the report.** `safeRedirect.ts` is an allow-list, and every bypass the boot named is refused: `//evil.example` by an explicit `startsWith("//")`, `/\evil` by refusing backslashes anywhere, `https://` and `javascript:` by requiring a leading slash, and tab/CR/LF by refusing all control characters *before* parsing — which is the right order, since browsers strip those and then parse. `new URL(next, origin)` is the final arbiter and a falsy `origin` falls back, so it fails closed. Their `isSecureContext()` is genuinely fail-closed too: unknown proxy shape → treated as secure → protections applied; only a loopback Host skips them.
+
+**Closed a gap S4 explicitly said they could not close.** They wrote that their code was not deployed, so the tunnel would have shown the old app, and verified locally instead. After both merges deployed I checked the real container over the tunnel, and their headers are live: CSP with `frame-ancestors 'none'`, nonce + `strict-dynamic`, Supabase in `img-src`/`connect-src` including `wss:`; a full `permissions-policy` deny list; `referrer-policy: no-referrer`; nosniff; `x-frame-options: DENY`. The nonce also appears in the `link` preload header — per-request evidence that the route is dynamic, which is the precondition the whole nonce CSP rests on. **`strict-transport-security` is absent on that request, and that is correct, not missing:** loopback Host, no `CF-*`, no `x-forwarded-proto`, so `isSecureContext()` returns false exactly as they documented. So their own self-caught fail-open fix is confirmed in the direction observable from here.
+
+**One trap worth recording before someone falls into it.** Through the public URL, basic-auth answers **401 before Next.js runs**, so none of S4's headers reach an unauthenticated prober. `https://bo-shos.hellfiresol.com/` returns only TETA+PI's nginx headers — weaker `referrer-policy`, a shorter HSTS, and **no CSP at all**. A future audit (ours, S7's, or a scanner) that probes the public URL will conclude the back-office has no CSP, and it will be reading the gate rather than the app. Written into `state.md` next to the verification so the conclusion and its refutation sit together. This is the same failure shape as reading a no-SNI 200 as proof a vhost serves a name: the probe answered, but not from where you assumed.
+
+**Staging schema moved, and I checked what moved rather than that a tick was green.** The `Migrate staging` run for S2-06 reports "Push migrations + seed → Finished supabase db push" over all six files, and the three Edge Functions redeployed. Guest site after both deploys: 200, real menu photo still served from the `menu` bucket, correct title.
+
+**S6-01 is unblocked as of now.** The stated reason for holding it — S4-03 rewriting the back-office login redirect and adding CSP to every page there — is gone, and its boot was already refreshed on 2026-10-06. It is the obvious next thing, and its value went up rather than down: there is now materially more to test across the seams than when it was written.

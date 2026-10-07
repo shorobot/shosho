@@ -22,7 +22,7 @@ describe("set_order_status", () => {
   });
 
   it("full delivery lifecycle with role gates and timeline", async () => {
-    const id = await newOrder();
+    const id = await newOrder(ramenOrder({ payment_method: "cash" }));
 
     // illegal transition
     const { error: ill } = await setStatus(operator, id, "preparing");
@@ -61,10 +61,11 @@ describe("set_order_status", () => {
     const { error: kDel } = await setStatus(kitchen, id, "delivered");
     expect(kDel!.message).toBe("forbidden_for_role");
 
-    // driver sees own order, delivers, payment captured (v1 stub)
+    // driver sees own order and delivers. The order is cash, so confirming the money is what pays
+    // it — since S2-04 nothing else does: completion alone never marks an order paid (S7-01 #1).
     const { data: mine } = await driver.from("orders").select("id").eq("id", id);
     expect(mine).toHaveLength(1);
-    const { data: del, error: e5 } = await setStatus(driver, id, "delivered");
+    const { data: del, error: e5 } = await setStatus(driver, id, "delivered", { cash_received: true });
     expect(e5).toBeNull();
     expect(del.status).toBe("delivered");
     expect(del.payment_status).toBe("paid");

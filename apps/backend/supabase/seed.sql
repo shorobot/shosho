@@ -1,7 +1,16 @@
 -- [S2-01] seed — idempotent (fixed UUIDs + on conflict). Data from /docs/design.
 -- Run: supabase db reset (local) · supabase db push --include-seed (staging).
--- Test logins (local + staging) — see apps/backend/README.md:
---   owner@shosho.test / operator@shosho.test / kitchen@shosho.test / driver@shosho.test — password: shosho-test-2026
+--
+-- [S2-05] Staff logins get a RANDOM password here, not a known one — a cloud project (a fresh
+-- staging, or a reset one) must never be born with a password published in this public repo. The
+-- `on conflict (id) do nothing` on auth.users below means this only matters the first time a given
+-- project is seeded: a rotation done afterwards (local or staging) is never overwritten by this file.
+--   owner@shosho.test / operator@shosho.test / kitchen@shosho.test / driver@shosho.test
+-- Local dev: run `pnpm --filter @shosho/backend seed:local-logins` after `db reset` to set the
+-- documented local-only password (apps/backend/scripts/seed-local-logins.mjs; also the test suite's
+-- own `pretest` hook, so `pnpm test` needs no extra step). Staging: on-conflict-do-nothing means
+-- THIS CHANGE DOES NOT ROTATE an existing project's password — see apps/backend/README.md
+-- "Test logins" for the owner's one-command rotation and where the new values end up.
 
 begin;
 
@@ -51,14 +60,15 @@ insert into public.settings (key, value) values
 on conflict (key) do update set value = excluded.value;
 
 ---------------------------------------------------------------- staff (auth.users + public.staff)
--- Password for all four: shosho-test-2026 (bcrypt via pgcrypto).
+-- [S2-05] Random password per row, discarded immediately — nobody is meant to know it.
+-- `extensions.crypt()` only ever sees it long enough to hash it into encrypted_password.
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
   raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
   confirmation_token, recovery_token, email_change_token_new, email_change, is_sso_user
 )
 select id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', email,
-       extensions.crypt('shosho-test-2026', extensions.gen_salt('bf')), now(),
+       extensions.crypt(encode(extensions.gen_random_bytes(24), 'base64'), extensions.gen_salt('bf')), now(),
        '{"provider":"email","providers":["email"]}'::jsonb, jsonb_build_object('name', name),
        now(), now(), '', '', '', '', false
 from (values

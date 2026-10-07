@@ -60,6 +60,12 @@ const AUTHENTICATED_ONLY = new Set([
   "report_top_items",
   "report_funnel",
   "report_delivery_times",
+  // S2-06 §8 — campaigns/CMS. Each has its OWN inline guard narrower than reports_guard():
+  // resolve_segment and report_payments are owner/operator only (kitchen/driver get
+  // forbidden_for_role despite ACL execute); publish_site is owner only.
+  "resolve_segment",
+  "report_payments",
+  "publish_site",
 ]);
 
 // service_role only (Edge Functions, cron, one-time bootstrap) — never anon, never authenticated.
@@ -78,6 +84,15 @@ const SERVICE_ROLE_ONLY = new Set([
   "security_audit_function_grants",
   "security_audit_table_grants",
   "security_audit_policies",
+  // S2-04: the secret payment-worker presents to prove it is the cron and not a holder of the
+  // public anon key (finding 7). Readable by nobody else — that is the whole point of it.
+  "payment_worker_secret",
+  // S2-06 §8.3 — the exact "anon key, service-role authority" shape S7-01/S1 found wrong in
+  // payment-worker must not be reproduced here: unreachable with anon OR authenticated.
+  "claim_campaign_recipients",
+  // S2-06 §8.6 — bucket `site` installer, service_role only (same shape as ensure_menu_bucket_policies,
+  // but starting correct: revoked from anon AND authenticated directly, not just `public`).
+  "ensure_site_bucket_policies",
 ]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what
@@ -93,6 +108,9 @@ const TRIGGER_FUNCTIONS = new Set([
   "customers_consent_changed",
   "orders_broadcast_tracking",
   "payment_jobs_kick_worker",
+  // S2-06 §8.1 — the weekly-cap guard; cannot be invoked directly via RPC regardless of grants,
+  // same as every other trigger function here.
+  "campaign_recipients_enforce_weekly_cap",
 ]);
 
 async function functionGrants(): Promise<FnGrant[]> {
@@ -243,15 +261,23 @@ describe("RLS sweep (live catalog: public, storage, realtime)", () => {
     expect(pol.qual ?? "").toMatch(/order:/);
   });
 
-  it("storage `menu` bucket policies: public read, staff-only write, exactly as documented", async () => {
+  // [S2-06] `storage.objects` is one table shared by every bucket — bucket `site`'s policies
+  // (migration 31) land in the exact same (schemaname, tablename) pair as `menu`'s, so this test
+  // now checks each bucket's four policies by NAME prefix rather than assuming there are only
+  // four policies on the table at all.
+  it("storage bucket policies: public read, staff-only write, for both `menu` and `site`", async () => {
     await admin().rpc("ensure_menu_bucket_policies");
-    const rows = (await policies()).filter((p) => p.schemaname === "storage" && p.tablename === "objects");
-    const byCmd = Object.fromEntries(rows.map((p) => [p.cmd, p]));
-    expect(rows.map((p) => p.cmd).sort()).toEqual(["DELETE", "INSERT", "SELECT", "UPDATE"]);
-    expect(byCmd.SELECT.roles).toEqual(expect.arrayContaining(["anon", "authenticated"]));
-    for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
-      expect(byCmd[cmd].roles, cmd).toEqual(["authenticated"]);
-      expect(byCmd[cmd].with_check ?? byCmd[cmd].qual ?? "").toMatch(/is_staff/);
+    await admin().rpc("ensure_site_bucket_policies");
+    const all = (await policies()).filter((p) => p.schemaname === "storage" && p.tablename === "objects");
+    for (const prefix of ["menu photos", "site assets"] as const) {
+      const rows = all.filter((p) => p.policyname.startsWith(prefix));
+      const byCmd = Object.fromEntries(rows.map((p) => [p.cmd, p]));
+      expect(rows.map((p) => p.cmd).sort(), prefix).toEqual(["DELETE", "INSERT", "SELECT", "UPDATE"]);
+      expect(byCmd.SELECT.roles, prefix).toEqual(expect.arrayContaining(["anon", "authenticated"]));
+      for (const cmd of ["INSERT", "UPDATE", "DELETE"]) {
+        expect(byCmd[cmd].roles, `${prefix} ${cmd}`).toEqual(["authenticated"]);
+        expect(byCmd[cmd].with_check ?? byCmd[cmd].qual ?? "", `${prefix} ${cmd}`).toMatch(/is_staff/);
+      }
     }
   });
 

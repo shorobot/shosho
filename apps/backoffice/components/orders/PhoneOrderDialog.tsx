@@ -29,8 +29,16 @@ const PROBLEM_KEY: Record<string, Key> = {
   empty_cart: "problem.empty_cart",
 };
 
-/** Minimal phone-order form → rpc('place_order', {channel:'phone', …}) from the staff session (§6.1). */
-export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+/**
+ * Minimal phone-order form → rpc('place_order', {channel:'phone', …}) from the staff session (§6.1).
+ *
+ * `customerId` prefills the contact and the default address — the CRM profile's "Bestellung anlegen"
+ * passes it so an operator on the phone does not retype what the screen already shows. It is the
+ * customer's **id**, not their details: the profile links through `/orders?phone=<id>`, and putting a
+ * name, phone number or address in a URL would leak it into browser history and any log that records
+ * the query string.
+ */
+export function PhoneOrderDialog({ open, onClose, customerId = null }: { open: boolean; onClose: () => void; customerId?: string | null }) {
   const { t, lang } = useI18n();
   const supabase = useSupabase();
   const { reload } = useOrders();
@@ -63,6 +71,34 @@ export function PhoneOrderDialog({ open, onClose }: { open: boolean; onClose: ()
       .select("item_id, option_groups(id, name_de, name_en, min_select, max_select, required, options(id, name_de, name_en, price_cents, active))")
       .then(({ data }) => setGroups((data ?? []) as unknown as ItemGroups[]));
   }, [open, items.length, supabase]);
+
+  // Prefill from the CRM profile. Loaded here rather than passed in, so no personal data travels
+  // through the URL (see the note on this component). The default address wins when there are several.
+  useEffect(() => {
+    if (!open || !customerId) return;
+    let cancelled = false;
+    void supabase
+      .from("customers")
+      .select("name, phone, customer_addresses(street, floor_apt, postal_code, city, is_default)")
+      .eq("id", customerId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        setName(data.name ?? "");
+        setPhone(data.phone ?? "");
+        const addrs = data.customer_addresses ?? [];
+        const a = addrs.find((x) => x.is_default) ?? addrs[0];
+        if (a) {
+          setStreet(a.street ?? "");
+          setFloor(a.floor_apt ?? "");
+          setPostal(a.postal_code ?? "");
+          setCity(a.city ?? "Berlin");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, customerId, supabase]);
 
   /** Groups the operator must answer for an item: min_select >= 1 (the design's "exactly one" rule). */
   const requiredGroups = useCallback(

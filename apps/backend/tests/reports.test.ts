@@ -161,9 +161,71 @@ describe("reports (§6.10)", () => {
       upsell_cents: 300,
     });
     expect(Number(data[0].placed_to_paid_pct)).toBeCloseTo(50.0, 1);
+    // [S2-06] 133.3 % is the honest, legitimate ratio of a fully-comparable window: order_attempts
+    // records only rejected/abandoned checkouts, so it is not bounded by `placed` — a window where
+    // recording has existed the whole time is not clamped or suppressed just for exceeding 100.
     expect(Number(data[0].attempts_to_placed_pct)).toBeCloseTo(133.3, 1);
+    // [S2-06] the window the ratio covers is reported back explicitly; this fixture day is at or
+    // after the earliest order_attempts row in the whole suite, so it is not narrowed at all.
+    expect(data[0].attempts_window_from).toBe(DAY);
+    expect(data[0].attempts_window_to).toBe(DAY);
     // MENÜ → WARENKORB is deliberately absent — no menu-impression source exists (README "Reports")
     expect(data[0]).not.toHaveProperty("menu_to_cart_pct");
+  });
+
+  // [S2-06 task 8] The "200 %" defect: order_attempts only exists from 2026-09-26, orders go back
+  // to S2-01 (2026-09-20) — a window reaching before recording began counted every pre-recording
+  // order as "placed" against an attempts count that could not exist yet. These tests do not
+  // assume a specific global earliest row (other suites insert their own); they read whatever it
+  // actually is and build a window guaranteed to sit entirely before it, or to straddle it.
+  describe("report_funnel: the pre-recording window is never blended into the ratio", () => {
+    it("returns null attempts/ratio/window for a range entirely before any order_attempts row", async () => {
+      const { data: earliestRows } = await admin().from("order_attempts")
+        .select("at").order("at", { ascending: true }).limit(1);
+      const earliest = earliestRows?.[0]?.at ? new Date(earliestRows[0].at as string) : new Date("2026-09-26T00:00:00Z");
+      const windowEnd = new Date(earliest.getTime() - 1000 * 60 * 60 * 24 * 300);   // ~300 days earlier
+      const windowStart = new Date(windowEnd.getTime() - 1000 * 60 * 60 * 24 * 5);  // a 5-day ancient window
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const from_date = iso(windowStart), to_date = iso(windowEnd);
+
+      // a real, honestly-placed order inside that ancient window — models a pre-recording order
+      const phone = "+4917699000099";
+      await admin().from("orders").delete().eq("contact_phone", phone);
+      await admin().from("customers").delete().eq("phone", phone);
+      const { data: cust } = await admin().from("customers").insert({ name: "Ancient Fixture", phone }).select("id").single();
+      await admin().from("orders").insert({
+        channel: "website", type: "pickup", status: "delivered", payment_status: "paid", payment_method: "cash",
+        contact_name: "Ancient Fixture", contact_phone: phone, customer_id: cust!.id, total_cents: 1000,
+        created_at: `${from_date}T12:00:00+01:00`,
+      } as never);
+
+      const { data, error } = await rpc(operator, "report_funnel", { from_date, to_date });
+      expect(error).toBeNull();
+      expect(data[0].attempts).toBeNull();
+      expect(data[0].attempts_with_problems).toBeNull();
+      expect(data[0].attempts_to_placed_pct).toBeNull();
+      expect(data[0].attempts_window_from).toBeNull();
+      expect(data[0].attempts_window_to).toBeNull();
+      // placed/paid/cancelled/upsell are pure `orders` queries and stay honest regardless
+      expect(data[0].placed).toBeGreaterThan(0);
+    });
+
+    it("clamps the comparable sub-window to the earliest order_attempts row when the requested range spans across it", async () => {
+      const { data: earliestRows } = await admin().from("order_attempts")
+        .select("at").order("at", { ascending: true }).limit(1);
+      expect(earliestRows!.length, "no order_attempts row exists anywhere — nothing to clamp to").toBeGreaterThan(0);
+      const globalEarliestDate = new Date(earliestRows![0].at as string).toISOString().slice(0, 10);
+
+      const from_date = "2020-01-01"; // certainly before any real attempt row
+      const to_date = new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString().slice(0, 10); // through tomorrow
+
+      const { data, error } = await rpc(operator, "report_funnel", { from_date, to_date });
+      expect(error).toBeNull();
+      expect(data[0].attempts_window_from).toBe(globalEarliestDate);
+      expect(data[0].attempts_window_to).toBe(to_date);
+      // the sub-window starts at the clamp point, not at the requested from_date
+      expect(data[0].attempts_window_from).not.toBe(from_date);
+    });
   });
 
   it("report_delivery_times: per zone, promised vs actual, overdue share", async () => {
@@ -202,6 +264,105 @@ describe("reports (§6.10)", () => {
       const { error } = await rpc(anon(), fn, range);
       expect(error, fn).not.toBeNull();     // execute is revoked from anon
     }
+  });
+});
+
+/**
+ * report_payments (§8.5, S2-06) — its own isolated fixture on a different day, deliberately not
+ * sharing DAY = 2026-02-03 above: report_payments groups by (payment_method, payment_status)
+ * regardless of order status, and a shared fixture's cancelled_count/revenue assertions above
+ * would silently drift if this added another row to that same day.
+ */
+describe("report_payments (§8.5)", () => {
+  const PDAY = "2026-04-04";
+  const pat = (hhmm: string) => `${PDAY}T${hhmm}:00+01:00`;
+  const pphone = "+4917699000050";
+  let p1: string, p2: string, p3: string;
+
+  beforeAll(async () => {
+    const a = admin();
+    await a.from("orders").delete().eq("contact_phone", pphone);
+    await a.from("customers").delete().eq("phone", pphone);
+    const { data: cust } = await a.from("customers").insert({ name: "Payments Fixture", phone: pphone }).select("id").single();
+
+    const base = {
+      channel: "website", type: "pickup", contact_name: "Payments Fixture", contact_phone: pphone,
+      customer_id: cust!.id as string, subtotal_cents: 0, discount_cents: 0, delivery_fee_cents: 0,
+      tip_cents: 0, vat_cents: 0, zone_id: null as string | null, promised_minutes: null as number | null,
+      accepted_at: null as string | null, completed_at: null as string | null,
+      cancelled_at: null as string | null, cancel_reason: null as string | null,
+      payment_refunded_cents: 0,
+    };
+    const rows = [
+      // card/paid, partially refunded
+      { ...base, status: "delivered", payment_method: "card", payment_status: "paid",
+        total_cents: 3000, payment_refunded_cents: 500, created_at: pat("10:00") },
+      // card/paid, no refund
+      { ...base, status: "delivered", payment_method: "card", payment_status: "paid",
+        total_cents: 2000, created_at: pat("11:00") },
+      // cash/paid — a different method entirely, proves the GROUP BY actually groups
+      { ...base, status: "delivered", payment_method: "cash", payment_status: "paid",
+        total_cents: 1500, created_at: pat("12:00") },
+    ];
+    const { error } = await a.from("orders").insert(rows as never);
+    if (error) throw error;
+    const { data: orders } = await a.from("orders").select("id").eq("contact_phone", pphone).order("created_at");
+    [p1, p2, p3] = orders!.map((o) => o.id as string);
+
+    // the "provider trail": one failed job on the refunded order, one done job on the other card
+    // order (must NOT count toward failed_jobs_count) — neither touches the cash order at all.
+    const { error: jErr } = await a.from("payment_jobs").insert([
+      { order_id: p1, action: "refund", amount_cents: 500, status: "failed", last_error: "test fixture" },
+      { order_id: p2, action: "capture", amount_cents: 2000, status: "done" },
+    ] as never);
+    if (jErr) throw jErr;
+  });
+
+  const prange = { from_date: PDAY, to_date: PDAY };
+
+  it("groups by (payment_method, payment_status): counts, cents, refunded cents, failed jobs", async () => {
+    const operator = await signIn("operator");
+    const { data, error } = await rpc(operator, "report_payments", prange);
+    expect(error).toBeNull();
+    const rows = data as Record<string, unknown>[];
+
+    const card = rows.find((r) => r.payment_method === "card" && r.payment_status === "paid")!;
+    expect(card).toMatchObject({
+      orders_count: 2, total_cents: 5000, refunded_cents: 500, failed_jobs_count: 1,
+    });
+    const cash = rows.find((r) => r.payment_method === "cash" && r.payment_status === "paid")!;
+    expect(cash).toMatchObject({
+      orders_count: 1, total_cents: 1500, refunded_cents: 0, failed_jobs_count: 0,
+    });
+    void p1; void p2; void p3;
+  });
+
+  it("owner and operator may call it; kitchen, driver and anon may not", async () => {
+    for (const role of ["owner", "operator"] as const) {
+      const c = await signIn(role);
+      const { data, error } = await rpc(c, "report_payments", prange);
+      expect(error, role).toBeNull();
+      expect((data as unknown[]).length, role).toBeGreaterThan(0);
+    }
+    for (const role of ["kitchen", "driver"] as const) {
+      const c = await signIn(role);
+      const { error } = await rpc(c, "report_payments", prange);
+      // unlike the other four reports, kitchen/driver are rejected by report_payments' own inline
+      // guard — the ACL grants `authenticated` execute (owner/operator must reach it too), so this
+      // is `forbidden_for_role`, not a PostgREST permission error.
+      expect(error?.message, role).toBe("forbidden_for_role");
+    }
+    const { error: anonErr } = await rpc(anon(), "report_payments", prange);
+    expect(anonErr).not.toBeNull();   // execute is revoked from anon entirely
+  });
+
+  it("the date range is inclusive on both ends and excludes everything outside it", async () => {
+    const operator = await signIn("operator");
+    const { data: before } = await rpc(operator, "report_payments", { from_date: "2026-04-01", to_date: "2026-04-03" });
+    expect((before as unknown[] | null)?.some((r) => (r as Record<string, unknown>).payment_method === "cash")).toBeFalsy();
+    const { data: around } = await rpc(operator, "report_payments", { from_date: "2026-04-03", to_date: "2026-04-05" });
+    const rows = around as Record<string, unknown>[];
+    expect(rows.some((r) => r.payment_method === "cash")).toBe(true);
   });
 });
 

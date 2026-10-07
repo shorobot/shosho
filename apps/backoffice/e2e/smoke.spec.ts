@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-// Seed staff logins (apps/backend/README.md → "Test logins"). Override with E2E_PASSWORD when the
-// staging password has been rotated.
-const PASSWORD = process.env.E2E_PASSWORD ?? "shosho-test-2026";
+// Seed staff logins (apps/backend/README.md → "Test logins"). [S2-05] seed.sql no longer sets a
+// known password; the default below is the local-only value apps/backend/scripts/seed-local-
+// logins.mjs sets (local Supabase only). For staging, set E2E_PASSWORD from the credentials file on
+// the owner's machine (apps/backend/.staff-credentials.local) — never hardcode a real value here.
+const PASSWORD = process.env.E2E_PASSWORD ?? "local-dev-only";
 
 async function signIn(page: import("@playwright/test").Page, email: string) {
   await page.goto("/login");
