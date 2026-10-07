@@ -32,4 +32,8 @@ jobs:
       web_port: "8200"
       backoffice_port: "8202"
       secret_prefix: STAGING
-    secrets: inherit   # resolved inside _deploy.yml from environment `staging`
+    # No secrets passed: _deploy.yml's `deploy` job declares `environment: staging` on itself, so
+    # GitHub resolves STAGING_* directly from that environment regardless of what this caller forwards
+    # (confirmed: a job-level `environment:` takes priority over anything passed from the caller).
+    # `secrets: inherit` therefore handed the callee the repo's entire secret set for no reason — S7-01
+    # task 3 flagged it; removed rather than replaced with a map, since nothing needs to cross the call.
