@@ -1383,6 +1383,164 @@ Also asked S1 for the worst-case monthly SMS spend in euros that their chosen `s
 
 **Housekeeping, and an inconsistency of my own.** Earlier today I renamed the prod-target *proposal* to `S1-07-prod-target.md`, which pre-claimed an issued boot number for something unissued. That is how numbers get muddled. Renamed it to `proposed/S1-prod-target.md`, matching the number-less convention the other proposals already use (`S2-single-customer-erasure.md`, `S3-contract-notes.md`, `S4-contract-request.md`), and S1-07 is now the rate-limiting boot. Proposals should not hold boot numbers; only issued boots should.
 
+## 2026-10-06 — S4 Back-office — S4-03: S7's hardening findings, then Kunden / Profil (CRM)
+
+Both halves landed. Part 1 first and in its own commit, because the back-office host is live and one
+owner action from a real audience.
+
+### Part 1 — hardening (S7-01, `/docs/security.md` §5)
+
+**1. Open redirect (`LoginForm.tsx:53`) — fixed.** `?next=` was validated with a bare
+`startsWith("/")`, which `//evil.example` also satisfies: a protocol-relative URL resolves straight
+off our origin, at the moment a staff member has just proven they trust the page. `lib/safeRedirect.ts`
+replaces it with an allow-list of same-origin relative paths — control characters and whitespace
+refused outright (browsers strip tab/LF/CR and *then* parse, so `"/<tab>/evil.example"` becomes
+`"//evil.example"`; validating the unstripped string is not enough), backslashes refused, absolute
+URLs refused even when same-origin, and `new URL(next, origin)` as the final arbiter. Tested against
+each bypass, plus a sweep asserting no input of any shape returns something that resolves off-origin.
+**Re-checked live:** `?next=//evil.example/phish` lands the operator on `/orders`, same origin; a
+legitimate `?next=/customers` is still honoured, so the feature works and the bypass does not.
+
+**2. Security headers — added.** The app set none: no CSP, no `X-Frame-Options` anywhere, so the
+staff admin panel was iframe-able by any origin. `lib/csp.ts` + `middleware.ts` now set a nonce-based
+**enforcing** CSP with `frame-ancestors 'none'`, plus HSTS, `nosniff`, `Referrer-Policy: no-referrer`
+(customer and order ids sit in back-office paths) and `Permissions-Policy`.
+
+Chose nonce-based, like `apps/web`. Safe here because `app/layout.tsx` is already
+`dynamic = "force-dynamic"` for an independent reason — the image is built without Supabase values, so
+`publicEnv()` must be read per request — so the precondition is doubly anchored rather than borrowed.
+Verified rather than assumed: the build reports **every** route as `ƒ (Dynamic)`, and all 15 script
+tags in `/login` carry the nonce, which also proves Next picked the policy up off the *request*
+headers. Documented loudly in `lib/csp.ts` that making any route static would silently block every
+script on the page.
+
+**The part worth reading: my first implementation was wrong, and only probing the running build
+caught it.** I keyed HSTS / `upgrade-insecure-requests` / the `Secure` cookie flag on
+`request.nextUrl.hostname`, to skip them on loopback (the ssh tunnel is `http://localhost:8202`, where
+HSTS with `includeSubDomains` would pin every localhost port to https in that browser profile, and a
+`Secure` cookie would never come back). Measured on Next 15.5.25: **`nextUrl.hostname` is `"localhost"`
+for every request regardless of `Host`** — it reflects the listening address. So the check marked
+*production* as loopback and dropped both HSTS and `Secure` there. It typechecked, built, and passed
+every test. `isSecureContext()` now reads the forwarded headers and `CF-*` and **fails closed**: only
+a request it can positively identify as loopback loses the flags. Measured across four proxy shapes —
+tunnel → neither header; real `Host`, `CF-Ray`, and `X-Forwarded-Proto: https` → both. Residual gap
+stated in the file: a proxy forwarding none of `Host`, `X-Forwarded-Proto` or `CF-*` is
+indistinguishable from the tunnel from inside the container; closing that needs a deploy-set env var
+and `apps/infra` is outside this boundary (D-004), so it is flagged, not quietly assumed away.
+
+Also note, as the boot predicted: TETA+PI's nginx sends its own HSTS (`max-age=86400`), so the header
+will appear twice on `bo-shos`. Per RFC 6797 only the first is processed. Not touched — the host is
+S1's boundary.
+
+**3. Cookie flags — and S7's task 3 is wrong for this codebase.** I set
+`{ httpOnly: true, secure, sameSite: "lax" }` as asked. Then I signed in and read `document.cookie`:
+the `sb-<ref>-auth-token` cookie **is visible to JavaScript**. Cause, read out of the dependency
+rather than guessed: `@supabase/ssr`'s *browser* client implements its storage directly on
+`document.cookie` (`dist/main/cookies.js:86` reads it, `:94` writes it), and `signInWithPassword` runs
+in a client component — a cookie written that way cannot carry `HttpOnly`, and no server option
+changes it.
+
+Worse, setting it is **actively harmful here**. This app reads its data from client components through
+that same browser client — the orders board, kitchen, driver, and now the CRM. A server-written
+`HttpOnly` cookie would be invisible to it at the first token refresh, the client would conclude there
+is no session, and every RLS-filtered query would return empty: a board and a customer list going
+blank roughly an hour into a shift while the user still appears signed in. Latent, intermittent, and
+it passed a clean build and the whole suite. Removed; `secure` + `sameSite` stay pinned and tested.
+What actually defends this token is the CSP above. Filed back to S7 as
+`boots/proposed/S7-S4-03-httponly-correction.md` (D-012) so it is corrected at the source instead of
+re-raised next audit — including the half of task 3 that **does** stand: `@supabase/ssr` is on a
+caret, and pinning it is S1/S0's call, not mine to make unilaterally.
+
+### Part 2 — Kunden / Profil
+
+**Kunden** `/customers`: search from the first character across name / phone / e-mail / address; the
+four segment tiles with live counts; sort on every stat column (spend descending by default); tag
+filter; multi-select → bulk tag (one upsert for the whole selection, never a per-row loop, with
+Rückgängig restoring the prior snapshot) and client-side CSV export. **Push and Gutschein render
+disabled with a tooltip naming what is missing**, not as buttons that lie.
+
+**Profil** `/customers/[id]`: contacts, both addresses, kitchen note, consents with date and source,
+stats, most-ordered items, and the merged timeline. Note / complaint / compensation through
+`add_customer_event`. "Bestellung anlegen" opens the phone-order form prefilled — passing the customer
+**id**, because a name, phone or address in a URL leaks into browser history and any log that records
+a query string.
+
+Three decisions worth recording:
+
+- **The timeline is a union, not a concatenation.** `orders_customer_event` already writes one `order`
+  event per order, so appending the orders as a second stream would show every order **twice** — the
+  obvious reading of "merged with the customer's orders". `mergeTimeline` keys on order id, enriches
+  each `order` event with the live order row (the payload is written `after insert`, when the status is
+  always `new`, but the design shows the current status), and synthesises an entry for any order with
+  no event of its own so nothing silently disappears. Ties break on id, which is not hypothetical: my
+  three test events landed in the same second on staging.
+- **`days_silent` mirrors the view's SQL**, `extract(day from now() - last_order_at)` — whole *elapsed*
+  days, not a calendar difference. 47 hours ago is 1, not 2. A calendar-date implementation would move
+  customers in and out of "schlafend" by time of day and disagree with the DB for the same row.
+- **Erasure is a request, not an act** — the boot allowed either option and this takes the second. No
+  server-side single-customer erasure exists, so "Daten löschen" files an auditable `note`
+  (`payload.kind = 'erasure_request'`, with who and when) on the customer's own timeline and the
+  profile shows it pending. Reason: Art. 17 starts a clock on the **date of the request**, so the one
+  thing the system must not lose is that a request was made — and a disabled button records nothing, so
+  a request arriving by phone would live only in someone's memory. The dialog says in plain words that
+  nothing is deleted yet.
+
+Also, per the boot's item 4: the profile says plainly that completed orders can legitimately show as
+unpaid until Stripe exists, rather than hiding or coercing it.
+
+### Verified on `shosho-staging`
+
+My changes are not deployed, so the ssh tunnel would have shown the **old** app. Ran a local
+production build pointed at the staging project instead, which exercises the new code against real
+data — and separately drove the REST/RPC surface directly.
+
+UI, as operator: list and profile render on real rows; segment counts correct (only the row created
+today counted as "Neu diesen Monat"); search including the German national phone form; "Keine Treffer"
+empty state; bulk tag applied and then undone back to the exact prior tags; a note added through the
+dialog appearing in the timeline. Actor names resolve through **`staff_directory`**, not the base
+`staff` table. Berlin time correct (20:15 UTC rendered 22:15). No console errors, so the nonce CSP is
+not blocking Next's bundles or the Supabase calls.
+
+Contract level: complaint, compensation and the erasure note all land, and the `kind` marker survives
+in free jsonb; a blank note is refused `invalid_input` (the dialog pre-checks it so the operator sees a
+sentence, not a Postgres error); the `consent_changed` trigger fired on a consent write with channel
+and actor; **a direct insert into `customer_events` is refused `42501` even for the operator**, so the
+RPC is the only write path, as `/docs/security.md` §2 says.
+
+Kitchen refused everywhere: `/customers` and `/customers/[id]` both redirect to `/kitchen` with no
+customer data in the HTML; `add_customer_event` raises `forbidden_for_role`; reads of `customers`,
+`customer_stats` and `customer_events` all return `[]`. **One thing worth passing on:** a kitchen
+`PATCH` of `customers.tags` returns `[]` with **no error** — RLS silently no-ops rather than refusing,
+so any UI that trusted the absence of an error would report success. The route guard is what actually
+keeps them out; the RLS is the backstop.
+
+Test data: created my own customer, exercised everything on it, deleted it — its 5 events cascaded.
+The pre-existing S3/S4 test rows were left alone.
+
+**For S0 / the owner: `shosho-test-2026` still works on `shosho-staging` as of 2026-10-06.** I signed
+in with it as both operator and kitchen. The rotation is still the one open precondition on handing
+out the URL. No password was written to any file in the repo or printed in a report.
+
+### Not verified, stated rather than claimed
+
+- The **"Noch kein Kundenprofil"** empty state (zero customers) and the **anonymised** profile state
+  are exercised by code path and unit test only. Staging has four customers and anonymising a real row
+  to see a banner is not a reasonable trade.
+- A live ACME / cleartext-redirect interaction with TETA+PI's nginx is not mine and was not touched.
+
+### Follow-ups filed
+
+- `boots/proposed/S7-S4-03-httponly-correction.md` — the HttpOnly finding above (S7).
+- `S4-contract-request.md` §13–15 — `customer_stats` has no `first_order_at` (so "Neu diesen Monat" is
+  keyed on `customers.created_at`, an assumption the schema does not enforce); the future erasure RPC
+  should look for the `erasure_request` marker notes so a hand-filed request is not lost; and a note
+  that "Bestellt am häufigsten" counts the item snapshot, so options collapse.
+- Scale note in the README: the Kunden list loads every customer and filters in the browser. Right at
+  this scale, wrong at ten times it.
+
+Absorbed from the merge: **D-016** moves customer messaging to the customer-accounts phase, so the
+disabled push tooltip names that rather than S5.
+
 ## 2026-10-07 — S0 Orchestrator — S2 corrected my own boot and was right; two lessons recorded; TETA+PI's confirmation needs nothing further
 Three things, none of them requiring new verification of the infra.
 

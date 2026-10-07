@@ -6,7 +6,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { useSupabase } from "@/components/providers/EnvProvider";
-import { translate, type Lang } from "@/lib/i18n";
+import { translate, type Key, type Lang } from "@/lib/i18n";
 import { toast } from "@/lib/toast";
 import { dayKey } from "@/lib/time";
 import type { ItemOptionGroupRow, MenuCategoryRow, MenuItemRow, OptionGroup, Staff } from "@/lib/types";
@@ -47,10 +47,15 @@ export function isDenied(error: { code?: string; message?: string } | null | und
 type Response = { data: unknown; error: PostgrestError | null };
 type Payload<R> = R extends { data: infer D } ? Exclude<D, null> : never;
 
-export async function run<R extends Response>(lang: Lang, op: () => PromiseLike<R>): Promise<Payload<R> | null> {
+export async function run<R extends Response>(
+  lang: Lang,
+  op: () => PromiseLike<R>,
+  /** Which copy to report a failure with. Defaults to the menu's; the CRM passes its own. */
+  keys: { denied: Key; saveError: Key } = { denied: "menu.denied", saveError: "menu.saveError" },
+): Promise<Payload<R> | null> {
   const { data, error } = await op();
   if (error) {
-    toast(isDenied(error) ? translate(lang, "menu.denied") : translate(lang, "menu.saveError", { e: error.message ?? "" }));
+    toast(isDenied(error) ? translate(lang, keys.denied) : translate(lang, keys.saveError, { e: error.message ?? "" }));
     return null;
   }
   return (data ?? null) as Payload<R> | null;

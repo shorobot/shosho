@@ -75,3 +75,24 @@ export type LinkedGroup = OptionGroup & { link_sort: number };
 
 export const MENU_ITEM_SELECT = "*" as const;
 export const OPTION_GROUP_SELECT = "*, options(*)" as const;
+
+/* ------------------------------------------------------------ CRM (api-contracts §1.3 / §6.4 / §6.8) */
+
+export type CustomerAddressRow = Tables["customer_addresses"]["Row"];
+export type CustomerEventRow = Tables["customer_events"]["Row"];
+export type CustomerStatsRow = Database["public"]["Views"]["customer_stats"]["Row"];
+export type StaffDirectoryRow = Database["public"]["Views"]["staff_directory"]["Row"];
+export type ActorType = Enums["actor_type"];
+
+/** A customer as the Kunden list and the Profil screen load them (§6.4). */
+export type Customer = CustomerRow & { customer_addresses: CustomerAddressRow[] };
+
+export type CustomerUpdate = Tables["customers"]["Update"];
+
+export const CUSTOMER_SELECT = "*, customer_addresses(*)" as const;
+
+/** One consent channel as the Profil screen shows it (§1.3 `consent_email` / `_push` / `_phone`). */
+export type ConsentChannel = "email" | "push" | "phone";
+
+/** `{granted_at, source}` or null — the shape stored in each `consent_*` column. */
+export type Consent = { granted_at?: string | null; source?: string | null } | null;
