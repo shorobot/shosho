@@ -1393,3 +1393,127 @@ Three things, none of them requiring new verification of the infra.
 **S2 corrected my boot on a security-relevant point and was right.** My S2-06 boot specified `report_payments` as a `security_invoker` view "like your other reports". S2 declined and built a function with an owner/operator guard. I measured before agreeing, per the rule: `orders_kitchen_read` at `rls.sql:119` is `using (public.is_staff('kitchen'))` with **no row restriction** — kitchen reads every order row for all time (contrast `orders_driver_read` on line 122, correctly bounded by `driver_id = auth.uid()`). A `security_invoker` view runs with the caller's RLS on every joined table, so my version would have handed a kitchen login every order's payment data no matter how correct `payment_events`/`payment_jobs` RLS is. **The leak never shipped because S2 didn't follow the instruction.** Recorded as a lesson in the S0 boot — a `security_invoker` view is only as tight as the loosest policy among its joins — and filed `proposed/S7-report-view-rls-sweep.md` asking S7 to sweep the four S2-03 report functions for the same shape and to rule on whether `orders_kitchen_read` should be bounded at all, which is a judgement rather than a defect. That is now the third correction a child session has given me and the third that was right; the boot's lessons list says so with the specifics, since a tally without them teaches nothing.
 
 **S2-06 status: PR #67, draft, CI in progress, and I am leaving it alone.** S2 is still pushing (three commits plus a merge of `main` in the last hour) and said draft-while-CI-validates, so it is theirs to finish. What I checked without interfering: migrations landed as `…027`–`…032`, exactly the range the boot claimed under D-014, so no renumbering is owed. Two other deviations in their PR body read as improvements rather than drift, and I will review them properly when it is marked ready: `resolve_segment(segment, channel)` takes two required arguments instead of my one-argument sketch, so forgetting the channel is a syntax error rather than a silently-too-broad result; and §8 rather than §7 in `api-contracts.md`, because §7 was already Automation's — which the boot allowed for. The contract section is mine to review, and that review has not happened yet.
+
+## 2026-10-07 — S2 Backend — S2-06
+
+Campaigns, automations, banners, site publish; made the funnel honest. PR #67 → `main`. Migrations
+**27–32**, claimed per D-014, no collision. `backend` CI green after one same-day fix (below).
+
+Implements §2 and §3 of my own `S2-03-reports-campaigns-cms.md` proposal (§1 — the four original
+`report_*` functions — was already shipped in S2-03). That file is deleted in this PR. Two small
+leftover items from its §4 had no other home and are recorded here rather than a new proposal file:
+the push/email provider decision campaigns need before S5 can send anything (now partly answered by
+D-016's push-primary, MessageBird-for-SMS direction, though that's OTP infrastructure, not the
+marketing send path — still open for campaigns specifically), and a private `receipts` bucket for
+invoice PDFs "when S5 Accounting needs it."
+
+**`campaigns` + `campaign_recipients`.** Owner/operator draft a campaign directly, same shape as
+`promo_codes` — no RPC needed. `campaign_recipients` is staff read-only; nothing but the service-role
+connection writes to it. **The weekly-cap mechanism, since the boot asked explicitly how it's
+expressed on top of the unique constraint**: the unique `(campaign_id, customer_id)` index gives
+exactly one thing — a customer cannot appear twice *in the same* campaign — and nothing about two
+*different* campaigns reaching them three days apart, which is what "max one automated action per
+customer per week" actually means and needs to look across `campaign_id` values. A per-row CHECK or a
+two-column UNIQUE index cannot express that, so it's a `before insert` trigger
+(`campaign_recipients_enforce_weekly_cap()`) instead: a new row is refused if the same customer
+already has a non-failed row (any campaign) created in the last 7 days. `failed` is exempt — a
+bounced send shouldn't spend the week's slot. This makes the cap a property of the table itself,
+so whoever eventually writes these rows (S5, not built here) gets it for free and cannot forget it.
+
+**`resolve_segment(segment jsonb, channel campaign_channel)` — two required arguments, not the
+proposal's one-argument sketch.** The proposal's own framing — "the wizard's recipients number and
+the real send use one implementation" — only holds if both calls resolve the *same*,
+channel-specific eligible set. A one-arg version would need `channel` folded into the segment jsonb,
+where a caller could omit it silently; making it a required SQL parameter turns "forgot to say which
+channel" into a syntax error rather than a too-broad result. Consent and `anonymised_at is null` are
+checked first and unconditionally — not a segment key, so no caller-supplied filter can bypass them —
+keyed off `channel` (`email` needs `consent_email`, `push` needs `consent_push`, `both` needs
+either). "A caller who forgets consent gets fewer rows, never more," literally: an unrecognised
+future enum value falls through to `false`, excluding everyone rather than everyone.
+
+**`claim_campaign_recipients` — unreachable with anon or authenticated, on purpose, read the finding
+first.** Revoked from both explicitly (not just `public`), the exact "anon key, service-role
+authority" shape S7-01/S1 found wrong in `payment-worker`, deliberately not reproduced here. Shaped
+like `claim_payment_jobs`: `for update skip locked`, plus a `claimed_at` stale-claim timeout (10 min)
+since `campaign_recipient_state` has no `processing` value the way `payment_jobs.status` does.
+
+**`report_payments` — owner/operator only, not `security_invoker`, and I want to be clear about why
+I diverged from the boot's own wording.** The boot said "security_invoker like your other reports,"
+but the other four `report_*` are `security definer` functions with `reports_guard()`, not
+`security_invoker` views — and a literal `security_invoker` view here would have been wrong, not just
+inconsistent: `payment_events`/`payment_jobs` carry no `payment_method` of their own, so getting it
+means joining `orders`, and `orders` RLS lets `kitchen` read every row unconditionally. A view
+running as a kitchen caller would see every order's payment method/status through that join, leaking
+straight past `payment_events`/`payment_jobs`'s own correctly-restrictive RLS — a view's
+invoker-security is only as tight as the weakest table it reads. So it's a function with its own
+inline guard, narrower than `reports_guard()` (owner/operator only, not "any active staff role"),
+because this boot specifically asked for "kitchen/driver see nothing" on payment data, unlike the
+revenue/delivery-time figures they already see today. Sourced from `orders`, not `payment_jobs` —
+a cash refund settles `orders.payment_refunded_cents` directly and never creates a `payment_jobs`
+row, so the job queue alone would silently miss the one payment path actually exercisable on staging
+right now. **Unexercised against real provider data**: no Stripe account exists; correct by reading
+and a hand-seeded test, not proven against a live response.
+
+**`banners` / `banners_live` / bucket `site`.** Base table owner/operator only, with the `anon` table
+grant revoked outright (belt-and-braces, like `order_attempts`, because it carries unpublished
+`draft` content) rather than relying only on RLS returning zero rows. `banners_live` is the *only*
+anon-reachable surface — `security_invoker = false` (same reasoning as `staff_directory`), explicit
+column list that never selects `draft`.
+
+**`settings.draft` / `publish_site()` / `site_publications` — the column-level pitfall the boot named
+explicitly, closed the way it asked to be verified: with the anon key, not by inspection.** RLS is
+row-level: `settings_public_read` already admits `anon` to the `business`/`opening_hours`/`site`/
+`payments.enabled`/`kitchen.status` rows, so a plain `draft` column on the same table would hand
+`anon` every pending edit on those same rows — `select *` doesn't know which columns were "meant" to
+stay private. Fixed with a **column-level `GRANT`**: `anon`'s blanket table grant on `settings` is
+revoked and re-granted for exactly `(key, value, created_at, updated_at)`, `draft` pointedly absent.
+`authenticated` keeps its existing grant unchanged, so owner/operator still see `draft` on rows their
+row policies already admit them to. `banners.draft` needed no such narrowing: the base table has no
+`anon` policy or grant at all, so there's nothing on it for `anon` to reach regardless of column.
+`publish_site()` copies every pending `settings.draft` straight into `value` (a full replacement) and
+merges every pending `banners.draft` onto its row (a **partial patch** — an absent or JSON-`null` key
+keeps the live value), clears both, and logs one `site_publications` row snapshotted *before* either
+update runs. Tested with the anon key exactly as asked: explicit `select('draft')` errors, a bare
+`select('*')` never carries the key, and the live `value` provably doesn't change until `publish_site`
+actually runs.
+
+**`report_funnel` — the "200 %" fix, and the decision behind it.** `order_attempts` only exists from
+migration 23 (2026-09-26); `orders` goes back to S2-01 (2026-09-20). The old function compared
+`count(orders in window)` to `count(order_attempts in window)` using the *same* window for both —
+correct SQL, wrong meaning whenever that window reaches before recording began, because every
+pre-recording order is real and placed but no attempt row could possibly exist for it. Chose
+**clamp-and-report** over **null-and-report**: `attempts`/`attempts_with_problems`/the ratio are now
+computed only over `[attempts_window_from, attempts_window_to]`, the overlap between the requested
+range and the period recording has actually existed for, and that sub-window is returned explicitly
+so a caller never has to guess whether a figure is comparable to what it asked for. When there's no
+overlap at all, all four (plus both window columns) come back `null` together — "not yet
+measurable," never a plausible-looking wrong number. `placed`/`paid`/`cancelled`/upsell are
+untouched — pure `orders` queries, honest over the full range regardless. **A genuine ratio above
+100 % over a fully-comparable window is not suppressed, and the existing fixture (2026-02-03, 133.3 %)
+now proves exactly that case alongside the fix**: `order_attempts` records only rejected/abandoned
+checkouts, not total attempts, so it is not bounded by `placed` — a store with far more successes
+than failures legitimately produces a ratio like that, and S3-02's "200 %" was a window mismatch, not
+evidence the arithmetic itself needs bounding.
+
+**Caught by CI, same day, fixed in one commit.** `storage.objects` is one table shared by every
+bucket — bucket `site`'s four policies (migration 31) landed in the exact same (schemaname,
+tablename) pair the pre-existing bucket-policy sweep test queried, so its assumption of exactly four
+total policies on the table broke (8, not 4). Fixed by checking each bucket's four policies by name
+prefix (`menu photos` / `site assets`) instead of assuming the table holds only one bucket's worth.
+Every other new test — `tests/campaigns.test.ts` (18 tests) and the `reports.test.ts` additions —
+passed on the first push.
+
+**Boundaries:** no `apps/backoffice`, `apps/web` or `apps/infra` touched — S4-03 is live in
+`backoffice` in parallel, confirmed no file-level overlap. No `site_events` (D-015, explicit). No
+sending, no automation scheduling (S5's) — tables, the resolver and a claim function only.
+`docs/api-contracts.md` gets one new section, **§8** (§7 was already taken by Automation/FastAPI
+webhooks, not noticed until I went to pick a number) — my own §6.7/§6.10 lines updated where this
+boot made them stale, nobody else's section touched. `/memory/decisions.md`, `/memory/sessions.md`,
+`/docs/security.md`, `/docs/design/*` untouched. `origin/main` merged cleanly before this report, no
+conflicts (S1-07 rate-limiting and D-016's customer-accounts roadmap both merged while this ran;
+neither touches `apps/backend` migrations or anything this boot built).
+
+**Blockers:** none for S2. Still open from S2-04/S2-05: owner's Stripe account/keys (no live payment
+has ever run); the staging password rotation. D-016's roadmap flags that `consent_push`/
+`campaign_recipients` can now record campaign *intent* with no push transport to send it on — true,
+and unaffected by anything in this boot; S5 and S2-07 are the sessions that close that gap.
