@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.34.5",
   "engines": { "node": ">=22" },
-  "workspaces": ["apps/web", "apps/backoffice", "apps/backend"],
+  "workspaces": ["apps/web", "apps/backoffice", "apps/backend", "apps/e2e"],
   "scripts": {
     "lint": "pnpm -r --if-present run lint",
     "typecheck": "pnpm -r --if-present run typecheck",
