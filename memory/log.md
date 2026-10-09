@@ -1735,3 +1735,50 @@ Picking up after two days. The headline: **`Deploy staging` was red from 2026-10
 **Lesson added to the S0 boot, because this one has a clean rule attached:** a change to secret plumbing is unverified until a real `Deploy staging` run has passed. Every check on PR #70 was green; CI cannot reach that code path, since it only executes on `main`. I had flagged exactly this in S1-07's boot and again before merging, and merging was still right — the change is reversible and the check is only possible on `main`. What made it acceptable was watching the chain. The rule is therefore not "do not merge" but "merge only when you will watch, and say in the report that CI did not prove it."
 
 **One thing worth stating about the two-day gap:** the pipeline sat red while two competing fixes sat open. Both were correct and either would have done. If I had merged one immediately and reconciled afterwards — which is what I did today — the red window would have been minutes. Leaving two good fixes unmerged while deciding which was tidier was the wrong trade, and the fact that nothing broke in the interval was luck about push timing, not a consequence of the decision.
+
+## 2026-10-09 — S4 Back-office — staging password rotation recorded (owner-instructed, outside S4's row)
+
+Not a boot. The owner ran the rotation and asked S4 to record it in `state.md` directly, which is
+outside D-002 (S0 edits the table as a whole) and outside D-009 (a child session edits only its own
+row). Authorised in chat, not assumed — and written down here so S0 can see exactly what a non-S0
+session changed.
+
+**What the owner did.** `scripts/rotate-staging-passwords.mjs` against `shosho-staging`, 14:21 UTC.
+Four fresh distinct random passwords in `apps/backend/.staff-credentials.local` — mode `600`,
+gitignored, absent from `git status`. The script prints only the path, never the values.
+
+Two things in the first command S4 gave were wrong and worth recording, because the next person will
+hit them: it omitted `SUPABASE_URL` (the script needs **both** env vars and exits 1 without either),
+and it has to run from `apps/backend` — `@supabase/supabase-js` does not resolve from the repo root
+(`ERR_MODULE_NOT_FOUND`), only from `apps/backend`. The script's own header is right; S4's paraphrase
+of it was not.
+
+**Verified rather than assumed.** A password grant with the published `shosho-test-2026` now answers
+`invalid_credentials` for **all four** accounts (owner / operator / kitchen / driver), checked against
+the live project. The script exiting 0 is not the same claim. **S7-01 finding 2 is closed.**
+
+**What this does and does not unblock.** It clears the last owner-only gate on handing out the URL.
+It does **not** clear owner-action 6, and the rotation makes that one more pressing rather than less:
+`http://bo-shos.hellfiresol.com/` still answers 401 in cleartext with no redirect, so the moment real
+credentials exist, a staff member who omits `https://` puts TETA+PI's basic-auth pair on the wire
+unencrypted. No session can fix it — S4 confirmed on 2026-10-09 that no Cloudflare token, CLI or
+config exists on the machine, and the 401 is served by TETA+PI's nginx (their realm string), whose
+configuration is outside our boundary (D-004).
+
+**For S6:** `E2E_PASSWORD` must come from the owner's new value before any e2e run targets staging.
+The local-only default now matches the local stack only.
+
+**Rows S4 touched beyond its own:** the last-update line, the Phase paragraph, rows S1 / S2 / S6 / S7,
+owner-action 1, and the two go-live bullets in "Not yet done". Also escaped a pre-existing stray `|`
+inside `` `eval "$(cmd|sed)"` `` in S1's row, which was splitting that row into an extra GFM column —
+one character, no semantic change, flagged rather than done silently.
+
+**Process note worth more than the rest of this entry.** S4 made these edits in the wrong working
+tree first: the main checkout `/Users/bobbob/BOB/SERVER/SH.OS.` belongs to S1 (D-008) and was sitting
+on S1's `s1-07-fix` branch. Nothing was committed there and the tree was restored to clean with
+`git checkout --`, so S1 lost nothing, but the edit should never have been made there. D-008 says a
+session that finds HEAD on a branch that is not its own must stop and report — the rule fired exactly
+as written, just one step later than it should have. Redone in `.worktrees/s4` on `s4-state-rotation`
+off a freshly fetched `origin/main`, which also turned out to matter: S0 had rewritten `state.md`
+earlier the same day (PR #72, the deploy fix), so the original patch no longer applied and every edit
+was re-derived against current `main` rather than force-fitted.
