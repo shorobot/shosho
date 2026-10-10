@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "../fixtures";
+import { dismissCookieBanner, expect, test } from "../fixtures";
 import { freshPhone, openAllDayAndResume, POSTAL } from "../helpers/db";
 
 test.beforeAll(openAllDayAndResume);
@@ -7,7 +7,7 @@ test.beforeAll(openAllDayAndResume);
 async function placeDeliveryOrder(webPage: Page, name: string) {
   const phone = freshPhone();
   await webPage.goto("/");
-  await webPage.getByRole("button", { name: "OK" }).click();
+  await dismissCookieBanner(webPage);
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.goto("/checkout");

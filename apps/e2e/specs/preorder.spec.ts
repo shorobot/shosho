@@ -1,11 +1,11 @@
-import { expect, test } from "../fixtures";
+import { dismissCookieBanner, expect, test } from "../fixtures";
 import { anon, freshPhone, ITEM, openAllDayAndResume } from "../helpers/db";
 
 test.beforeAll(openAllDayAndResume);
 
 test("pre-order for a future slot through the real checkout UI", async ({ webPage, db }) => {
   await webPage.goto("/");
-  await webPage.getByRole("button", { name: "OK" }).click();
+  await dismissCookieBanner(webPage);
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.goto("/checkout");
   await webPage.getByRole("radio", { name: "Pickup" }).click();

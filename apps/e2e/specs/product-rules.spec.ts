@@ -58,17 +58,25 @@ test("allergy note on the customer profile propagates onto a new order's card", 
 });
 
 test("a category with no on-sale item is hidden from the storefront", async ({ webPage, db }) => {
+  test.setTimeout(180_000); // two ~60s Data Cache windows to clear (see the comment below), not a hang
   const { data: cat, error: catErr } = await db.from("menu_categories").insert({ slug: `e2e-empty-${Date.now()}`, name_de: "E2E Leer", name_en: "E2E Empty", active: true, sort: 999 }).select("id, name_en").single();
   if (catErr) throw catErr;
   const { data: item } = await db.from("menu_items").insert({ sku: `E2E-CAT-${Date.now()}`, category_id: cat!.id, name_de: "E2E Artikel", name_en: "E2E Item", base_price_cents: 500, available: true }).select("id").single();
 
   try {
-    await webPage.goto("/");
-    await expect(webPage.getByText(cat!.name_en)).toBeVisible();
+    // apps/web/lib/api-supabase.ts wraps every Supabase request with `next: { revalidate: 60 }` — a
+    // Data Cache setting Next.js honours in `next dev` too, not just a production/staging quirk (S4-02's
+    // log entry only mentions staging, but this boot's own CI run hit the same 60s lag locally: the
+    // freshly-inserted category above needed a retry loop to actually appear). Poll through one cache
+    // window on both assertions instead of assuming either a single load or a fixed short wait.
+    await expect
+      .poll(async () => { await webPage.goto("/"); return webPage.getByText(cat!.name_en).isVisible(); }, { timeout: 65_000, intervals: [1_000] })
+      .toBe(true);
 
     await db.from("menu_items").update({ available: false }).eq("id", item!.id);
-    await webPage.goto("/"); // no cache to fight locally (next dev); staging may lag up to 60s (S4-02's own note)
-    await expect(webPage.getByText(cat!.name_en)).not.toBeVisible();
+    await expect
+      .poll(async () => { await webPage.goto("/"); return webPage.getByText(cat!.name_en).isVisible(); }, { timeout: 65_000, intervals: [1_000] })
+      .toBe(false);
   } finally {
     await db.from("menu_items").delete().eq("id", item!.id);
     await db.from("menu_categories").delete().eq("id", cat!.id);

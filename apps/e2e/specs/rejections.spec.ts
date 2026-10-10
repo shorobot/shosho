@@ -1,4 +1,4 @@
-import { expect, test } from "../fixtures";
+import { dismissCookieBanner, expect, test } from "../fixtures";
 import { openAllDayAndResume, POSTAL } from "../helpers/db";
 
 // api-contracts §5.2 problem codes, hit from the real checkout UI (not just the RPC directly — S3-01's
@@ -9,7 +9,7 @@ test.describe("checkout rejections", () => {
 
   test("below minimum order for the zone", async ({ webPage }) => {
     await webPage.goto("/");
-    await webPage.getByRole("button", { name: "OK" }).click();
+    await dismissCookieBanner(webPage);
     await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click(); // 13.50, zone B min is 22.00
     await webPage.goto("/checkout");
     await webPage.getByPlaceholder("Street and number").fill("Kastanienallee 1");
@@ -19,7 +19,7 @@ test.describe("checkout rejections", () => {
 
   test("postal code outside every delivery zone", async ({ webPage }) => {
     await webPage.goto("/");
-    await webPage.getByRole("button", { name: "OK" }).click();
+    await dismissCookieBanner(webPage);
     await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
     await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
     await webPage.goto("/checkout");

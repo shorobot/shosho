@@ -1,4 +1,4 @@
-import { expect, test } from "../fixtures";
+import { dismissCookieBanner, expect, test } from "../fixtures";
 import { freshPhone, openAllDayAndResume, POSTAL } from "../helpers/db";
 import { parseMoneyText } from "../helpers/money";
 
@@ -9,7 +9,7 @@ test.beforeAll(openAllDayAndResume);
 test("toggling the back-office DE/EN only changes labels, never the order's numbers", async ({ webPage, boPage, db, signInBackoffice }) => {
   const phone = freshPhone();
   await webPage.goto("/");
-  await webPage.getByRole("button", { name: "OK" }).click();
+  await dismissCookieBanner(webPage);
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.goto("/checkout");
   await webPage.getByPlaceholder("Street and number").fill("Torstraße 1");

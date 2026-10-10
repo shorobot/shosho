@@ -23,6 +23,23 @@ test("the DB really does broadcast on order:<token> — independent re-check of 
   });
 
   try {
+    // S2-03's own fix to apps/backend/tests/guest_realtime.test.ts (task 8, determinism): `SUBSCRIBED`
+    // does not prove the Realtime server's fan-out for THIS topic is ready yet, so a single update right
+    // after subscribing is a real race, not a flaky test. Their fix — nudge until a message is actually
+    // observed, only then perform the change under test — reproduced itself live in this boot: the naive
+    // version below (subscribe → one change → wait) genuinely missed the broadcast on this suite's very
+    // first CI run (memory/log.md's S6-01 entry has the number). Mirroring their pattern here instead of
+    // a longer fixed wait.
+    const warmupDeadline = Date.now() + 20_000;
+    let nudge = 0;
+    while (received.length === 0 && Date.now() < warmupDeadline) {
+      nudge += 1;
+      await db.from("orders").update({ promised_minutes: 30 + (nudge % 2) }).eq("id", o.order_id);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    expect(received.length, "realtime never delivered a single message on order:<token> within the warm-up window").toBeGreaterThan(0);
+
+    received.length = 0;
     await db.rpc("set_order_status", { order_id: o.order_id, new_status: "accepted" });
     await expect.poll(() => received.some((m) => m.status === "accepted"), { timeout: 15_000, message: "no order_updated broadcast received for the accepted transition" }).toBe(true);
   } finally {

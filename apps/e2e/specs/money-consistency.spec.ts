@@ -1,4 +1,4 @@
-import { expect, test } from "../fixtures";
+import { dismissCookieBanner, expect, test } from "../fixtures";
 import { anon, freshPhone, ITEM, openAllDayAndResume, POSTAL } from "../helpers/db";
 import { euroWeb, parseMoneyText } from "../helpers/money";
 
@@ -14,7 +14,7 @@ test("one order's cents agree across quote_order, cart UI, checkout summary, boa
   if (error) throw new Error(`oracle quote_order failed: ${error.message}`);
 
   await webPage.goto("/");
-  await webPage.getByRole("button", { name: "OK" }).click();
+  await dismissCookieBanner(webPage);
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
   await webPage.goto("/checkout");
