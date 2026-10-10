@@ -32,4 +32,13 @@ jobs:
       web_port: "8200"
       backoffice_port: "8202"
       secret_prefix: STAGING
-    secrets: inherit   # resolved inside _deploy.yml from environment `staging`
+    secrets: inherit
+    # secrets: inherit is REQUIRED here — restored 2026-10-07 after removing it broke the real deploy
+    # (run 37640250636: SSH_HOST/SSH_USER resolved empty, failed at "SSH setup" before touching the
+    # server). S1-07 had reasoned from GitHub's reusable-workflow docs that _deploy.yml's `deploy` job
+    # declaring `environment: staging` on itself would resolve STAGING_* directly, no forwarding
+    # needed. That reasoning was wrong, proven by the actual run: the doc sentence it relied on
+    # ("the environment secret will be used, not the secret passed from the caller") is a
+    # name-COLLISION tie-break, not a statement that environment-scoped secrets populate with zero
+    # pass-through at all. Without `inherit` (or an explicit map), a called job gets nothing. Verify
+    # in the Actions log, not from the docs, before touching this again.

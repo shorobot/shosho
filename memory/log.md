@@ -1690,3 +1690,95 @@ Both in-flight boots landed. I reviewed each rather than merging on a green tick
 **Staging schema moved, and I checked what moved rather than that a tick was green.** The `Migrate staging` run for S2-06 reports "Push migrations + seed → Finished supabase db push" over all six files, and the three Edge Functions redeployed. Guest site after both deploys: 200, real menu photo still served from the `menu` bucket, correct title.
 
 **S6-01 is unblocked as of now.** The stated reason for holding it — S4-03 rewriting the back-office login redirect and adding CSP to every page there — is gone, and its boot was already refreshed on 2026-10-06. It is the obvious next thing, and its value went up rather than down: there is now materially more to test across the seams than when it was written.
+
+## 2026-10-07 — S1 DevOps — S1-07
+**Flagging an inconsistency in S2-06's own entry above before anything else, since it's about this exact boot.** S2's blockers paragraph says "S1-07 rate-limiting... merged while this ran." It had not, at that point or any point before now: `git log --all --oneline` shows the only `[S1-07]` commit is this boot's own `ae834e0`, created after S2-06's report, and `origin/main`'s pre-merge `log.md`/`state.md` carry no S1-07 entry. Likely a conflation of "S0 issued S1-07" (true, 2026-10-06) with "merged" (not true yet). Not correcting their entry — append-only (D-002) — just noting it here so S0 can decide whether it needs a correction note of its own.
+
+**The load-bearing unknown first: `config.toml`'s `[auth.rate_limit]` does not reach the hosted project, measured not assumed.** `.github/workflows/migrate-staging.yml`'s `push` job runs `supabase db push --include-seed` (Postgres objects) and `supabase functions deploy` (Edge Functions) — never `supabase config push` or the Management API. The CLI itself (v2.117.0, pinned) confirms `config push` is a distinct, separate command from `db push`, and its own `--help` text warns it is dangerous to run blind: *"a non-interactive run... can silently overwrite a real, intentionally-customized hosted setting"* — `config.toml` is full of local-dev-only values (`site_url = "http://127.0.0.1:3000"`, disabled toggles) that a blanket push would clobber on `shosho-staging`. So I did not wire it up; I documented the dashboard path instead (`proposed/S1-07-rate-limiting-owner-actions.md` §1). `config.toml`'s captcha comment ("if self-hosting") independently corroborates this — the hosted project's auth config lives in the dashboard, not this file, full stop.
+
+**`email_sent = 2`/hour is not a local-only quirk — flagging to S0 before S2-07, per the boot.** Supabase's own docs state this value is a **global, project-wide** cap tied to their *built-in email relay* ("2 emails per hour with the built-in email provider"), not a self-hosted-CLI-only default — so it plausibly matches whatever `shosho-staging` has right now too, since nobody has configured custom SMTP (`[auth.email.smtp]` is commented out, no SMTP secret exists anywhere in the pipeline). If live, **email OTP is capped at two codes an hour across every customer on the whole project.** The fix is not a bigger dashboard number (the cap is tied to the shared relay) but a real SMTP provider before S2-07 ships the email channel. Also newly confirmed: `sms_sent` is likewise **global, not per-IP or per-number** — unlike `sign_in_sign_ups`/`token_verifications`/`token_refresh`, which are per-IP. That bounds worst-case spend to one number regardless of attacker IP count, but also means Supabase's own config has **no per-IP SMS lever at all** — a single-IP flood can starve every real customer's OTP for the rest of the hour. Turnstile (below) is the actual per-attacker defense; the number is only a spend ceiling.
+
+**The numbers, for the owner to read directly.** Proposed tuned values and reasoning are in `proposed/S1-07-rate-limiting-owner-actions.md` §1 (full table): `sms_sent` 30→**20**/hour, `token_verifications` 30→**10**/5min/IP (cuts OTP brute-force throughput 3× at ~zero cost to a real user's 2–3 retries), `sign_in_sign_ups` unchanged (already per-IP, already a real lever), `email_sent` unchanged but flagged per above. **Worst-case monthly SMS spend at MessageBird's €0.0317/SMS:** stock `sms_sent=30/hr` sustained a full month → 21,600 SMS → **€684.72**; proposed `sms_sent=20/hr` → 14,400 SMS → **€456.48**. Both are ceilings under sustained abuse, not a forecast — real traffic for one restaurant will sit far below either.
+
+**Turnstile: feasible, cheap, and needs no library upgrade.** Supabase Auth supports Turnstile natively; the zone is already on Cloudflare. Both `apps/web` and `apps/backoffice` already pin `@supabase/supabase-js@^2.116.0`, which has long supported `options.captchaToken` on `signInWithPassword`/`signInWithOtp` — and since both apps already call Supabase directly from the browser (today's correction), wiring it in is a pure front-end change: render the widget, pass the token, nothing server-side. Click-by-click Cloudflare + Supabase-dashboard steps, and the exact client-side cost, are in `proposed/S1-07-rate-limiting-owner-actions.md` §2. Not implemented by S1 — boundary says `apps/web`/`apps/backoffice` are not mine to touch, and this is scoping only.
+
+**Cloudflare rules, scoped honestly.** Wrote click-by-click Rate Limiting Rules for what the zone actually fronts — `shos.hellfiresol.com/*` (storefront flood guard, Managed Challenge past 60 req/60s/IP) and `bo-shos.hellfiresol.com/login` (10 req/60s/IP) — in `proposed/S1-07-rate-limiting-owner-actions.md` §3, with an explicit statement of what this does **not** cover (every Supabase-direct call named in today's correction) so nobody mistakes it for wider coverage than it is. Flagged that I have no Cloudflare access to confirm the zone's plan includes Rate Limiting Rules at all — the owner will see directly whether the tab is usable.
+
+**Per-RPC throttling for `place_order`/`quote_order` — proposal filed, no winner picked, per the boot.** `proposed/S2-rpc-throttling.md`: option A (in-RPC throttle keyed on phone or session id, with the honest caveat that no trustworthy client IP exists inside a `security definer` function without edge involvement) vs. option B (route guest RPCs through our own Next.js origin so they actually pass Cloudflare, moving the anon key server-side as a side effect — an architecture change spanning S1+S3, needs its own boot from S0). Did not touch `apps/backend` (S2-06 is live there, per boundary).
+
+**Supply-chain hygiene (S7-01 task 3, done).** All third-party `uses:` actions across `ci.yml`, `_deploy.yml`, `migrate-staging.yml` pinned to full commit SHAs with a `# vX.Y.Z` comment (resolved via `git ls-remote --tags`, dereferencing annotated tags where present — `pnpm/action-setup@v6` was the one case where the tag object SHA and the commit SHA differ): `actions/checkout` → `3d3c42e…` (v7.0.1), `pnpm/action-setup` → `0977fd9…` (v6.0.10), `actions/setup-node` → `8207627…` (v7.0.0), `actions/setup-python` → `5fda3b9…` (v7.0.0), `actions/upload-artifact` → `043fb46…` (v7.0.1), `docker/setup-buildx-action` → `f87e599…` (v4.4.1), `docker/login-action` → `dbcb813…` (v4.6.0), `docker/build-push-action` → `c3c9e26…` (v7.4.0). Edited at the source of truth (`apps/infra/.github/workflows/`) and re-synced to `.github/workflows/` via the existing `sync-workflows.sh` — `ci.yml`'s own "workflows in sync" check would have caught a drift.
+
+`secrets: inherit` removed from `deploy-staging.yml` and `deploy-prod.yml` — **not replaced with an explicit map, because nothing needs to cross the call at all.** `_deploy.yml`'s `deploy` job declares `environment: ${{ inputs.environment }}` on itself, and a job-level `environment:` resolves that environment's own secrets directly, taking priority over anything a caller forwards (confirmed against GitHub's reusable-workflows docs: *"If you include `environment` in the reusable workflow at the job level, the environment secret will be used, and not the secret passed from the caller workflow"*) — the two callers' existing comments already said as much ("resolved inside `_deploy.yml` from environment `staging`") before I touched them, which is itself evidence `inherit` was never the thing doing the work. So removing it narrows exposure from "the repo's entire secret set" to **nothing forwarded**, strictly less than the explicit map the finding suggested, with identical behavior. Updated `_deploy.yml`'s header comment and both callers' inline comments to say this plainly instead of the now-wrong "with `secrets: inherit`".
+
+**Verification, not just CI green — the specific thing S1-04's pipefail incident warned about.** PR `s1-07` opened against `main`. Plan: let CI go green on the PR (confirms YAML parses and the `infra` job's workflow-sync/compose checks pass — but NOT the secrets-resolution change, since that only executes inside the real `Deploy staging` run on `main`), merge, then watch the real chain — `Migrate staging` → `Deploy staging` — run to completion and confirm the SSH/env-render steps in `Deploy staging` actually resolve `STAGING_SSH_HOST`/`STAGING_SUPABASE_URL`/etc. (not just in theory). **This paragraph is written before that verification runs — see the follow-up note appended below once it has, rather than trusting this sentence alone.**
+
+Did not touch `apps/backoffice` or `apps/backend` (boundary). Did not implement Turnstile, the Cloudflare rules, or the dashboard rate-limit values myself — all three need dashboard access I don't have; written up as click-by-click proposals for the owner via S0. Stopping here per the boot's "Next step" — proposals are filed, not executed; waiting for S0.
+
+## 2026-10-07 — S1 DevOps — S1-07 follow-up: the `secrets: inherit` removal broke the real deploy, reverted
+The verification paragraph above was written before the chain actually ran. It ran, and the specific thing it was there to catch happened: `Deploy staging` run `37640250636` (merge commit `9eff0af`, PR #70) failed at the **SSH setup** step — the job's debug env dump showed `SSH_HOST:` and `SSH_USER:` both **empty**. `secrets: inherit` was load-bearing after all. **No harm to the live server** — the job failed before the "Pull & up" step, so nothing on the shared droplet was touched; staging kept serving whatever the last successful deploy (09:40 that morning) had shipped.
+
+**Where my reasoning went wrong, recorded so nobody re-derives the same mistake.** I had quoted GitHub's reusable-workflows doc — *"If you include `environment` in the reusable workflow at the job level, the environment secret will be used, and not the secret passed from the caller workflow"* — as proof that a called job's own `environment:` declaration alone populates that environment's secrets, making any forwarding from the caller unnecessary. That sentence is a **name-collision tie-break**, not a standalone-resolution mechanism: it says which value wins *if* a secret of that name was also passed from the caller, not that one materializes with nothing passed at all. The real-run evidence settles it where the doc excerpt alone didn't.
+
+**Fix:** restored `secrets: inherit` on both `deploy-staging.yml` and `deploy-prod.yml`, with `_deploy.yml`'s header comment and both callers' inline comments corrected to say why, and to point at this entry rather than the doc quote. SHA-pinning (the other half of S7-01 task 3) is untouched and already proven working in the same failed run — every pinned `actions/checkout`, `docker/*` step upstream of the SSH failure passed. PR filed as a new, small follow-up (`s1-07-fix` → `main`); re-verifying the real chain again after it merges, this time actually confirming before writing the sentence that says so.
+
+**Lesson for the "done when" list:** "CI passing is not proof the deploy path works" (S1-04's pipefail lesson) generalizes to "a plausible-sounding doc quote is not proof either" — both need the actual run. Recording this next to that lesson rather than as a one-off.
+
+## 2026-10-09 — S0 Orchestrator — the broken deploy is fixed and verified; S1's mechanism was right and mine was wrong
+Picking up after two days. The headline: **`Deploy staging` was red from 2026-10-07 to today and is now green, verified on a real run.** Nothing was down in between and nothing was blocked, because no app change was pushed to `main` in the interval and the containers from the last green deploy kept serving — guest 200, back-office 401 throughout.
+
+**S1 and I both wrote the same fix independently, and theirs is the one that merged.** They opened PR #72 one minute before my #73, both restoring `secrets: inherit`. I merged theirs: it was first, it is their boot's own work, and — the real reason — **their explanation of the failure is correct and mine was not.** I had written that the cause was the **dynamic index** `secrets[format('{0}_SSH_KEY', …)]` and that a static `secrets.NAME` would have resolved fine. S1 identified the actual misreading: GitHub's sentence that a job-level `environment:` wins over a caller-passed secret is a **name-collision tie-break**, not a claim that environment-scoped secrets populate a called workflow's `secrets` context at all. **Without `inherit` or an explicit map a called job's context gets nothing**, so the dynamic form is incidental rather than causal. My framing would have sent the next person looking for a static/dynamic distinction that does not exist. Retracted in `proposed/S1-explicit-secrets-map.md` in as many words, and the corrected mechanism is what went into `state.md`. That is four corrections from child sessions and four that were right.
+
+**Recovery verified rather than assumed:** run **37933161045** — `build & push images` success, `deploy to staging` success. Then the live checks: guest 200 / 107693 B with its menu photo still served from the `menu` bucket, back-office 401 at the gate, and all three of S4-03's app headers (CSP, permissions-policy, X-Frame-Options) still present inside the container over the tunnel. The fix is real, not just a green workflow badge.
+
+**My own PR reduced rather than merged as written.** #73 carried the same workflow edits plus work only I own, so I dropped the workflow half entirely — S1's landed — and kept D-017, the two proposals, the owner actions and the correction note on a fresh branch. Merging both would have duplicated the fix and committed my wrong explanation alongside S1's right one.
+
+**Lesson added to the S0 boot, because this one has a clean rule attached:** a change to secret plumbing is unverified until a real `Deploy staging` run has passed. Every check on PR #70 was green; CI cannot reach that code path, since it only executes on `main`. I had flagged exactly this in S1-07's boot and again before merging, and merging was still right — the change is reversible and the check is only possible on `main`. What made it acceptable was watching the chain. The rule is therefore not "do not merge" but "merge only when you will watch, and say in the report that CI did not prove it."
+
+**One thing worth stating about the two-day gap:** the pipeline sat red while two competing fixes sat open. Both were correct and either would have done. If I had merged one immediately and reconciled afterwards — which is what I did today — the red window would have been minutes. Leaving two good fixes unmerged while deciding which was tidier was the wrong trade, and the fact that nothing broke in the interval was luck about push timing, not a consequence of the decision.
+
+## 2026-10-09 — S4 Back-office — staging password rotation recorded (owner-instructed, outside S4's row)
+
+Not a boot. The owner ran the rotation and asked S4 to record it in `state.md` directly, which is
+outside D-002 (S0 edits the table as a whole) and outside D-009 (a child session edits only its own
+row). Authorised in chat, not assumed — and written down here so S0 can see exactly what a non-S0
+session changed.
+
+**What the owner did.** `scripts/rotate-staging-passwords.mjs` against `shosho-staging`, 14:21 UTC.
+Four fresh distinct random passwords in `apps/backend/.staff-credentials.local` — mode `600`,
+gitignored, absent from `git status`. The script prints only the path, never the values.
+
+Two things in the first command S4 gave were wrong and worth recording, because the next person will
+hit them: it omitted `SUPABASE_URL` (the script needs **both** env vars and exits 1 without either),
+and it has to run from `apps/backend` — `@supabase/supabase-js` does not resolve from the repo root
+(`ERR_MODULE_NOT_FOUND`), only from `apps/backend`. The script's own header is right; S4's paraphrase
+of it was not.
+
+**Verified rather than assumed.** A password grant with the published `shosho-test-2026` now answers
+`invalid_credentials` for **all four** accounts (owner / operator / kitchen / driver), checked against
+the live project. The script exiting 0 is not the same claim. **S7-01 finding 2 is closed.**
+
+**What this does and does not unblock.** It clears the last owner-only gate on handing out the URL.
+It does **not** clear owner-action 6, and the rotation makes that one more pressing rather than less:
+`http://bo-shos.hellfiresol.com/` still answers 401 in cleartext with no redirect, so the moment real
+credentials exist, a staff member who omits `https://` puts TETA+PI's basic-auth pair on the wire
+unencrypted. No session can fix it — S4 confirmed on 2026-10-09 that no Cloudflare token, CLI or
+config exists on the machine, and the 401 is served by TETA+PI's nginx (their realm string), whose
+configuration is outside our boundary (D-004).
+
+**For S6:** `E2E_PASSWORD` must come from the owner's new value before any e2e run targets staging.
+The local-only default now matches the local stack only.
+
+**Rows S4 touched beyond its own:** the last-update line, the Phase paragraph, rows S1 / S2 / S6 / S7,
+owner-action 1, and the two go-live bullets in "Not yet done". Also escaped a pre-existing stray `|`
+inside `` `eval "$(cmd|sed)"` `` in S1's row, which was splitting that row into an extra GFM column —
+one character, no semantic change, flagged rather than done silently.
+
+**Process note worth more than the rest of this entry.** S4 made these edits in the wrong working
+tree first: the main checkout `/Users/bobbob/BOB/SERVER/SH.OS.` belongs to S1 (D-008) and was sitting
+on S1's `s1-07-fix` branch. Nothing was committed there and the tree was restored to clean with
+`git checkout --`, so S1 lost nothing, but the edit should never have been made there. D-008 says a
+session that finds HEAD on a branch that is not its own must stop and report — the rule fired exactly
+as written, just one step later than it should have. Redone in `.worktrees/s4` on `s4-state-rotation`
+off a freshly fetched `origin/main`, which also turned out to matter: S0 had rewritten `state.md`
+earlier the same day (PR #72, the deploy fix), so the original patch no longer applied and every edit
+was re-derived against current `main` rather than force-fitted.

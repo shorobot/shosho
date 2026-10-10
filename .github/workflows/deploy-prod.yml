@@ -27,4 +27,6 @@ jobs:
       remote_dir: /home/shosho/shosho/prod
       web_port: "8200"
       secret_prefix: PROD
-    secrets: inherit   # resolved inside _deploy.yml from environment `production`
+    secrets: inherit
+    # secrets: inherit is REQUIRED here — see deploy-staging.yml's comment. Removing it (S1-07's first
+    # attempt at S7-01 task 3) broke the real `Deploy staging` run; restored 2026-10-07.
