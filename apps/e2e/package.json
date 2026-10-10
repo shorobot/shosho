@@ -1,0 +1,18 @@
+{
+  "name": "@shosho/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SHOSHO cross-app end-to-end scenarios (S6-01): apps/web + apps/backoffice + apps/backend driven together against one Supabase, plus the flaky-test flake-rate script.",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "install:browsers": "playwright install --with-deps chromium",
+    "flake:guest-realtime": "node scripts/flake-guest-realtime.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@supabase/supabase-js": "^2.116.0",
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  }
+}

@@ -234,6 +234,60 @@ jobs:
         if: always()
         run: pnpm exec supabase stop --no-backup
 
+  # S6-01: cross-app Playwright suite (apps/e2e) against a local Supabase stack — no staging, no Stripe
+  # keys needed (every spec here uses cash / v1 client-reported payment, never create-payment-intent).
+  # Deliberately NOT in the `ci` gate's `needs` below: browser install + two Next dev servers booting is
+  # a materially flakier, slower gate than anything else in that list today (S3-01/S4-01 kept their own
+  # Playwright smoke out of the required check for the same reason — see apps/e2e/README.md). It still
+  # runs on every PR and reports its own status; promote it into `needs` once it's proven stable.
+  e2e:
+    name: e2e (apps/e2e)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright chromium
+        run: pnpm --filter @shosho/e2e exec playwright install --with-deps chromium
+
+      - name: Start local Supabase (applies migrations + seed)
+        working-directory: apps/backend
+        run: pnpm exec supabase start
+
+      - name: Run the suite against the local stack
+        run: |
+          set -euo pipefail
+          status_env=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          export NEXT_PUBLIC_SUPABASE_URL="$API_URL" NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
+          # S2-05: seed.sql gives every staff account a random password; this sets the documented
+          # local-only one ("local-dev-only") that apps/e2e/helpers/db.ts expects.
+          pnpm --filter @shosho/backend run seed:local-logins
+          pnpm --filter @shosho/e2e exec playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: apps/e2e/playwright-report
+          if-no-files-found: ignore
+
+      - name: Stop Supabase
+        if: always()
+        working-directory: apps/backend
+        run: pnpm exec supabase stop --no-backup
+
   # Single required status check for branch protection.
   ci:
     name: CI
