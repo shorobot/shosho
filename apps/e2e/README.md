@@ -37,8 +37,14 @@ pnpm --filter @shosho/e2e install:browsers       # chromium — see "macOS 12" n
 
 status=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
 eval "$status"
-export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY"
+export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
 export NEXT_PUBLIC_SUPABASE_URL="$API_URL" NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
+
+# S2-05: seed.sql gives every staff account a random password on purpose. This sets the documented
+# LOCAL-ONLY one ("local-dev-only") that helpers/db.ts's signInAs() expects — refuses anything but a
+# loopback Supabase URL, so it's safe to run every time. (apps/backend's own `pnpm test` does this
+# automatically via its `pretest` hook; this suite doesn't run that, so it's explicit here instead.)
+pnpm --filter @shosho/backend run seed:local-logins
 
 pnpm --filter @shosho/e2e test:e2e
 ```
@@ -46,15 +52,21 @@ pnpm --filter @shosho/e2e test:e2e
 `playwright.config.ts`'s `webServer` entries start both Next apps for you (reusing a server already
 running on 3100/3102 outside CI). Stop the stack afterwards: `pnpm --filter @shosho/backend db:stop`.
 
-**This machine (macOS 12 / Darwin 21.6.0) cannot install Playwright's chromium** — confirmed empirically
-during this boot (`~/Library/Caches/ms-playwright` has no browser binary, matching S3/S4's own notes in
-`memory/log.md`). The specs still typecheck and lint here; running them needs a Linux box or CI.
+**This machine cannot run any of the above** — confirmed empirically during this boot, not assumed:
+`pnpm exec playwright install chromium` fails outright (`ERROR: Playwright does not support chromium on
+mac12`, matching S3/S4's own notes in `memory/log.md`), and `colima start` fails before Docker even
+comes up (`qemu-img not found` — the host has no qemu and installing one is outside this boot's scope).
+The specs typecheck and `playwright test --list` cleanly here (32 tests across 12 files); actually
+running them needs a Linux box, a Mac with Docker already working, or CI.
 
 ## Running against staging (manual only — never part of CI, and staging is shared)
 
-Back-office has no public host yet (`memory/state.md`): reach it over the documented ssh tunnel
-(`memory/infra-access.md`), and point the suite at `shosho-staging`'s public URL/anon key (ask S0/owner
-for them — never commit them):
+The back-office has a public hostname now (`https://bo-shos.hellfiresol.com/`) but it sits behind
+Cloudflare Access/basic-auth and the staff login password is mid-rotation (`memory/state.md` — the
+owner may rotate `shosho-test-2026` at any moment, after which only they hold the new value) — so the
+ssh tunnel (`memory/infra-access.md`) stays the practical way in for now. Point the suite at
+`shosho-staging`'s public URL/anon key (ask S0/owner — never commit them) and `E2E_PASSWORD` if the
+staging password has already been rotated by the time you run this:
 
 ```bash
 ssh -N -L 8202:127.0.0.1:8202 shos@164.90.235.66 -i ~/.ssh/shos_ed25519 &

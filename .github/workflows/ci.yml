@@ -268,8 +268,11 @@ jobs:
           set -euo pipefail
           status_env=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
           eval "$status_env"
-          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
           export NEXT_PUBLIC_SUPABASE_URL="$API_URL" NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
+          # S2-05: seed.sql gives every staff account a random password; this sets the documented
+          # local-only one ("local-dev-only") that apps/e2e/helpers/db.ts expects.
+          pnpm --filter @shosho/backend run seed:local-logins
           pnpm --filter @shosho/e2e exec playwright test
 
       - name: Upload Playwright report

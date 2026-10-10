@@ -85,21 +85,35 @@ test("sequential order numbers", async () => {
   expect(b.data.number, "order_number_seq — each new order gets the next integer").toBeGreaterThan(a.data.number);
 });
 
-test("auto-accept under 50€: independent re-check of S7-01's CRITICAL finding on the client-reported payment_status path", async ({ db }) => {
-  // docs/security.md §5 finding 1 / design rule 6 ("auto-accept only paid orders under 50€"): v1 lets an
-  // anonymous caller claim payment_status:'authorized' with no real payment behind it. If this still
-  // auto-accepts, S2-04's fix (issued per state.md, not yet confirmed merged at the time this suite was
-  // written) has not landed — re-check `main` before treating this as news.
+test("S7-01 finding 1 (CRITICAL) stays fixed: a guest cannot self-report payment_status", async () => {
+  // migration 20260928000025_payment_trust_boundary.sql (S2-04): a guest sending anything but the
+  // default `pending` now gets `invalid_input`/`payment_status` in the rejection, not a silently
+  // created order. This is a regression guard on the fix, not a hunt for a live bug — re-verified
+  // independently (own anon client, no backend-suite helpers) per boot task 4.
   const phone = freshPhone();
-  const { data: o, error } = await anon().rpc("place_order", {
+  const { error } = await anon().rpc("place_order", {
     payload: { type: "pickup", items: [{ item_id: ITEM.ramen, qty: 1 }], contact: { name: "E2E Trust Boundary Probe", phone }, payment_method: "card", payment_status: "authorized" },
   });
-  if (error) throw new Error(error.message);
-  const { data: order } = await db.from("orders").select("status, payment_status, total_cents").eq("id", o.order_id).single();
-  expect(
-    order!.status,
-    `order ${o.order_id}: a card order with a self-reported payment_status of "authorized" and no real Stripe event auto-accepted to "${order!.status}" — S7-01 finding 1 (CRITICAL, docs/security.md §5) is still live. A passing test here means S2-04 has landed.`,
-  ).not.toBe("accepted");
+  expect(error?.message, "a guest claiming payment_status:'authorized' must be refused outright").toBe("order_rejected");
+  const problems = JSON.parse((error as unknown as { details: string }).details) as { code: string; field?: string }[];
+  expect(problems).toEqual(expect.arrayContaining([expect.objectContaining({ code: "invalid_input", field: "payment_status" })]));
+});
+
+test("auto-accept under 50€: the one reachable path on this stack — a staff-recorded paid phone order", async ({ db }) => {
+  // No Stripe keys exist, so the webhook-authorized path (migration 11) is out of reach — but
+  // migration 20260928000025_payment_trust_boundary.sql's audited staff-paid path (owner/operator
+  // recording counter cash/card-terminal money at order entry) is real and reachable, and it is the
+  // ONLY thing auto-accept now keys off for a non-Stripe order. Testing that path, not faking the
+  // Stripe one.
+  const phone = freshPhone();
+  const { data: o, error } = await db.rpc("place_order", {
+    payload: { type: "pickup", items: [{ item_id: ITEM.ramen, qty: 1 }], contact: { name: "E2E Staff Paid", phone }, payment_method: "cash", payment_status: "paid" },
+  });
+  if (error) throw new Error(`${error.message} ${(error as { details?: string }).details ?? ""}`);
+  expect(o.status, "staff-recorded paid, ASAP, under the 50€ threshold, kitchen not paused → auto-accept").toBe("accepted");
+
+  const { data: note } = await db.from("order_events").select("payload").eq("order_id", o.order_id).eq("type", "note").single();
+  expect((note!.payload as { code?: string }).code, "the staff-paid path must be audited (migration 25)").toBe("payment_recorded_by_staff");
 });
 
 test.skip("stoplist resets at midnight — not independently verifiable in a timed run; verified by code inspection instead", () => {
@@ -109,8 +123,25 @@ test.skip("stoplist resets at midnight — not independently verifiable in a tim
   // re-run here because simulating "midnight passed" would mean moving the DB's clock on a shared stack.
 });
 
-test.skip("marketing consent gating — not implemented yet (api-contracts §6.7: campaigns deferred to S2-04/S5)", () => {
-  // consent_email/_push/_phone are captured and timestamped (apps/backend/tests/customer_events.test.ts
-  // already covers the capture + audit trail), but there is no campaign-send code path in this repo to
-  // point a test at yet — nothing exists that could violate "marketing only to consented customers."
+test("marketing consent gating: resolve_segment excludes a customer with no consent for the channel", async ({ db }) => {
+  // S2-06 (migration 20261006000029_segments_and_claim.sql) shipped resolve_segment/
+  // claim_campaign_recipients since this boot was issued — campaigns are no longer "not built", so this
+  // rule is now directly testable at the one place consent is actually enforced (S5's send pipeline
+  // itself doesn't exist yet — tracked separately, not this rule's gap).
+  const phone1 = freshPhone();
+  const phone2 = freshPhone();
+  const { data: consented, error: e1 } = await db.from("customers").insert({ phone: phone1, name: "E2E Consented", consent_email: { granted_at: new Date().toISOString(), source: "e2e" } }).select("id").single();
+  if (e1) throw e1;
+  const { data: notConsented, error: e2 } = await db.from("customers").insert({ phone: phone2, name: "E2E Not Consented" }).select("id").single();
+  if (e2) throw e2;
+
+  try {
+    const { data: rows, error } = await db.rpc("resolve_segment", { p_segment: { customer_ids: [consented!.id, notConsented!.id] }, p_channel: "email" });
+    if (error) throw error;
+    const ids = (rows as { customer_id: string }[]).map((r) => r.customer_id);
+    expect(ids, "resolve_segment must drop the non-consented customer even though the segment explicitly named both ids").toContain(consented!.id);
+    expect(ids).not.toContain(notConsented!.id);
+  } finally {
+    await db.from("customers").delete().in("id", [consented!.id, notConsented!.id]);
+  }
 });

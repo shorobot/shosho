@@ -17,7 +17,11 @@ const opts = { auth: { persistSession: false, autoRefreshToken: false } };
 /** Anon-key client — exactly what the guest site and an unauthenticated request use. */
 export const anon = (): Db => createClient(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"), opts);
 
-export const PASSWORD = process.env.E2E_PASSWORD ?? "shosho-test-2026";
+// S2-05: seed.sql no longer gives any staff account a known password on a real project. Locally,
+// `pnpm --filter @shosho/backend seed:local-logins` sets this literal (apps/e2e/README.md runs it as
+// part of the local recipe); on staging the owner holds the rotated value — pass it via E2E_PASSWORD,
+// never hardcode or commit it.
+export const PASSWORD = process.env.E2E_PASSWORD ?? "local-dev-only";
 export const STAFF = {
   owner: { email: "owner@shosho.test", name: "K. Sato" },
   operator: { email: "operator@shosho.test", name: "Marek K." },

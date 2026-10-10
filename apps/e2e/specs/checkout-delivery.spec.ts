@@ -43,7 +43,11 @@ test("guest delivery order, driven end to end, tracking page follows along", asy
   expect(order!.discount_cents, "10% of a 27.00 subtotal").toBe(270);
   expect(order!.status, "total < 50€ but payment_method=cash is never auto-accepted (only authorized/paid orders are)").toBe("new");
 
-  await test.step("operator: find it on the board and drive it through", async () => {
+  // webPage is already sitting on /order/<token> from the redirect after placing the order — left
+  // open on purpose, not reloaded, so the next step can tell a live push apart from a fresh fetch.
+  await expect(webPage).toHaveURL(new RegExp(`/order/${token}$`));
+
+  await test.step("operator accepts — and the already-open tracking tab is watched for a live push, not reloaded", async () => {
     await signInBackoffice(boPage, "operator");
     await expect(boPage).toHaveURL(/\/orders$/);
     await boPage.goto(`/orders/${order!.id}`);
@@ -52,6 +56,14 @@ test("guest delivery order, driven end to end, tracking page follows along", asy
     await boPage.getByRole("button", { name: /Annehmen/ }).click();
     await expect(boPage.getByText("ANGENOMMEN")).toBeVisible();
 
+    // api-contracts §5.6/§3: the client is documented to SUBSCRIBE to order:<token> broadcasts and
+    // treat the 15s poll as a fallback. If that subscription is actually wired, "Order accepted"
+    // should appear on THIS SAME webPage, with no navigation of its own, well under 15s. Bounded at
+    // 6s — tight enough to fail honestly if the page is poll-only, generous enough not to flake on CI.
+    await expect(webPage.getByText("Order accepted")).toBeVisible({ timeout: 6_000 });
+  });
+
+  await test.step("operator finishes the rest of the board flow", async () => {
     await boPage.getByRole("button", { name: "Zubereitung starten" }).click();
     await expect(boPage.getByText("IN ZUBEREITUNG")).toBeVisible();
 
@@ -62,15 +74,6 @@ test("guest delivery order, driven end to end, tracking page follows along", asy
     await boPage.getByRole("radio", { name: STAFF.driver.name }).click();
     await boPage.getByRole("button", { name: /Übergeben/ }).click();
     await expect(boPage.getByText("UNTERWEGS")).toBeVisible();
-  });
-
-  await test.step("guest tracking page reflects acceptance — measuring realtime vs the documented 15s poll fallback", async () => {
-    // api-contracts §5.6/§3: the client is documented to SUBSCRIBE to order:<token> broadcasts and treat
-    // the 15s poll as a fallback. If that subscription is actually wired, "Order accepted" should appear
-    // well under 15s after the operator's click above. Bounded at 6s on purpose — tight enough to fail
-    // honestly if the page is poll-only, generous enough not to be a flake on CI.
-    await webPage.goto(`/order/${token}`);
-    await expect(webPage.getByText("Order accepted")).toBeVisible({ timeout: 6_000 });
   });
 
   await test.step("driver marks delivered with cash collected; order settles to paid", async () => {
