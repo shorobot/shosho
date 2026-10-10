@@ -56,17 +56,17 @@ running on 3100/3102 outside CI). Stop the stack afterwards: `pnpm --filter @sho
 `pnpm exec playwright install chromium` fails outright (`ERROR: Playwright does not support chromium on
 mac12`, matching S3/S4's own notes in `memory/log.md`), and `colima start` fails before Docker even
 comes up (`qemu-img not found` — the host has no qemu and installing one is outside this boot's scope).
-The specs typecheck and `playwright test --list` cleanly here (32 tests across 12 files); actually
+The specs typecheck and `playwright test --list` cleanly here (33 tests across 12 files); actually
 running them needs a Linux box, a Mac with Docker already working, or CI.
 
 ## Running against staging (manual only — never part of CI, and staging is shared)
 
 The back-office has a public hostname now (`https://bo-shos.hellfiresol.com/`) but it sits behind
-Cloudflare Access/basic-auth and the staff login password is mid-rotation (`memory/state.md` — the
-owner may rotate `shosho-test-2026` at any moment, after which only they hold the new value) — so the
-ssh tunnel (`memory/infra-access.md`) stays the practical way in for now. Point the suite at
-`shosho-staging`'s public URL/anon key (ask S0/owner — never commit them) and `E2E_PASSWORD` if the
-staging password has already been rotated by the time you run this:
+Cloudflare Access/basic-auth, so the ssh tunnel (`memory/infra-access.md`) stays the practical way in.
+**The owner rotated the staff seed password on 2026-10-09** (`memory/state.md`) — confirmed live during
+this boot: `shosho-test-2026` now fails login on all four accounts. `E2E_PASSWORD` must be the rotated
+value (ask S0/owner — never commit it); there is no fallback to a known password anymore. Point the
+suite at `shosho-staging`'s public URL/anon key (ask S0/owner — never commit them either):
 
 ```bash
 ssh -N -L 8202:127.0.0.1:8202 shos@164.90.235.66 -i ~/.ssh/shos_ed25519 &
