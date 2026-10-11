@@ -16,8 +16,8 @@ const OPERATOR_NAV: NavItem[] = [
   { key: "nav.orders", href: "/orders", match: ["/orders"], live: true },
   { key: "nav.customers", href: "/customers", match: ["/customers"], live: false },
   { key: "nav.menu", href: "/menu", match: ["/menu"], live: true },
-  { key: "nav.website", href: "/website", match: ["/website"], live: false },
-  { key: "nav.marketing", href: "/marketing", match: ["/marketing"], live: false },
+  { key: "nav.website", href: "/website", match: ["/website"], live: true },
+  { key: "nav.marketing", href: "/marketing", match: ["/marketing"], live: true },
   { key: "nav.reports", href: "/reports", match: ["/reports"], live: false },
   { key: "nav.settings", href: "/settings", match: ["/settings"], live: false },
 ];
