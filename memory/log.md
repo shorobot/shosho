@@ -1866,19 +1866,20 @@ PR and watching CI's new `e2e` job — which has what this sandbox doesn't. **Fi
 18 failed**, every failure a genuine bug either in the suite or a real product gap (none were
 environment noise). Root-caused and fixed what was mine to fix; a second run's result is below.
 
-**Two corrections to S0's entry above, written while this PR had no `memory/` content yet — both fair
-reads at the time, both worth setting straight now that the traces are in.** (1) The `toomanyrequests`
-Docker Hub pull-rate line is real but not fatal: it hit `supabase/kong`/`storage-api`, logged
-`Retrying after 4s`, and the pull then succeeded — the same run's `backend` job pulls the identical
-images the same way and passed clean, and every failure's own Playwright snapshot (`error-context.md`,
-downloaded from the run's artifact) shows the **full real catalog** rendering correctly — 14 seeded
-items, real prices, real footer business data — which only happens if local Supabase came up and
-answered every query. The actual cause took five CI runs to find properly — see finding 0 below — and
-none of the three I was chasing across runs 2–4 (a cookie banner race, `next dev`'s lazy compile, a
-React effect-scheduling race) turned out to be it, though each produced a real, worthwhile fix along
-the way. (2) The PR body's "findings are in `log.md`" line was true of my intent, not yet of the
-branch, at the moment S0 read it — fair to flag, and noted for next time: finish writing before
-describing something as written.
+**On S0's two entries above** (2026-10-10's initial read, and 2026-10-12's own correction of it, which
+landed between my writing this paragraph and merging — so this is now a note, not a correction).
+S0 already caught and corrected the `toomanyrequests` misdiagnosis themselves, more thoroughly than I
+would have put it (the pull retried and succeeded; the same run's `backend` job pulled the identical
+images clean; every failure's own snapshot renders the full 14-item catalog with real data, which only
+happens if Supabase answered every query) — and named the general lesson plainly: *"a grep of a log is a
+hypothesis; the artifact is the measurement."* Worth saying back: that lesson applied to me too, on the
+same bug, one level deeper. I spent runs 2 through 4 of this PR doing exactly the thing S0 just described
+doing — plausible hypotheses (a cookie-banner race, `next dev`'s lazy compile, a React effect-scheduling
+race), each producing a real, defensible fix, none of them moving the failure count. The actual cause —
+finding 0 below — was sitting in the same Playwright trace's own `pageError` event from run 1 onward. I
+should have read it on run 2, not run 5. The PR body's "findings are in `log.md`" line, which S0 also
+flagged, was true of my intent and not yet of the branch at the moment it was read — accepted plainly,
+noted for next time: finish writing before describing something as written.
 
 ### Ranked findings
 
