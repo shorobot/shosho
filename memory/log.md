@@ -1873,13 +1873,41 @@ Docker Hub pull-rate line is real but not fatal: it hit `supabase/kong`/`storage
 images the same way and passed clean, and every failure's own Playwright snapshot (`error-context.md`,
 downloaded from the run's artifact) shows the **full real catalog** rendering correctly — 14 seeded
 items, real prices, real footer business data — which only happens if local Supabase came up and
-answered every query. The actual cause, traced through the same snapshots rather than inferred from the
-summary line, is in Findings #6 below: a cookie banner that never appeared against a fresh seed, a
-`next dev` cold-compile cost nothing had warmed, and a login-form hydration race. (2) The PR body's
-"findings are in `log.md`" line was true of my intent, not yet of the branch, at the moment S0 read
-it — fair to flag, and noted for next time: finish writing before describing something as written.
+answered every query. The actual cause took five CI runs to find properly — see finding 0 below — and
+none of the three I was chasing across runs 2–4 (a cookie banner race, `next dev`'s lazy compile, a
+React effect-scheduling race) turned out to be it, though each produced a real, worthwhile fix along
+the way. (2) The PR body's "findings are in `log.md`" line was true of my intent, not yet of the
+branch, at the moment S0 read it — fair to flag, and noted for next time: finish writing before
+describing something as written.
 
 ### Ranked findings
+
+**0. HIGH, the headline finding — both apps' CSP blocks all client-side JavaScript under `next dev`,
+so neither one is usable in local development as shipped.** `apps/web/lib/csp.ts` and
+`apps/backoffice/lib/csp.ts` both set `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'` with no
+`'unsafe-eval'` and no `NODE_ENV` carve-out. `next dev`'s webpack HMR runtime evaluates chunks via
+`eval()`; that CSP blocks it outright, and the failure is total, not partial — the server-rendered HTML
+paints normally (so the page looks fine), but **no client JavaScript executes at all**: no hydration, no
+event handlers attached anywhere. A click physically lands (Chrome shows `:active`) and does nothing,
+with no console error unless you think to inspect the CSP header specifically. `next build`/`next start`
+(what `shosho-staging` actually runs) doesn't use `eval()`, so this is completely invisible there —
+confirmed by driving the real deployed site manually, live, in this same boot.
+
+**How this was actually found, and why it took five runs.** Every CI run in this PR failed the same
+~16 tests, and I treated that as a sequence of distinct, plausible timing bugs — a cookie banner that
+never showed, `next dev`'s lazy per-route compilation, a React `useEffect`'s async scheduling racing a
+`page.goto()` — fixing each one in turn, each fix reasonable on its own evidence, none of them moving
+the failure count even slightly across runs 2 through 5. That pattern (real-looking fixes, zero effect)
+is itself the tell for a hard block rather than a race, and the proof was sitting in the Playwright
+trace from run 1 onward, unread until the fifth: a `pageError` event reading *"Evaluating a string as
+JavaScript violates the following Content Security Policy directive because 'unsafe-eval' is not an
+allowed source of script: script-src 'self' 'nonce-…'..."* I should have pulled the trace's console/page
+errors on the first failing run rather than four rounds of plausible-but-wrong hypotheses — recording
+that as the actual lesson here, not just the finding. **Filed to S3** (`S6-02-S3-guest-tracking-realtime.md`,
+finding 0) **and S4** (`S6-02-S4-cash-confirmation-vat-label-login-hardening.md`, finding 0) — same line,
+same bug, two files to fix it in. Worked around in this suite only (`apps/e2e/fixtures.ts` strips the
+CSP header from the document response for its own Playwright contexts, via `context.route()` — no file
+outside `apps/e2e` touched), not fixed; the one-line `NODE_ENV` branch is S3/S4's to land.
 
 **1. HIGH — the guest tracking page never subscribes to realtime; it is poll-only (up to 15s stale).**
 `apps/web/components/order/TrackingClient.tsx` only runs a 15s `setInterval`; `grep -rn
@@ -1913,14 +1941,14 @@ orders compute VAT at 19% (`menu_items.vat_onsite_pct`) server-side — correctl
 reflects it. Verified by `checkout-pickup.spec.ts`: places a pickup order, reads `vat_onsite_pct` as the
 oracle, reads the rendered percentage, asserts a match — fails today. **Filed to S4** (same proposal, §2).
 
-**4. LOW — hardening: a cold-compile hydration race once put the back-office password in a URL.**
-`LoginForm.tsx`'s `onSubmit` correctly calls `e.preventDefault()` — the code is right — but the `<form>`
-has no `method`/`action`, so a click landing before React attaches the handler on a cold `next dev`
-compile falls through to a native GET submission. Observed once, live, in this boot's own first CI run:
-`/login?email=operator%40shosho.test&password=local-dev-only`. Low severity (narrow timing window, no
-real user clicks that fast) but a one-line `method="post"` closes it as defense in depth. **Filed to S4**
-(same proposal, §3); `apps/e2e/fixtures.ts`'s `signInBackoffice` now waits for `networkidle` and retries
-once on the symptom — a test-side mitigation, not the fix.
+**4. LOW — hardening: with no client JS running (finding 0), a login click once put the password in a
+URL.** `LoginForm.tsx`'s `onSubmit` correctly calls `e.preventDefault()` — the code is right — but the
+`<form>` has no `method`/`action`, so with no handler attached a click falls through to the browser's
+native submission, which for a method-less form is GET — every field, including the password, in the
+URL. Observed, live, in this boot's own CI runs:
+`/login?email=operator%40shosho.test&password=local-dev-only`. Low severity (finding 0 is the actual gate
+on reaching this, and a production build doesn't hit it), but a one-line `method="post"` closes it as
+defense in depth regardless of cause. **Filed to S4** (same proposal, §3).
 
 **5. LOW/INFO — `cancel_reason` is stored as whatever language the operator's UI happened to be in.**
 `CancelDialog.tsx` sends `reason: t(reason)` — the *translated label*, not a stable code. An operator
@@ -1930,32 +1958,31 @@ data-modeling smell. Verified by `apps/e2e/specs/cancellation-refund.spec.ts`. N
 small enough to fold into whichever S4 boot next touches cancellation.
 
 **6. CI/test-infrastructure findings from running the suite for real, fixed in `apps/e2e` itself (not
-product bugs, recorded because the next person maintaining this suite needs them):**
+product bugs, recorded because the next person maintaining this suite needs them) — the true cause of
+the whole failure cluster is finding 0 above; what follows is what I tried first, in order, before
+reading the trace properly, kept here because each one is a real, independent thing worth having fixed
+regardless, not because any of them explain what actually happened:**
 - `apps/web/lib/api-supabase.ts` wraps every Supabase call in `next: { revalidate: 60 }`, and Next.js
   honours that Data Cache setting in `next dev`, not only in production — S4-02's log only documented
   the staging-lag version of this; this boot's own CI run hit the identical 60s lag against a *local*
-  stack. `apps/e2e/specs/product-rules.spec.ts`'s "category hidden" test now polls through the window
-  instead of asserting once.
+  stack, independent of finding 0 (this one is a real Data Cache window, confirmed by the fix working).
+  `apps/e2e/specs/product-rules.spec.ts`'s "category hidden" test now polls through the window instead
+  of asserting once.
 - The realtime-broadcast re-check (`realtime-and-tracking.spec.ts`) initially used a naive
-  subscribe-then-change pattern and **missed the broadcast on its very first CI run** — an independent,
-  live reproduction of the exact race S2-03's `guest_realtime.test.ts` fix (task 8) exists for. Ported
-  their warm-up-nudge-until-observed pattern instead of a longer fixed wait.
-- The cookie consent bar (`CookieBanner.tsx`) never appeared against a fresh local seed in CI, hanging
-  every test that waited on its "OK" button for the full 90s test timeout. **Not root-caused**:
-  `settings.site.cookie_banner` is `true` in `seed.sql` and `settings_public_keys()` has included
-  `'site'` unchanged across every migration, so the data path looks correct by inspection; the same
-  banner appeared and dismissed normally when I drove live `shosho-staging` manually in a real browser
-  this same boot. Made the suite resilient (`dismissCookieBanner`: try briefly, proceed if absent)
-  rather than block on an unsolved mystery, and flagged the gap in the S3 proposal's context rather than
-  claiming a diagnosis I don't have.
-- `next dev` compiles each route lazily, on first hit — not at server start — and whichever test was
-  first to reach a given route (`/`, `/checkout`, `/orders`) ate that compile inside its own 15-90s
-  assertion timeout once the cookie-banner fix above stopped masking it (run 2: "Zone B" / the discount
-  row / the datetime-local input not appearing in time, "Place order" staying disabled for the full 90s
-  while `quote_order` never got a chance to resolve). Added a Playwright `globalSetup`
-  (`apps/e2e/global-setup.ts`) that fetches every route this suite drives once before any spec's own
-  timing-sensitive assertions start, so the compile cost is paid once at startup, not inside a test.
-- Finding #4 above (`signInBackoffice`'s login-form hydration race) was caught here too, in run 2.
+  subscribe-then-change pattern and **missed the broadcast on its very first CI run** — a real,
+  independent race, confirmed by `apps/backend/tests/guest_realtime.test.ts` existing specifically
+  because of it (S2-03 task 8) and by the fix working on every run since. Ported their
+  warm-up-nudge-until-observed pattern instead of a longer fixed wait.
+- A Playwright `globalSetup` (`apps/e2e/global-setup.ts`) that pre-warms every route this suite drives
+  (`next dev` compiles routes lazily, on first hit) — a real, legitimate thing to do regardless, but
+  **not** what was failing runs 2–4; kept because warming routes before a timing-sensitive suite starts
+  is good practice on its own.
+- `dismissCookieBanner`, the `addToCartFromHome` localStorage-polling helper, and `signInBackoffice`'s
+  retry loop were all built chasing timing theories (a cookie-banner race, a React
+  `useEffect`-scheduling race) that turned out to be **wrong** — none of them were the actual cause, and
+  none of them fixed anything on their own; what actually fixed the suite is finding 0's CSP workaround.
+  Left in place because they're harmless and mildly more robust regardless, but they should not be read
+  as "the fix" by whoever next touches this file — the CSP workaround is.
 
 ### Product rules (design/README's list), verified literally
 - **Guest checkout, no account; profile auto-created by phone** — ✅ verified (two `place_order` calls,

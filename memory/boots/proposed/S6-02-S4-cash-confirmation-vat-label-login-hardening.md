@@ -1,7 +1,37 @@
-# PROPOSAL (filed by S6-01 QA) — three back-office findings: cash confirmation, VAT label, login hardening
+# PROPOSAL (filed by S6-01 QA) — four back-office findings: CSP, cash confirmation, VAT label, login hardening
 
 ## Owner
 S4 Back-office (`apps/backoffice`).
+
+## 0. HIGH, filed first because it blocks local development, not just this boot — CSP has no `'unsafe-eval'` carve-out for `next dev`, so the back-office is 100% non-interactive under `pnpm dev`
+
+**What.** `apps/backoffice/lib/csp.ts`'s `contentSecurityPolicy()` sets
+`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'` — byte-for-byte the same line as
+`apps/web/lib/csp.ts`, no `'unsafe-eval'`, no `NODE_ENV` branch. `next dev`'s webpack HMR runtime
+evaluates chunks via `eval()`; a CSP without `'unsafe-eval'` blocks that outright, and the result is
+total, not partial: the page paints (server-rendered HTML looks complete) but no client JavaScript
+executes — no hydration, no event handlers. The login form's `onSubmit` never attaches, so a click on
+"Anmelden" falls through to the browser's native form submission (GET, password in the URL — see
+finding 3 below, which is a *symptom* of this, not a separate root cause).
+
+**How this was found.** A Playwright trace's own `pageError` event, captured on this PR's very first CI
+run but not read closely until the fifth: *"Evaluating a string as JavaScript violates the following
+Content Security Policy directive because 'unsafe-eval' is not an allowed source of script:
+script-src 'self' 'nonce-…'..."* Four intervening CI runs chased this as a timing problem (hydration
+races, a React effect scheduling race) and each fix was plausible and each one did nothing, which in
+hindsight is itself the tell — a real race gets better with retries and buffers; a hard CSP block
+doesn't. `next build`/`next start` (what the real deployment runs) doesn't use `eval()`, which is why
+this never showed up in production — the deployed back-office works correctly, confirmed independently
+in `memory/state.md`'s own 2026-10-07 entry ("the app's own `content-security-policy`... verified").
+
+**Where.** `apps/backoffice/lib/csp.ts`'s `contentSecurityPolicy()` — add `'unsafe-eval'` to `script-src`
+only when `process.env.NODE_ENV !== "production"` (`next build` sets it automatically; `next dev` does
+not), so the production CSP is unchanged. Companion proposal filed to S3 for the identical line in
+`apps/web/lib/csp.ts`.
+
+**Workaround in this suite, not a fix.** `apps/e2e/fixtures.ts` now strips the
+`Content-Security-Policy` header from the document response for its own Playwright contexts only
+(`context.route()`), touching no file outside `apps/e2e`. Safe to leave once the real fix lands.
 
 ## 1. MEDIUM/HIGH — the operator board never confirms cash, so a genuinely-collected cash order stays `pending`
 
@@ -58,25 +88,26 @@ asserts they match — fails today.
 
 **What.** `apps/backoffice/components/shell/LoginForm.tsx`'s `<form onSubmit={onSubmit}>` correctly
 calls `e.preventDefault()` as its first line — the code is right. But the `<form>` has no `method`/
-`action` attribute, so on a cold `next dev` compile (this boot's `e2e` CI job hits exactly that: a
-freshly-started dev server, first request), there's a real window between the SSR'd form painting and
-React attaching the handler. A click inside that window falls through to the browser's native
-submission, which for a method-less form defaults to GET — every field, **including the password**,
-lands in the URL. Observed once, live, in this boot's own CI run:
-`http://127.0.0.1:3102/login?email=operator%40shosho.test&password=local-dev-only`.
+`action` attribute, so on a page where client JS hasn't attached yet — finding 0 above is the dominant
+cause of that on this stack, but it isn't the only possible one, so this is still worth its own fix —
+there's a real window between the SSR'd form painting and React attaching the handler. A click inside
+that window falls through to the browser's native submission, which for a method-less form defaults to
+GET — every field, **including the password**, lands in the URL. Observed, live, in this boot's own CI
+run: `http://127.0.0.1:3102/login?email=operator%40shosho.test&password=local-dev-only`.
 
-**Severity judgment.** Low, not higher: it needs a timing window that's wide open on a cold dev-mode
-compile but narrows sharply on a production build, and no real user double-clicks within milliseconds
-of first paint. Flagging it as hardening, not an active exploit.
+**Severity judgment.** Low, not higher: in production (CSP's `unsafe-eval` block doesn't apply, per
+finding 0) the window is narrow, and no real user double-clicks within milliseconds of first paint.
+Flagging it as hardening, not an active exploit.
 
 **Suggested fix (one line, defense in depth).** Add `method="post" action="#"` (or equivalent) to the
 `<form>` so even a pre-hydration native submission fails safe (posts nowhere useful, no query-string
 leak) instead of leaking credentials into the URL, browser history and any access/referrer log that
 sees the next request.
 
-**Where it showed up.** `apps/e2e/fixtures.ts`'s `signInBackoffice` now waits for `networkidle` and
-retries once if the URL shows the leak pattern — a test-side mitigation, not a fix; the proposal above
-is the actual fix.
+**Where it showed up.** `apps/e2e/fixtures.ts`'s `signInBackoffice` waits for `networkidle` and retries
+on the leak pattern — a test-side mitigation, not a fix; the proposal above is the actual fix. Once
+finding 0 is fixed this should stop firing in local dev too, but the one-line hardening is still worth
+doing independently.
 
 ## Suggested `data-testid`
 None required for any of the three — all driven by existing accessible text/roles.

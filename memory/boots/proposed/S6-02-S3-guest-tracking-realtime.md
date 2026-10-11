@@ -1,7 +1,51 @@
-# PROPOSAL (filed by S6-01 QA) — wire the guest tracking page to the realtime broadcast it already has
+# PROPOSAL (filed by S6-01 QA) — two findings for S3
 
 ## Owner
 S3 Frontend (`apps/web`).
+
+## Finding 0 (HIGH, filed first because it blocks local development, not just this boot) —
+## CSP has no `'unsafe-eval'` carve-out for `next dev`, so the guest site is 100% non-interactive under `pnpm dev`
+
+**What.** `apps/web/lib/csp.ts`'s `contentSecurityPolicy()` sets
+`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'` — no `'unsafe-eval'`, no `NODE_ENV` branch.
+`next dev`'s webpack HMR runtime evaluates chunks via `eval()`; a CSP without `'unsafe-eval'` blocks
+that outright. The result isn't a partial degradation — it's total: the page paints (the initial HTML
+is server-rendered, so it looks complete) but **no client-side JavaScript executes**, which means no
+hydration, no event handlers, nothing. A click on any button physically lands (Chrome shows `:active`)
+and does precisely nothing.
+
+**How this was found, not guessed.** Four CI runs in a row (2–5 of this PR) chased this as if it were a
+timing problem — hydration races, `next dev`'s lazy route compilation, a React effect scheduling race —
+and fixed real, legitimate things along the way (a login-form hardening gap, a Data Cache window, an
+actually-flaky realtime test) without ever touching the real cause, because every one of those fixes was
+plausible and none of them worked even slightly. The actual answer was sitting in the Playwright trace
+the whole time: a `pageError` event reading *"Evaluating a string as JavaScript violates the following
+Content Security Policy directive because 'unsafe-eval' is not an allowed source of script:
+script-src 'self' 'nonce-…'..."* — captured on the very first failing run, not inspected until the fifth.
+Confirmed the mechanism, not just the symptom: `next build`/`next start` (what `shosho-staging` actually
+runs) does not use `eval()` by default, which is exactly why this was invisible there — verified live on
+staging in this same boot (cookie bar, add-to-cart, full checkout all worked normally).
+
+**Why it matters beyond this PR.** Anyone who runs `pnpm --filter @shosho/web dev` locally today — any
+future session, a new contributor, anyone debugging a guest-site bug — gets a site that looks fine and
+does nothing when clicked, with no console-visible explanation unless they think to check the CSP
+header specifically. That is a worse failure mode than an error page: it looks like a logic bug, not an
+infrastructure one.
+
+**Where.** `apps/web/lib/csp.ts`'s `contentSecurityPolicy()` — the standard fix is adding `'unsafe-eval'`
+to `script-src` only when `process.env.NODE_ENV !== "production"` (`next build` sets `NODE_ENV=production`
+automatically; `next dev` does not), so the production CSP this was written for is unchanged.
+`apps/backoffice/lib/csp.ts` has the byte-for-byte identical `script-src` line and almost certainly the
+same bug — filed in the matching S4 proposal rather than assumed to be S3's to fix on both apps.
+
+**Workaround in this suite, not a fix.** `apps/e2e/fixtures.ts`'s `webPage`/`boPage` fixtures now strip
+the `Content-Security-Policy` header from the document response via `context.route()`, scoped to this
+suite's own Playwright contexts only — it touches no file outside `apps/e2e` and changes nothing either
+app actually serves. Once the `NODE_ENV` branch lands, that workaround becomes unnecessary (not harmful
+to leave, since it only ever affects this suite's own browser contexts) — removing it is optional
+cleanup, not required.
+
+## Finding 1 — the guest tracking page's realtime gap
 
 ## What
 `apps/web/components/order/TrackingClient.tsx` only polls `get_order_by_token` every 15 seconds

@@ -21,15 +21,44 @@ type Fixtures = {
   signInBackoffice: (page: Page, role: StaffRole) => Promise<void>;
 };
 
+/**
+ * Root cause of every CI failure in this suite, found by reading the trace's own `pageError` events
+ * (see memory/log.md's S6-01 entry): both apps' CSP (`apps/web/lib/csp.ts` and
+ * `apps/backoffice/lib/csp.ts`) sets `script-src 'self' 'nonce-…' 'strict-dynamic'` with no
+ * `'unsafe-eval'` and no development-mode carve-out. `next dev`'s webpack HMR runtime evaluates chunks
+ * via `eval()`, which that CSP then blocks outright — every page load throws
+ * `EvalError: Content Security Policy... 'unsafe-eval' is not an allowed source`, and the app is 100%
+ * non-interactive: clicks land (`:active` fires, it's a real DOM click) but no handler ever runs,
+ * because the JS that would attach one never finished evaluating. `next build`/`next start` (what
+ * staging actually runs) doesn't use `eval()`, so this is invisible there — confirmed live on
+ * `shosho-staging` in this same boot. This is a real product bug (any local `pnpm dev` run of either
+ * app is broken this way, not just this CI job), filed as the top finding. Worked around here, not
+ * fixed — `apps/web`/`apps/backoffice` are outside this boot's boundary — by stripping the CSP header
+ * from the document response for the two dev servers this suite drives, which only removes a
+ * restriction `next dev` itself never needed until this policy was added.
+ */
+async function relaxDevCsp(context: import("@playwright/test").BrowserContext): Promise<void> {
+  await context.route("**/*", async (route) => {
+    if (route.request().resourceType() !== "document") return route.continue();
+    const response = await route.fetch();
+    const headers = response.headers();
+    delete headers["content-security-policy"];
+    delete headers["content-security-policy-report-only"];
+    await route.fulfill({ response, headers });
+  });
+}
+
 export const test = base.extend<Fixtures>({
   webPage: async ({ browser }, use) => {
     const context = await browser.newContext({ baseURL: WEB_URL });
+    await relaxDevCsp(context);
     const page = await context.newPage();
     await use(page);
     await context.close();
   },
   boPage: async ({ browser }, use) => {
     const context = await browser.newContext({ baseURL: BO_URL });
+    await relaxDevCsp(context);
     const page = await context.newPage();
     await use(page);
     await context.close();
