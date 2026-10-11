@@ -100,18 +100,20 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
  * Click the home page's "Add <item>" button `times` times and wait for the cart to actually register
  * it before returning — do not just click and immediately `goto("/checkout")`.
  *
- * apps/web/lib/cart.tsx persists to localStorage in a `useEffect` gated on `hydrated` — a passive effect
- * that runs *after* the render commits, not synchronously with the click. Four straight CI runs in this
- * boot showed the exact same symptom every time a test clicked "Add" and immediately `goto()`'d to
- * `/checkout`: the new page (a full navigation, so the whole React tree including CartProvider remounts)
- * showed "0 positions" — i.e. the navigation's own unload won the race against the effect's localStorage
- * write. Header.tsx's cart link carries `aria-label="Cart, ${count} items"`; waiting on that catches the
- * dispatch, and the extra settle buffer after it covers the effect's own async scheduling on top of that.
+ * apps/web/lib/cart.tsx persists to localStorage (key "shosho.cart.v1") in a `useEffect` gated on
+ * `hydrated` — a passive effect that runs *after* the render commits, not synchronously with the click.
+ * Every CI run in this boot that clicked "Add" and immediately `goto()`'d to `/checkout` (a full
+ * navigation, so the whole React tree including CartProvider remounts) showed "0 positions" — the
+ * navigation's own unload was winning the race against the effect's write. Polling `localStorage`
+ * directly is what actually proves the write landed — Header.tsx's own cart-count link turned out to be
+ * `md:hidden` (mobile-only; a wrong first attempt at this fix, caught by run 5 timing out waiting on an
+ * element that is never visible in this suite's desktop viewport, not by the write itself being slow).
  */
 export async function addToCartFromHome(page: Page, itemName: string, times = 1): Promise<void> {
   for (let i = 0; i < times; i++) {
     await page.getByRole("button", { name: `Add ${itemName}` }).click();
-    await expect(page.getByRole("link", { name: new RegExp(`Cart, ${i + 1} items?`) })).toBeVisible();
   }
-  await page.waitForTimeout(300); // let cart.tsx's persist effect (useEffect, async) actually flush
+  await expect
+    .poll(() => page.evaluate(() => { try { return (JSON.parse(localStorage.getItem("shosho.cart.v1") ?? "null")?.lines ?? []).reduce((n: number, l: { qty: number }) => n + l.qty, 0); } catch { return 0; } }))
+    .toBe(times);
 }
