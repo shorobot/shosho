@@ -131,3 +131,122 @@ The marker key is `erasure_request`, defined as `ERASURE_REQUEST_KIND` in
 "Bestellt am häufigsten" counts `order_items.name` (the snapshot column), which is correct, but it
 means two orders of the same item with different options collapse into one line. That is what the
 design shows and S4-03 keeps it. Recorded only so nobody reads the figure as option-level demand.
+
+---
+
+## From S4-04 (Website CMS + Marketing, 2026-10-11) — §8's first consumer
+
+§8 was written by S2 in S2-06 and had never been touched by a UI. Everything below is from building
+against it; items 16 and 17 are the two that actually shaped the screens, and 16 is the one worth
+S0's time.
+
+## 16. `resolve_segment` cannot produce the recipient pair the design asks for — and that is by design, which is the problem
+
+The Kampagne screen's headline is *"141 Empfänger · 118 mit Einwilligung · 23 ohne Push-Einwilligung
+werden übersprungen"*. Three numbers, and §8.2 can supply exactly one of them.
+
+`resolve_segment(segment, channel)` applies consent and `anonymised_at is null` **first and
+unconditionally**, so every row it returns is already consented. Asking it for the 141 is asking it
+to be looser, which is the single property it was built not to have ("a caller who forgets consent
+gets fewer rows, never more"). So:
+
+- **118** — yes, `rows.length` for the campaign's own channel.
+- **141** — impossible. No argument makes the function report the pre-consent match count.
+- **23** — impossible, because it is `141 − 118`.
+
+The only ways to get it are both bad: re-derive the segment client-side (a second implementation of
+exactly what §8.2 centralises — `tags`, `is_company`, `min/max_orders`, `min/max_days_silent`,
+`created_within_days` against `customer_stats`), or widen the function. S4-04 did neither. It shows
+the reachable count, the push/email/both split inside it (which the returned `has_*_consent` columns
+*do* support), and an expandable note saying the without-consent denominator is unavailable, with the
+total non-anonymised profile count as explicitly-different context.
+
+**Request — S4's preference, in order.** (a) A companion **counts-only** function that is allowed to
+be looser because it returns no identities:
+`resolve_segment_counts(segment) → { matched, consented_push, consented_email, consented_any }`,
+owner/operator only. It cannot leak a customer, it answers all three of the design's numbers, and the
+sending path still goes through `resolve_segment` — so "one implementation" is preserved where it
+matters (who gets contacted) and relaxed only where it does not (how many matched). (b) Leave §8.2
+alone and change the **design** copy to the reachable figure plus the channel split, which is what the
+screen ships today. (c) Do nothing — the screen is honest as it stands, and this is a nicety, not a
+blocker.
+S4 recommends (a) if S5 is going to need a dry-run count anyway, otherwise (b).
+
+## 17. `banners.draft` cannot express "clear this field", and a naive attempt breaks the whole publish
+
+`publish_site()` merges with `coalesce(draft->>'col', col)` per column, so a key that is absent **or
+JSON null** keeps the live value. There is therefore no way to spell "set this back to NULL".
+
+For text columns that is survivable: staging `""` publishes an empty string, which reads as absent.
+For the two **timestamptz** columns it is not. `(draft->>'valid_to')::timestamptz` on an empty string
+raises `invalid input syntax for type timestamp with time zone`, and because `publish_site()` is one
+statement per table, **that failure aborts the entire publish** — including every unrelated pending
+settings key and banner. One operator clearing one date would block the whole site's publish with a
+Postgres error.
+
+S4-04 defends against it from this side: `bannerDraftPatch()` (`lib/site.ts`) refuses to stage such a
+clear, returns it in `clears`, and the editor offers an explicit immediate write with the reason
+stated. Covered by a test. But the trap is still armed for the next consumer — a migration, a script,
+S5, or a future screen that writes `draft` directly.
+
+**Request:** make it unrepresentable rather than merely documented. Either (a) a sentinel the function
+understands — treat the JSON string `""` as NULL for the cast columns:
+`nullif(draft->>'valid_to','')::timestamptz` — which also makes text clears consistent; or (b) a
+`check` constraint on `banners.draft` refusing non-null non-timestamp values for those two keys, so a
+bad draft is rejected at write time instead of at publish time. (a) is one line and gains a
+capability; S4 recommends (a).
+
+## 18. §8.7's description of the `anon` column grant is slightly wrong, in the safe direction
+
+§8.7 says `anon`'s grant is "revoked and re-granted for exactly `(key, value, created_at,
+updated_at)`", which reads as though `select *` would return those four columns. **Measured against
+`shosho-staging` with the anon key: it returns `42501 permission denied for table settings`.** Column
+privileges do not satisfy `SELECT *`.
+
+Better than documented — the leak is closed twice over — but the consequence is real and undocumented:
+**every anon consumer must name its columns.** `apps/web/lib/api-supabase.ts:95` already does
+(`select("key, value")`), which is the only reason the storefront is unaffected; S4 checked rather
+than assumed. A future `apps/web` query written as `select("*")` would fail with a permission error
+that points at the table, not at the real cause.
+
+**Request:** one sentence in §8.7 stating that `anon` has no table-level SELECT on `settings` and must
+select named columns. Asserted in `apps/backoffice/tests/anonDraft.live.test.ts` so it cannot regress
+silently.
+
+## 19. `delivery_zones` has no `draft`, but the CMS screen is where zones are edited
+
+The design puts delivery zones on BO · Website, next to the banners and the publish button; §8.7 gave
+`draft` to `settings` and `banners` only. So on one screen, under one "unpublished changes" counter,
+zone edits are **live immediately** while everything around them is staged. (The S4-04 boot itself
+described zones as going "through `settings` keys, all into `draft`" — they are their own table.)
+
+S4-04 ships this honestly: the panel header and the zone dialog both say zone changes are not part of
+the draft and take effect at once, and `ZONES_ARE_STAGED = false` is a constant a test asserts so the
+copy and the behaviour cannot drift. Zones are also owner/**operator**-write, unlike `settings`
+(owner-only), so three different write rights meet on this screen.
+
+**Request:** a ruling, not necessarily a change. Either (a) accept it and record in §8.7 that zones
+are deliberately immediate — defensible, since a zone edit is operational (a courier cannot reach a
+street today) rather than editorial; or (b) add `draft jsonb` to `delivery_zones` and extend
+`publish_site()`, which makes the screen uniform at the cost of delaying an operational fix behind an
+owner's publish. S4 leans (a), and only notes that whichever it is should be written down, because
+the next person to read the screen will assume uniformity.
+
+## 20. `publish_site()`'s return shape differs from the `site_publications` row for the same facts
+
+The function returns `{ id, settings_keys, banner_ids }` at the top level; the row stores the same
+information nested under `summary`. Trivial, but it means two readers (`publishResult()` and
+`publicationSummary()` in `lib/site.ts`) for one concept. Not worth a migration on its own — worth
+folding into any future change to either.
+
+## 21. Not a request — three things §8 got right, recorded because they saved real work
+
+- **The required `channel` argument on `resolve_segment`.** Switching channel in the wizard
+  re-resolves, and the three channel cards derive their figures from one returned row set. A
+  one-argument version with channel folded into the segment jsonb would have let the preview and the
+  send disagree, and the bug would have shown up as "we messaged people who had opted out".
+- **`campaign_recipients` having no insert policy for any role.** It turned "Senden" from a judgement
+  call into a fact: this app *cannot* queue a send, so the disabled button is the truth rather than a
+  policy choice a later boot could quietly reverse.
+- **Seeding the four `automations` rows inactive.** The screen renders its four toggles on a fresh
+  project with no first-run special case.

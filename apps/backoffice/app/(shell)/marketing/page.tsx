@@ -1,7 +1,6 @@
-import { ComingSoon } from "@/components/shell/ComingSoon";
-import { requireRole } from "@/lib/auth";
+import { MarketingScreen } from "@/components/marketing/MarketingScreen";
 
-export default async function Page() {
-  await requireRole(["owner", "operator"]);
-  return <ComingSoon section="nav.marketing" />;
+// The gate and the store live in this segment's layout, so every /marketing* route shares them.
+export default function Page() {
+  return <MarketingScreen />;
 }

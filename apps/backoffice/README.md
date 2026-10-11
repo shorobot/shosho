@@ -80,7 +80,10 @@ Automation is a later boot.
 | `/menu/options` | owner, operator | shared option groups with usage counts; saving one warns how many items it changes |
 | `/customers` | owner, operator | Kunden: search from the first character (name / phone / e-mail / address), four segment tiles with live counts, sort on every stat column, tag filter, multi-select → bulk tag (one upsert + Rückgängig) and CSV export |
 | `/customers/[id]` | owner, operator | Profil: contacts, both addresses, kitchen note, GDPR consents with date + source, stats, most-ordered items, merged `customer_events` timeline, note / complaint / compensation, data export, erasure request |
-| `/website`, `/marketing`, `/reports`, `/settings` | owner, operator | "coming soon" placeholders (S4-04+) |
+| `/website` | owner, operator | Website (CMS): banners with slot + window, business data, opening hours, delivery zones, SEO / cookie banner / robots / maintenance, the unpublished-changes counter, `publish_site()` and the publication history. **Settings fields are owner-write; banners and zones are owner/operator; publishing is owner-only** |
+| `/marketing` | owner, operator | Marketing: KPIs, promo codes, campaigns list, automations, discount-rate chart |
+| `/marketing/campaign/[id]` | owner, operator | the Kampagne wizard (`new` or a campaign id): segment → recipients from `resolve_segment` → channel → DE/EN message → timing → review. Drafting and scheduling work; **"Senden" is disabled** (see below) |
+| `/reports`, `/settings` | owner, operator | "coming soon" placeholders (S4-05) |
 
 ## How the data flows
 
@@ -242,6 +245,157 @@ realtime subscription for the timeline).
   provider reaches `delivered`/`picked_up` with `payment_status` untouched. Until the owner's Stripe
   keys exist that is correct — the profile says so in a note rather than hiding or coercing it.
 
+## Website (CMS) — the draft/publish model (S4-04)
+
+**Read this before changing anything on `/website`.** The screen's whole job is that nothing reaches
+the storefront by accident, and the mechanism is easy to break invisibly.
+
+### What is staged and what is not
+
+| Edited here | Column | On save | Live when |
+|---|---|---|---|
+| business data, opening hours, SEO / switches | `settings.draft` | **full replacement** of what `value` would become | `publish_site()` |
+| banners | `banners.draft` | **partial patch** of the changed columns only | `publish_site()` |
+| delivery zones | — | written straight to `delivery_zones` | **immediately** |
+| deleting a banner | — | row delete | **immediately** |
+
+Zones are the one that surprises people: §8.7 added `draft` to `settings` and `banners` only, so
+`delivery_zones` has no staging column at all. The panel and its dialog both say so rather than
+letting an operator assume a zone edit is waiting for a publish. (The S4-04 boot described zones as
+going "through `settings` keys, all into `draft`" — they do not; that is in the contract request.)
+
+### The counter
+
+`pendingChanges()` (lib/site.ts) counts rows with a non-null `draft` — the exact predicate
+`publish_site()` uses to decide what to copy. They cannot drift, because neither is an estimate.
+Saving a value identical to the live one writes `draft = null`, so an edit-and-undo does not leave a
+phantom pending change.
+
+### `anon` must never see a `draft`
+
+The protection is a **column-level GRANT**, not RLS. `settings_public_read` already admits `anon` to
+the `business` / `opening_hours` / `site` / `payments.enabled` / `kitchen.status` *rows*, and RLS is
+row-level — it cannot hide one column inside a row it lets through. Migration 32 revokes `anon`'s
+table grant on `settings` and re-grants exactly `(key, value, created_at, updated_at)`.
+
+Do **not** add a view, an RPC or a `select *` that routes `draft` back to an anon-reachable surface.
+Two tests hold this in place:
+
+- `tests/site.test.ts` — the structural half, always runs: the column lists, and `leaksDraft()`
+  refusing both `draft` and `*`.
+- `tests/anonDraft.live.test.ts` — the behavioural half, against a real project with the anon key.
+  It picks up `.env.local` automatically, and **skips with a printed reason** when there is no project
+  (which is why `node (backoffice)` in CI runs the structural half only).
+
+**Measured and worth knowing:** `anon` doing `select *` on `settings` gets `42501 permission denied
+for table settings`, not a four-column row. Column privileges do not satisfy `SELECT *`, so the
+revoke closed it twice over — but it also means **any anon consumer must name its columns**.
+`apps/web/lib/api-supabase.ts` already does (`select("key, value")`), which is why the storefront is
+unaffected; a future one that writes `select("*")` will get a confusing permission error. §8.7 reads
+as though the four columns would come back, so this is in the contract request.
+
+### Two traps the banner editor defends against
+
+1. **A draft cannot clear a date.** `publish_site()` casts `(draft->>'valid_to')::timestamptz`; a
+   JSON null means "keep the live value", and an empty string would raise *at publish time* and fail
+   the whole publish — including every unrelated pending change. So `bannerDraftPatch()` refuses to
+   stage such a clear, returns it in `clears`, and the editor offers an explicit immediate write with
+   the reason. Text fields are different: a clear is staged as `""`, which publishes as an empty
+   string and reads as absent.
+2. **A replaced banner image keeps the old object.** The menu's photo editor deletes the replaced
+   object at once, which is right there because the row is written at once. Here the live site still
+   serves the old `image_path` until publish, so deleting it would break the storefront with an
+   unpublished edit. The orphan is stated in the UI and listed under Known gaps.
+
+A **new** banner is inserted with `active = false` and all of its content in `draft`: the row exists
+(so an image can be uploaded under its id) but `banners_live` filters it out, and publishing merges
+the content and flips `active`.
+
+### Why a banner is or is not showing
+
+The panel lists every banner with its state — **LIVE / GEPLANT / ABGELAUFEN / INAKTIV** and the
+reason in words — and next to it exactly what `banners_live` returns right now. `banners_live` is
+`active and in-window`, so a row present in the first list and absent from the second has its answer
+in its own badge. The states come from the **live** columns, because that is what the view reads: a
+staged `active: true` shows as a draft, not as live.
+
+### Verifying a publish by hand
+
+```bash
+# 1. as owner, stage something and watch the counter move, then publish
+# 2. the storefront's own credential must still see the OLD value while it is pending:
+pnpm --filter @shosho/backoffice test   # tests/anonDraft.live.test.ts does exactly this
+```
+The full S4-04 staging walk-through (63 checks: stage → counter → anon-invisible → publish →
+`site_publications` → storefront sees it → clean up) is recorded in `/memory/log.md`.
+
+## Marketing (S4-04)
+
+### The recipient count and the send are one call
+
+Every recipient figure in the wizard comes from `rpc('resolve_segment', { p_segment, p_channel })`
+with the campaign's **own** channel. §8.2 made `channel` a required argument so that "I forgot to say
+which channel" is a syntax error rather than a silently too-broad answer, and so the count and a
+future send resolve the same eligible set. Switching channel re-resolves; the per-channel figures on
+the three channel cards are derived from the **same** returned rows, so comparing channels can never
+show two numbers produced by two different queries.
+
+Consent and `anonymised_at is null` are enforced *inside* the function, unconditionally. The screen
+never re-implements a segment filter client-side.
+
+**What the wizard therefore cannot show, and says so.** The design asks for "141 Empfänger · 118 mit
+Einwilligung". `resolve_segment` applies consent first and never returns more rows, so the 141 does
+not exist in any answer it can give — and re-deriving the segment in the browser would be the second
+implementation §8.2 exists to prevent. The panel shows the reachable count, the push/email/both split
+inside it, and an expandable note stating that the without-consent denominator is unavailable and
+why, with the total customer-profile count as context (explicitly a different denominator). This is
+the main item in the contract request.
+
+### Nothing can send, and the screen says which piece is missing
+
+"Senden" is **disabled on every channel**, with a tooltip naming each blocker:
+
+| Blocker | Why |
+|---|---|
+| `no_sender` | S5 Automation has never started. `claim_campaign_recipients` is service_role-only (§8.3) and has no worker, so nothing drains `campaign_recipients`. |
+| `no_push_store` | There is no push subscription store anywhere in the repo (D-016) — a push campaign has no address to send to even once a sender exists. |
+| `no_smtp` | D-017: Supabase's built-in relay caps at 2 e-mails/hour project-wide, so e-mail waits for the owner's SMTP provider. |
+
+On top of that, `campaign_recipients` has **no insert policy for any role** (§8.1), so this app could
+not create the rows a send needs even if it tried. Drafting and scheduling are real and are saved —
+`scheduled_for` records intent on a row S5 will read. A button that queued into nothing would be
+worse than a disabled one.
+
+The same rule governs automations: the toggle stores intent in `automations.active`, nothing runs
+them, and the panel says that rather than implying a switch that starts sending. The weekly cap is
+attributed where it lives — `campaign_recipients_enforce_weekly_cap()`, a `before insert` trigger,
+not a rule in this UI.
+
+### KPIs: a number, or a stated reason
+
+Three of the four tiles are real, from `orders` over the last 30 days (promo revenue, codes redeemed,
+discount rate as the share of completed orders carrying a discount — which is what the design's own
+caption says). **Push open rate has no source at all** and renders as "nicht messbar" with the
+reason, because `campaigns.stats` is only ever written by a sender. A `0 %` there would be a claim
+about the marketing; the truth is that nothing has ever been sent. It becomes real the moment S5
+ships, with no UI change.
+
+The same rule runs through the screen: campaign stat columns show "—" rather than 0, a weekday with
+no completed orders gets no bar rather than a 0 % one, and "Bester Zeitpunkt" is offered but marked
+unavailable (it needs open rates from past campaigns).
+
+## A write that changed nothing is not a write that succeeded
+
+`lib/write.ts`'s `wrote()` is on every write on both screens, and it exists because of a measured
+behaviour: a PATCH the row policy does not admit comes back `{ data: [], error: null }` — RLS filters
+rows, it does not raise. `run()` only reports `error`, so without this check the screen would show a
+success toast for a save that never happened. Confirmed on staging during S4-04: an **operator**
+updating `settings` (owner-write) and a **kitchen** session updating `banners` both return `[]` with
+no error. Every write therefore asks for `.select(...)` back and checks it.
+
+This is also why the **route guards are what hold** and the RLS is the backstop, and why
+`tests/guards.test.ts` tests the real page and layout modules rather than only the policies.
+
 ## End-to-end smoke
 
 `e2e/smoke.spec.ts` signs in with the seed logins and checks the board, the DE/EN toggle, role
@@ -312,4 +466,22 @@ machine — the forwarded port only serves the app itself.
   CTA would be a button that does nothing.
 - Single-customer GDPR erasure is a filed request, not an execution — see above.
 - XLSX export is a later boot; CSV is client-side.
-- Gaps found in §6 are written up in `/memory/boots/proposed/S4-contract-request.md`.
+- Replacing a banner image leaves the previous object in the `site` bucket until someone removes it by
+  hand. Deliberate: the live storefront still serves the old path until the draft is published, so
+  deleting it would break the site with an unpublished edit. Deleting the banner itself does remove
+  its current object.
+- A banner date cannot be cleared through a draft — the editor says so and offers an immediate write
+  instead. See the publish-model section for the cast that makes this necessary.
+- Banner drag-sort is a number field (`Sortierung`), not drag-and-drop as in the canvas. The ordering
+  it produces is the same; the gesture is not.
+- The campaign wizard cannot state how many customers a segment would match **without** the consent
+  filter — `resolve_segment` cannot report it and re-deriving the segment client-side would be a
+  second implementation of the thing §8.2 centralises. Contract request filed.
+- No test send and no "send to myself" — both need a sender.
+- `/website`'s right column shows the publication history; the canvas also has a live storefront
+  preview iframe. Not built: the storefront has no preview-of-a-draft mode, and an iframe of the
+  published site next to a staged edit would show the wrong thing with no way to tell.
+- The nav still marks **Kunden** as `SOON` even though S4-03 shipped it. Left alone on purpose: S6-01
+  (QA) is running against the shell right now and the boot fenced off nav edits beyond the two routes
+  this boot flips. One word, whoever touches the nav next.
+- Gaps found in §6 and §8 are written up in `/memory/boots/proposed/S4-contract-request.md`.
