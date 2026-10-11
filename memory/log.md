@@ -1848,3 +1848,223 @@ S6-01 opened PR #77 while I was recording D-018, and it changes the plan three o
 **S2 and S3 still wait, and that is still right.** S2's throttling work (D-018) lands in `place_order`, and S3's guest-site work lands in the checkout and tracking flows — both are precisely where S6's specs point, so moving them now would force S6 to re-baseline specs they have not yet got to pass once.
 
 **S7-02's shape, since the two filed findings turned out to be one question.** Both come from `orders_kitchen_read` being role-only with no row restriction — `using (public.is_staff('kitchen'))`, every order for all time, in pointed contrast to `orders_driver_read` two lines below it being bounded by `driver_id = auth.uid()`. Finding A (mine, from reviewing S2-06) is that a `security_invoker` view inherits the caller's RLS on every join, so a report view joining `orders` would have handed kitchen every order's payment data; Finding B (S4's) is that a kitchen write no-ops silently, leaving the app's route guard as the real control. So the boot asks one question — how far does kitchen actually reach — and demands it be answered **with a kitchen token rather than by reading policy text**, since reading the SQL is how both of these were missed for weeks. I also folded in the forward-looking check from the customer-accounts roadmap: re-run the `security_audit_*` matrix with a **non-staff authenticated JWT**, which needs no new feature to exist and turns "safe by construction" into something actually tested before D-016's accounts make `authenticated` stop meaning "staff".
+## 2026-10-10 — S6 QA — S6-01
+First independent end-to-end pass across `apps/web` + `apps/backoffice` + `apps/backend`. Shipped
+`apps/e2e` (new workspace package, `@shosho/e2e`): 33 Playwright specs in 12 files driving both Next
+apps together against one Supabase — something neither `apps/web/e2e` (mock API, single app) nor
+`apps/backoffice/e2e` (real Supabase, single app) could express. New `e2e` CI job (local Supabase, no
+Stripe/staging dependency), deliberately **not** added to the required `ci` gate's `needs` list pending
+a stability track record — S3/S4 kept their own Playwright smoke out of the required check for the same
+reason. PR `s6-01` → `main` (#77). Full architecture rationale and the local/staging run recipes are in
+`apps/e2e/README.md`.
+
+**Environment, stated plainly rather than worked around indefinitely.** This machine (the same Mac
+S3/S4 already flagged) cannot run any of this itself: `colima start` fails before Docker even comes up
+(`qemu-img not found`), and `pnpm exec playwright install chromium` fails outright (confirmed, matching
+S3/S4's own notes). The suite was written and typechecked blind, then validated for real by opening the
+PR and watching CI's new `e2e` job — which has what this sandbox doesn't. **First real run: 13 passed,
+18 failed**, every failure a genuine bug either in the suite or a real product gap (none were
+environment noise). Root-caused and fixed what was mine to fix; a second run's result is below.
+
+**Two corrections to S0's entry above, written while this PR had no `memory/` content yet — both fair
+reads at the time, both worth setting straight now that the traces are in.** (1) The `toomanyrequests`
+Docker Hub pull-rate line is real but not fatal: it hit `supabase/kong`/`storage-api`, logged
+`Retrying after 4s`, and the pull then succeeded — the same run's `backend` job pulls the identical
+images the same way and passed clean, and every failure's own Playwright snapshot (`error-context.md`,
+downloaded from the run's artifact) shows the **full real catalog** rendering correctly — 14 seeded
+items, real prices, real footer business data — which only happens if local Supabase came up and
+answered every query. The actual cause, traced through the same snapshots rather than inferred from the
+summary line, is in Findings #6 below: a cookie banner that never appeared against a fresh seed, a
+`next dev` cold-compile cost nothing had warmed, and a login-form hydration race. (2) The PR body's
+"findings are in `log.md`" line was true of my intent, not yet of the branch, at the moment S0 read
+it — fair to flag, and noted for next time: finish writing before describing something as written.
+
+### Ranked findings
+
+**1. HIGH — the guest tracking page never subscribes to realtime; it is poll-only (up to 15s stale).**
+`apps/web/components/order/TrackingClient.tsx` only runs a 15s `setInterval`; `grep -rn
+"\.channel(\|realtime\|removeChannel\|order_updated" apps/web` returns zero hits anywhere in the app, on
+current `main`. But api-contracts §3/§5.6 documents the opposite: the client is meant to subscribe to
+`order:<token>` broadcasts with the 15s poll as a *fallback*, and S2-02 built and tested the DB side for
+exactly that (`apps/backend/tests/guest_realtime.test.ts`). Confirmed two ways, not just by reading
+source: (a) `apps/e2e/specs/checkout-delivery.spec.ts` leaves the tracking tab open across an operator
+action and watches it directly — "Order accepted" does not appear within a 6s bound; (b) live on
+`shosho-staging`, 2026-10-10, I placed a real order (#1004,
+`https://shos.hellfiresol.com/order/d8b4394fd1cd3042009a47b78df3d1e0`) and its tracking page's own
+footer copy says *"This page refreshes every 15 seconds"* — stated as the intended design, not
+discovered as an accident. **Filed to S3** (`S6-02-S3-guest-tracking-realtime.md`).
+
+**2. MEDIUM/HIGH — the operator board never confirms cash; a genuinely-collected cash order stays
+`pending` forever.** `apps/backoffice/components/orders/OrderCard.tsx`'s generic action button sends no
+payload for `delivered`/`handed_out` (no `dialog` entry for either in `lib/orders.ts`'s `actionsFor`),
+and `coalesce((payload->>'cash_received')::boolean, false)` (unchanged by S2-04's payment-trust-boundary
+rewrite) treats "absent" exactly like "no". `apps/backoffice/components/driver/DriverBoard.tsx` gets
+this right (`cash_received: order.payment_method === "cash"`), but **pickup orders have no driver role
+at all** — the board's buggy generic button is the *only* real UI path to complete a pickup order, cash
+or not. Directly contradicts api-contracts §6.8 ("the driver **or the operator on their behalf**
+confirms"). Verified by `apps/e2e/specs/checkout-pickup.spec.ts`: a cash pickup order, driven to
+`FERTIG` and clicked "Ausgegeben" through the real board, lands `payment_status: pending` with a spurious
+`cash_not_received` note. **Filed to S4** (`S6-02-S4-cash-confirmation-vat-label-login-hardening.md §1`).
+
+**3. MEDIUM — back-office order detail shows a hardcoded "7% VAT" regardless of order type.**
+`apps/backoffice/components/detail/OrderDetail.tsx:176` + i18n key `detail.vat`
+(`apps/backoffice/lib/i18n.tsx:240,1038`) are literally `"incl. 7% VAT {v}"` in both languages. Pickup
+orders compute VAT at 19% (`menu_items.vat_onsite_pct`) server-side — correctly — but the label never
+reflects it. Verified by `checkout-pickup.spec.ts`: places a pickup order, reads `vat_onsite_pct` as the
+oracle, reads the rendered percentage, asserts a match — fails today. **Filed to S4** (same proposal, §2).
+
+**4. LOW — hardening: a cold-compile hydration race once put the back-office password in a URL.**
+`LoginForm.tsx`'s `onSubmit` correctly calls `e.preventDefault()` — the code is right — but the `<form>`
+has no `method`/`action`, so a click landing before React attaches the handler on a cold `next dev`
+compile falls through to a native GET submission. Observed once, live, in this boot's own first CI run:
+`/login?email=operator%40shosho.test&password=local-dev-only`. Low severity (narrow timing window, no
+real user clicks that fast) but a one-line `method="post"` closes it as defense in depth. **Filed to S4**
+(same proposal, §3); `apps/e2e/fixtures.ts`'s `signInBackoffice` now waits for `networkidle` and retries
+once on the symptom — a test-side mitigation, not the fix.
+
+**5. LOW/INFO — `cancel_reason` is stored as whatever language the operator's UI happened to be in.**
+`CancelDialog.tsx` sends `reason: t(reason)` — the *translated label*, not a stable code. An operator
+cancelling in DE writes a German sentence into a column every other surface (CSV export, an EN-toggled
+detail view, reports) will render verbatim, forever, in German. Not a crash or money bug; a real
+data-modeling smell. Verified by `apps/e2e/specs/cancellation-refund.spec.ts`. Not separately filed —
+small enough to fold into whichever S4 boot next touches cancellation.
+
+**6. CI/test-infrastructure findings from running the suite for real, fixed in `apps/e2e` itself (not
+product bugs, recorded because the next person maintaining this suite needs them):**
+- `apps/web/lib/api-supabase.ts` wraps every Supabase call in `next: { revalidate: 60 }`, and Next.js
+  honours that Data Cache setting in `next dev`, not only in production — S4-02's log only documented
+  the staging-lag version of this; this boot's own CI run hit the identical 60s lag against a *local*
+  stack. `apps/e2e/specs/product-rules.spec.ts`'s "category hidden" test now polls through the window
+  instead of asserting once.
+- The realtime-broadcast re-check (`realtime-and-tracking.spec.ts`) initially used a naive
+  subscribe-then-change pattern and **missed the broadcast on its very first CI run** — an independent,
+  live reproduction of the exact race S2-03's `guest_realtime.test.ts` fix (task 8) exists for. Ported
+  their warm-up-nudge-until-observed pattern instead of a longer fixed wait.
+- The cookie consent bar (`CookieBanner.tsx`) never appeared against a fresh local seed in CI, hanging
+  every test that waited on its "OK" button for the full 90s test timeout. **Not root-caused**:
+  `settings.site.cookie_banner` is `true` in `seed.sql` and `settings_public_keys()` has included
+  `'site'` unchanged across every migration, so the data path looks correct by inspection; the same
+  banner appeared and dismissed normally when I drove live `shosho-staging` manually in a real browser
+  this same boot. Made the suite resilient (`dismissCookieBanner`: try briefly, proceed if absent)
+  rather than block on an unsolved mystery, and flagged the gap in the S3 proposal's context rather than
+  claiming a diagnosis I don't have.
+- `next dev` compiles each route lazily, on first hit — not at server start — and whichever test was
+  first to reach a given route (`/`, `/checkout`, `/orders`) ate that compile inside its own 15-90s
+  assertion timeout once the cookie-banner fix above stopped masking it (run 2: "Zone B" / the discount
+  row / the datetime-local input not appearing in time, "Place order" staying disabled for the full 90s
+  while `quote_order` never got a chance to resolve). Added a Playwright `globalSetup`
+  (`apps/e2e/global-setup.ts`) that fetches every route this suite drives once before any spec's own
+  timing-sensitive assertions start, so the compile cost is paid once at startup, not inside a test.
+- Finding #4 above (`signInBackoffice`'s login-form hydration race) was caught here too, in run 2.
+
+### Product rules (design/README's list), verified literally
+- **Guest checkout, no account; profile auto-created by phone** — ✅ verified (two `place_order` calls,
+  same phone, same customer, matched by phone — `product-rules.spec.ts`).
+- **Delivery vs pickup; pickup −10%; free delivery over 35€** — ✅ verified, both via direct `quote_order`
+  probes and live on staging (placed a real pickup order: 13.50€ → 12.15€, exactly −10%).
+- **Pre-orders up to 7 days ahead** — ✅ verified through the real checkout UI (`preorder.spec.ts`) and
+  server-side rejection past the 7-day window (`closed/slot_too_far`). The DST-transition sub-case
+  (Europe/Berlin, 2026-10-25) is **not reachable** from this run's date through the UI's own 7-day
+  window — documented `test.skip` with the reason, not faked.
+- **Order lifecycle, every transition a timeline event with an actor** — ✅ verified
+  (`order_events.actor_type` present on every row after a real transition).
+- **Payment captured on delivery confirmation; cash requires driver (or operator) confirmation** — ✅ the
+  capture-on-completion rule holds; the "or operator" half is finding #2 above — a real gap, not
+  confirmed.
+- **Auto-accept only paid orders under 50€** — ✅ now independently testable (it wasn't when this boot
+  was issued): S2-04 closed the guest exploit (re-verified — see below) and the **only** reachable
+  "genuinely paid" path on a stack with no Stripe keys is the audited staff-recorded-paid phone order,
+  which does auto-accept exactly as migration `20260928000025` says. The Stripe-webhook half of this
+  rule stays unverifiable — no Stripe account exists on this stack, stated as a reason, not assumed true.
+- **Stoplist resets at midnight** — unverifiable by a timed E2E run without moving the shared stack's
+  clock; verified by code inspection instead (`menu_item_on_sale()` is a pure date compare, nothing to
+  race).
+- **Category hidden when empty** — ✅ verified (see the Data Cache note above for why the test needed a
+  poll, not a single check).
+- **Allergy note propagates to every order card; allergens A–N** — ✅ both verified.
+- **VAT 7% delivery / 19% on-site** — the *computation* is correct (verified: a pickup order's
+  `vat_cents` matches `vat_onsite_pct`); the *display* is finding #3, a real gap.
+- **Marketing only with recorded consent** — ✅ now testable (it wasn't at issue time): S2-06 shipped
+  `resolve_segment`, which filters by `consent_email`/`consent_push` **unconditionally, before any
+  caller-supplied segment filter runs** — verified with two planted customers, one consented one not,
+  both explicitly named in the segment: only the consented one comes back. The "max one automated action
+  per customer per week" clause is **not verified** — no send pipeline exists yet to test it against.
+- **Sequential order numbers** — ✅ verified twice: a direct RPC comparison, and live on staging (placed
+  two real orders during this boot, #1004 and #1005, strictly increasing).
+
+### Re-verification (task 4) — agreement and gaps both reported
+- **S4-01 "order #1000 driven new→picked_up"** — **could not independently re-check.** No staff/DB
+  lookup-by-number exists on the guest side, and I don't hold #1000's tracking token or (per the
+  password rotation, correctly) a staff login for staging. Stated as unverifiable, not assumed true.
+- **S4-02 staging walkthrough cleanup** — **verified independently**, live: the storefront shows exactly
+  the 14 seeded items, no leftover `S4-02` test category or item.
+- **S3-01 "cart totals come only from `quote_order`"** — **verified independently**, two ways: read
+  `place_order`'s current SQL (total/discount/VAT/fee are always server-recomputed; S2-04 additionally
+  closed the one field — `payment_status` — that used to be trusted from the client, re-verified by a
+  fresh anon client sending `payment_status: 'authorized'` and getting `order_rejected` /
+  `invalid_input`, not a coerced order); and a real order placed through the live UI on staging whose
+  total matched the server-computed pickup discount exactly.
+- **S2-03/S2-06 report views returning correct numbers** — **not independently re-verified.** No local
+  stack to generate controlled data, and staging write access was limited to the two real guest orders
+  placed manually (not enough volume to meaningfully cross-check `report_revenue_by_day` et al.). Stated
+  as not done, with the reason, rather than assumed fine.
+- **S7-01 authorisation matrix, two spot checks with a real anon key / real seed JWT** —
+  `apps/e2e/specs/auth-matrix-spotcheck.spec.ts`: anon calling `set_order_status` directly is refused
+  outright (no EXECUTE grant, migration 18); `kitchen` calling `update_order_items` gets
+  `forbidden_for_role` (api-contracts §6.8). Both from outside the backend's own test harness, as asked.
+
+### Flaky test — `apps/backend/tests/guest_realtime.test.ts`
+Could not run locally (no Docker on this machine — see Environment above). Added a real measurement
+instead of leaving the gap: a new CI step (`e2e` job, "Flake rate — guest_realtime.test.ts (N=25)") runs
+it 25 times against the same local stack the `e2e` job already starts, via a small script
+(`apps/e2e/scripts/flake-guest-realtime.mjs`) — informational, never fails the job. Reviewed S2-03's
+fix itself (task 8): it replaced a single fixed-wait assertion on whatever message arrived first with a
+warm-up loop that nudges the order until a message is actually *observed*, then performs the real
+assertion — a real signal instead of trusting `SUBSCRIBED`. That the underlying race is real, not
+theoretical, is independently corroborated by this boot's own `realtime-and-tracking.spec.ts`, whose
+much simpler, un-fixed version of the same subscribe-then-change pattern missed the broadcast on its
+first live run (see finding #6). **Numbers from the CI run (run 38130011010, 2026-10-11): 25/25
+passed (100.0%)**, each run individually fast (the whole 25-run loop completed in under a minute).
+**Verdict: not flaky as of this fix — do not quarantine.** The original failure ("failed three unrelated
+PRs, passed on re-run every time") is consistent with exactly the race S2-03's fix targets, and 25/25
+here is a real measurement, not a restatement of confidence in the fix. Re-run this number if the test
+ever changes, rather than assuming today's 100% holds forever.
+
+### Suite status
+Three real CI runs so far, each root-causing and fixing a genuine, distinct issue rather than retrying
+blind: **run 1** 13 passed/18 failed (cookie banner never appearing against a fresh local seed, masking
+everything behind it); **run 2** 15 passed/16 failed (same banner fixed, which uncovered `next dev`'s
+lazy per-route compile cost and the login hydration race underneath it); **run 3** 15 passed/16 failed,
+**unchanged count but a different, better-understood cause**: `networkidle` turned out not to be a
+strong enough hydration signal under this runner's load — the home page's "Add" button and the
+back-office login form can both still receive a click before React has attached a handler, visible as
+an empty cart (not a missing route compile) and a repeat of the GET-submission race on more than one
+attempt. Fixed both with a settle buffer + (for login) a bounded retry loop rather than a single retry.
+**This fix has not yet had a CI run to confirm it** — pushed alongside this log entry; if a further run
+is still needed after this report is otherwise complete, it will be a follow-up commit on this same PR,
+not a new session's problem to inherit. The flaky-test fix (above) and the Data Cache / realtime fixes
+from runs 1–2 are confirmed holding in run 3 (both relevant tests pass cleanly there).
+
+### What I could not test, and why
+- Stripe/payment-provider paths (capture, void, webhook-driven `authorized`→`paid`) — no Stripe account
+  exists on this stack; every spec in this suite deliberately uses cash or a staff-recorded-paid phone
+  order instead.
+- Report views (§6.10) cross-checked against controlled data — no local stack, limited staging writes
+  (see re-verification above).
+- S4-01's order #1000's current status — no lookup path available without staff/DB access.
+- Back-office UI, live, beyond what source-reading + the CI-run suite covers — the staging staff
+  password is rotated (owner, 2026-10-09; confirmed live — `shosho-test-2026` now refused on all four
+  accounts) and I was not given the new value, consistent with the boot's own boundary.
+
+### Boundaries respected
+No file outside `apps/e2e` and `/memory` touched except the CI workflow (`apps/infra/.github/workflows`
++ synced copy) and `.gitignore` (Playwright artifact patterns) — both explicitly allowed by task 6. No
+service-role key anywhere in `apps/e2e` (the `db` fixture is a real signed-in `owner` session, not
+`service_role` — RLS guards every setup/assertion step exactly as it would a human). Did not reseed,
+truncate or touch staging beyond two guest orders placed through the real UI, both harmless
+(contact names clearly marked `E2E`/`S6 QA`, 12–13€, cash, never collected) and left in place — I hold
+no staff credential to cancel them, which is itself worth noting rather than silently leaving undone.
+
+Worktree note: the harness placed this session in `.claude/worktrees/gracious-gauss-592c7a` /
+branch `tetakta/gracious-gauss-592c7a`, not `.worktrees/s6`/`s6-01` per D-008's own convention — worked
+here rather than risk a second worktree from inside this one; PR branch is `s6-01` regardless.

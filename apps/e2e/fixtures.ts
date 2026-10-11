@@ -46,23 +46,25 @@ export const test = base.extend<Fixtures>({
   signInBackoffice: async ({}, use) => {
     await use(async (page, role) => {
       // LoginForm.tsx's <form onSubmit={...}> does call e.preventDefault() first thing — correct code —
-      // but on a cold `next dev` compile (every CI run's first hit) there's a real window between the
-      // SSR'd <form> painting and React attaching that handler. A click inside that window falls through
-      // to the browser's native submission, which for a method-less form is GET: every field, including
-      // the password, lands in the URL (`/login?email=...&password=...`) — seen once in this boot's own
-      // CI run. Wait out hydration, then retry once if the symptom still shows (defense in depth, not
-      // a claim this is likely in production — see the S6-02-S4 proposal for the one-line hardening fix).
-      async function attempt() {
+      // but under this CI runner's load (two `next dev` servers + local Supabase + the browser, all on
+      // one box) there's a real, repeatable window between the SSR'd <form> painting and React actually
+      // attaching that handler — `networkidle` (no network activity) is not the same guarantee as
+      // "hydrated" (JS parsed and executed), and this boot's own CI runs hit the gap on more than one
+      // attempt. A click inside that window falls through to the browser's native submission, which for
+      // a method-less form is GET: every field, including the password, lands in the URL
+      // (`/login?email=...&password=...`) — the S6-02-S4 proposal has the one-line product fix. Retry a
+      // few times with a short settle delay rather than once — this is a timing race, not a one-off.
+      for (let i = 0; i < 4; i++) {
         await page.goto("/login");
         await page.waitForLoadState("networkidle");
+        await page.waitForTimeout(500); // settle buffer past "network idle" ≠ "hydrated"
         await page.getByLabel("E-Mail").fill(STAFF[role].email);
         await page.getByLabel("Passwort").fill(PASSWORD);
         await page.getByRole("button", { name: "Anmelden" }).click();
+        await page.waitForTimeout(300);
+        if (!page.url().includes("?email=")) return;
       }
-      await attempt();
-      if (page.url().includes("?email=")) {
-        await attempt();
-      }
+      throw new Error(`signInBackoffice(${role}): still hitting the login-form GET-submission race after 4 attempts`);
     });
   },
 });
@@ -71,18 +73,20 @@ export { expect } from "@playwright/test";
 export { STAFF, type StaffRole } from "./helpers/db";
 
 /**
- * Dismiss the cookie consent bar (apps/web/components/site/CookieBanner.tsx) if it shows, without
- * hard-failing the test if it doesn't.
+ * Call right after every `webPage.goto("/…")`, before the first click: waits for the page to actually
+ * be interactive, then dismisses the cookie consent bar if it shows.
  *
- * CI finding, not yet root-caused (see memory/log.md's S6-01 entry): against a FRESH local Supabase
- * seed in the `e2e` CI job, the banner never appeared at all — `settings.site.cookie_banner` is `true`
- * in seed.sql and RLS exposes the `site` key to anon unchanged across every migration, so the data path
- * looks correct by inspection; against live `shosho-staging` (manually driven in a real browser during
- * this boot) the exact same banner appeared and dismissed normally. The gap is real and reproducible in
- * CI but unexplained — flagged to S3 rather than guessed at further. This suite only needs the banner
- * gone so later clicks aren't intercepted by its fixed overlay; it does not need to prove why.
+ * Both halves trace back to the same CI-only symptom (see memory/log.md's S6-01 entry, finding #6):
+ * hydration on `apps/web` taking long enough under this CI runner's load (two `next dev` servers + a
+ * local Supabase stack + the Playwright browser, all sharing one constrained box) that an action fired
+ * right after `goto()` can land before React has attached anything — not just the cookie banner's
+ * `useEffect` never getting a chance to run, but an "Add" button click on the home page doing nothing
+ * because its own handler isn't live yet, silently leaving the cart empty for the rest of the test.
+ * `networkidle` is the honest wait for that, not a guess at a fixed delay — and the cookie banner was
+ * never independently root-caused beyond this.
  */
 export async function dismissCookieBanner(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle");
   const ok = page.getByRole("button", { name: "OK" });
   try {
     await ok.waitFor({ state: "visible", timeout: 5_000 });
