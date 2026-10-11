@@ -11,7 +11,13 @@ export default defineConfig({
   testDir: "./specs",
   globalSetup: "./global-setup.ts",
   timeout: 90_000,
-  expect: { timeout: 15_000 },
+  // Bumped from 15s after run 7 (first run with the CSP fix, finding 0 in memory/log.md's S6-01 entry)
+  // got every test past the point where nothing hydrated at all, and the one remaining failure class was
+  // a debounced quote_order's zone resolution not rendering in time — plausible CI resource contention
+  // (two next-dev servers + local Supabase + the browser sharing one constrained runner), not a hard
+  // block like the CSP one was. 25s is a judgment call, not a proven number; if this needs raising again
+  // it's worth checking the actual RPC latency rather than guessing a third time.
+  expect: { timeout: 25_000 },
   fullyParallel: false,
   workers: 1,
   retries: 0,
