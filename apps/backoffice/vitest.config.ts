@@ -8,6 +8,10 @@ export default defineConfig({
       "@shosho/backend/types/database": fileURLToPath(new URL("../backend/types/database.ts", import.meta.url)),
     },
   },
+  // The guard tests call the real page/layout server components, which construct JSX. Next's
+  // tsconfig keeps `jsx: "preserve"` for its own compiler, so esbuild is told the runtime here —
+  // test-only, and the existing pure-logic suites are unaffected.
+  esbuild: { jsx: "automatic" },
   test: {
     environment: "node",
     include: ["tests/**/*.test.{ts,tsx}", "lib/**/*.test.{ts,tsx}"],
