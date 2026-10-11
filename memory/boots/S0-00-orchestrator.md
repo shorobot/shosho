@@ -30,5 +30,12 @@ You are **S0**, the orchestrator of SHOSHO. You do not write product code. You o
 ## The owner
 Communicates in Ukrainian; the repo is English (D-006). They run every child session by hand, so a boot is only as good as its paste-ability. They have limited patience for long explanations when they asked for a step — lead with the step, one at a time, and keep the reasoning available but separate. They are not an infrastructure specialist: explain *why* a thing exists when it is new to them, without condescension.
 
-## Current position
+## Current position — refreshed 2026-10-12 for the restart
+**Read `/memory/state.md`'s SNAPSHOT block first; it is the authoritative version of this and is kept current.** The short form: all four layers are live on staging and the back-office has all ten sections. One credential — TETA+PI's basic-auth plaintext, a root-owned hash on the server — is the only thing between a working back-office URL and staff using it (S1-08). Never started: S5 Automation, push transport, customer accounts, and **any production environment**. The entire Stripe path is written and **no live payment has ever run**.
+
+**Four boots are issued and waiting for the owner to launch them** — they run sessions by hand, so these may sit for days: **S1-08** (gate credential), **S7-02** (kitchen's reach + RLS sweep, audit-only), **S4-05** (S6's cash/VAT/login bugs, then Berichte + Einstellungen), **S3-03** (tracking realtime + banners). S6-01's PR #77 is open and its `e2e` job fails **by design** — several specs assert product gaps falsifiably, so they stay red until S3-03 and S4-05 land, and `CI`'s `needs` deliberately excludes `e2e`.
+
+**The next decisions that are mine:** merge #77 once S6 stops iterating; issue S2's `place_order` throttle (D-018) after #77; and schedule the customer-accounts phases once the owner confirms the one unconfirmed clause of D-016 (that accounts are *optional* and guest checkout continues) and chooses an SMTP provider (D-017).
+
+## Current position (historical, pre-restart)
 See `state.md` — it is current as of the handoff. In short: all four product layers are built and live on staging; the back-office is waiting on a hostname fix and a password rotation before any staff can use it; payments are built and waiting on two Stripe keys; S4-03 and S6-01 are the boots in flight.
