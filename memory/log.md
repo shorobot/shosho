@@ -1863,3 +1863,19 @@ The owner asked for working links and access, and said TETA+PI's side is finishe
 **Which is the argument for option B becoming the next thing rather than a later nicety.** Cloudflare Access (owner action 6b) *removes* gap 2 instead of managing it — staff authenticate by email, there is no shared pair to distribute, and revoking one person does not rotate everyone. With real passwords now behind that gate, a hand-passed shared secret is the thing that ends up in a WhatsApp message. The ordering constraint stands and is the easy mistake: prove Access challenges correctly **first**, then ask TETA+PI to drop basic-auth, because the direct-origin path is covered by that gate alone today.
 
 Filed both as owner actions **1a** and **1b** so they sit next to the rotation they follow from, rather than being buried in this entry.
+
+## 2026-10-11 — S0 Orchestrator — the basic-auth credential is on the server as a hash we cannot read and could not reverse
+The owner asked a sharp question: does TETA+PI put the password on the server? **Yes — and that settles gap 2 in a way worth recording, because it rules out a whole class of attempted shortcut.** Measured over ssh:
+
+```
+/etc/nginx/.htpasswd-shos-bo    -rw-r----- root:www-data   69 bytes   Sep 26 21:51
+```
+
+Three things follow, and together they close the question:
+- **It is a hash, not a password.** An htpasswd line is `user:<hash>` and nginx verifies against the hash. The plaintext is **not recoverable** from it, so even unrestricted access to that file would not produce something a staff member could type into a browser prompt.
+- **We cannot read it in any case.** Mode `0640`, owner `root`, group `www-data`; our user is `shos` with no sudo and not in that group (D-004). Confirmed directly with `[ -r ]` rather than inferred from the mode bits. The 69-byte size and the Sep 26 21:51 timestamp line up with TETA+PI creating the vhost, so this is the live file and not a leftover.
+- **So only TETA+PI can supply it** — by telling the owner the plaintext they chose, or by setting a new one on request. No session can self-serve this and no additional server access would change it. I did not attempt to crack the hash; that is not a route under consideration, and saying so explicitly is cheaper than someone later wondering whether it was tried.
+
+**Also fixed a script I got wrong.** The password-verification recipe I handed the owner used Python's `urllib`, which on a python.org build on macOS has no CA bundle installed — it failed with `CERTIFICATE_VERIFY_FAILED` before reaching Supabase at all. That is a known macOS pitfall and I should not have reached for Python for an HTTPS call on a Mac when `curl` uses the system trust store. Rewritten in pure `curl`. While fixing it I established the file's actual layout rather than guessing at a parser: **tab-separated, three fields — `role`, `email`, `password`** — read with secrets redacted, which is also why the new version parses reliably instead of pattern-matching. The passwords are base64 from a 160-bit random source, so they are safe to embed in JSON without escaping.
+
+Nothing about the two gaps changed: the rotated passwords are still unverified (owner action 1a) and the basic-auth plaintext is still only TETA+PI's to give (1b). What changed is that 1b is now a definite request to a specific party rather than an open question about where a credential might be.
