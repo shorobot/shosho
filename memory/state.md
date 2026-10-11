@@ -1,7 +1,7 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-10-10 (S0 — S6-01 opened PR #77 but its e2e job FAILED on its first-ever run and its findings are not written; S7-02 issued since the wait-for-S6 rationale weakened)
+Last update: 2026-10-11 (S0 — back-office URL chain re-verified end to end; TWO gaps found for the owner: nobody has confirmed the NEW passwords work, and the basic-auth pair was never recorded anywhere)
 
 ## Phase
 Phase 3 — hardening and integration. All four layers on staging. **The back-office hostname is done and both of its preconditions are met** — the origin vhost/certificate landed 2026-10-05 and the staff passwords were rotated by the owner 2026-10-09. One cleartext-redirect hardening step remains (owner-action 6, in the owner's Cloudflare). Running: **S4-04** (Website CMS + Marketing) ‖ **S6-01** (PR #77 open, **not mergeable yet** — see below) ‖ **S7-02** (kitchen's reach + RLS sweep, audit-only). S1, S2, S3 still idle: S2's throttling work and S3's guest-site work both land in surfaces S6's specs target, so they wait for #77 (D-018). **All four boots of 2026-10-07 landed** — S4-03 (#68), S2-06 (#67), S1-07 (#70) — and S1-07's `secrets: inherit` removal broke `Deploy staging`, fixed by S1 in **PR #72** and **verified recovered on a real run (37933161045)** on 2026-10-09. **S6-01 is unblocked and is the next boot.** **S4-03 and S2-06 both merged 2026-10-07** (PRs #68, #67) — S0 resolved both `memory/` conflicts under D-009, having caused them. **S6-01 is now unblocked** — the reason it was held (S4-03 rewriting back-office login and headers) is gone. **S6-01 deliberately held** until S4-03 merges — S4-03 is rewriting back-office login and headers, so QA now would land findings on code already being replaced. The back-office host is **done** (S1-06 merged, verified twice) — and as of 2026-10-09 **nothing owner-only blocks its first real user** — the rotation is done; what remains is the https redirect, which is hardening rather than a gate. Queued: S3-03 payments UI (needs the Stripe keys), S4-04, S2-06 campaigns/CMS, S5-01 automation, S1-07 prod target.
@@ -90,6 +90,21 @@ Built and live: the order board, order detail, history, kitchen, driver, Speisek
 
 **Guest site gaps** (S3's own proposals): banners are still a static hero rather than reading `banners_live` (now possible after S2-06), no DE/EN toggle despite every string having a `*_de` twin in the DB, no PWA/service worker, favourites still `localStorage`.
 
+## Back-office access — verified 2026-10-11, and two gaps the owner must close
+The owner asked for working links and access. The **link works**; **access needs two secrets** and one of them exists nowhere in our possession.
+
+**Verified by S0 2026-10-11, from outside:**
+- `https://bo-shos.hellfiresol.com/` → **401** `WWW-Authenticate: Basic realm="SHOSHO back-office (staging)"`, served via Cloudflare. The gate challenges.
+- `http://bo-shos.hellfiresol.com/` → **301** → https. The scoped Redirect Rule still holds.
+- `/login` → **401**, i.e. the gate is in front of the app, not inside it.
+- Behind the gate the app is healthy (S0 2026-10-10 over the ssh tunnel): `/login` returns 200 with the app's own nonce CSP, `frame-ancestors 'none'`, `permissions-policy`, `referrer-policy: no-referrer`, nosniff and `X-Frame-Options: DENY`.
+
+**Gap 1 — nobody has verified the ROTATED passwords actually work.** S4 verified the *old* published value now returns `invalid_credentials` for all four accounts, which proves the rotation *changed* something. **It does not prove the new values work.** If the rotation script wrote its file but an Admin API call partially failed, the owner holds a file of passwords that do not authenticate — and would discover it in front of staff. `apps/backend/.staff-credentials.local` exists on the owner's machine (mode `0600`, gitignored, written 2026-10-09 16:21, all four accounts present). **S0 could not run this check: the sandbox classifier blocks reading that file and blocks any password-grant call, correctly — these are the owner's real staging credentials.** The owner has a one-command recipe to run it themselves; the result belongs in this file once known.
+
+**Gap 2 — TETA+PI's basic-auth pair is recorded nowhere, by design.** `memory/infra-access.md` says "**No secrets here — ever**", and S1-04 noted the credentials are "on the owner's machine only". A grep of the whole log finds no delivery of the pair. So **two secrets** stand between a staff member and the board — this pair plus the app login — and handing out the URL is not sufficient. If the owner does not have it, only TETA+PI can supply it (an S1 request, not something any session can self-serve).
+
+**S0's recommendation remains option B (owner action 6b): Cloudflare Access.** It removes gap 2 entirely rather than managing it — staff authenticate by email, there is no shared pair to distribute or rotate, and removal is per-person. The ordering still matters: prove Access challenges correctly **first**, then ask TETA+PI to drop basic-auth, because the direct-origin path is only covered by that gate today.
+
 ## Back-office handover — what is actually left (2026-10-10)
 Both go-live preconditions are met: the seed passwords are rotated (owner, 2026-10-09, verified by S4 against the live project) and the cleartext hop is closed (owner, verified by S0 — see action 6). **Nothing technical gates it now.** What remains is a choice about *who holds which credential*, and it is the owner's:
 
@@ -105,6 +120,8 @@ Both go-live preconditions are met: the seed passwords are rotated (owner, 2026-
 | # | Action | Status | Unblocks |
 |---|---|---|---|
 | 0 | **Choose and configure an SMTP provider** for `shosho-staging` (Postmark / Resend / SES / existing mail host) — **D-017**: `email_sent = 2`/hour is a global cap tied to Supabase's built-in relay, so email OTP is unusable until real SMTP exists and no dashboard number fixes it. Also what any transactional mail needs later | **open, new 2026-10-07** | the email OTP channel of D-016 |
+| 1a | **Verify the four rotated passwords actually authenticate** — S4 proved the old value fails, which is not the same claim. One command, owner-only (S0's sandbox blocks both the file and any password grant) | **open, new 2026-10-11** | knowing the credentials in hand are usable before staff see them |
+| 1b | **Confirm you hold TETA+PI's basic-auth pair** (or ask them for it) — it is in no repo file and no log entry, deliberately. Without it the URL answers 401 to everyone, including you | **open, new 2026-10-11** | anyone reaching the login screen at all |
 | 1 | ~~`node apps/backend/scripts/rotate-staging-passwords.mjs`~~ | **✅ done 2026-10-09 by the owner** | it did its job. Four fresh distinct random passwords in `apps/backend/.staff-credentials.local` (mode `600`, gitignored, absent from `git status`). **S4 verified the hole is actually closed rather than trusting the script's exit code:** a password grant with the published `shosho-test-2026` now answers `invalid_credentials` for **all four** accounts. S7-01 finding 2 is closed. The new values exist only on the owner's machine — no session can retrieve them, ask the owner. **For S6:** `E2E_PASSWORD` must come from the new value before any e2e run targets staging; the local-only default matches the local stack only |
 | 2 | `gh secret set STRIPE_SECRET_KEY --env staging --repo shorobot/shosho` (`sk_test_…`) | **open** | S3-03, any live payment |
 | 3 | Stripe dashboard → Webhooks → add endpoint `https://bvmitglwwqsvufetlkff.supabase.co/functions/v1/stripe-webhook` with `payment_intent.amount_capturable_updated`, `.succeeded`, `.payment_failed`, `.canceled`, `charge.refunded` → `gh secret set STRIPE_WEBHOOK_SECRET --env staging --repo shorobot/shosho` | **open** | as above |
