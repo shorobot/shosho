@@ -1,4 +1,4 @@
-import { test as base, type Page } from "@playwright/test";
+import { expect, test as base, type Page } from "@playwright/test";
 import { anon, PASSWORD, signInAs, STAFF, type Db, type StaffRole } from "./helpers/db";
 
 export const WEB_URL = process.env.WEB_URL ?? "http://127.0.0.1:3100";
@@ -94,4 +94,24 @@ export async function dismissCookieBanner(page: Page): Promise<void> {
   } catch {
     // not shown — proceed; see the comment above.
   }
+}
+
+/**
+ * Click the home page's "Add <item>" button `times` times and wait for the cart to actually register
+ * it before returning — do not just click and immediately `goto("/checkout")`.
+ *
+ * apps/web/lib/cart.tsx persists to localStorage in a `useEffect` gated on `hydrated` — a passive effect
+ * that runs *after* the render commits, not synchronously with the click. Four straight CI runs in this
+ * boot showed the exact same symptom every time a test clicked "Add" and immediately `goto()`'d to
+ * `/checkout`: the new page (a full navigation, so the whole React tree including CartProvider remounts)
+ * showed "0 positions" — i.e. the navigation's own unload won the race against the effect's localStorage
+ * write. Header.tsx's cart link carries `aria-label="Cart, ${count} items"`; waiting on that catches the
+ * dispatch, and the extra settle buffer after it covers the effect's own async scheduling on top of that.
+ */
+export async function addToCartFromHome(page: Page, itemName: string, times = 1): Promise<void> {
+  for (let i = 0; i < times; i++) {
+    await page.getByRole("button", { name: `Add ${itemName}` }).click();
+    await expect(page.getByRole("link", { name: new RegExp(`Cart, ${i + 1} items?`) })).toBeVisible();
+  }
+  await page.waitForTimeout(300); // let cart.tsx's persist effect (useEffect, async) actually flush
 }

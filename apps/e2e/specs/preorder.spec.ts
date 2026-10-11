@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { anon, freshPhone, ITEM, openAllDayAndResume } from "../helpers/db";
 
 test.beforeAll(openAllDayAndResume);
@@ -6,7 +6,7 @@ test.beforeAll(openAllDayAndResume);
 test("pre-order for a future slot through the real checkout UI", async ({ webPage, db }) => {
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen");
   await webPage.goto("/checkout");
   await webPage.getByRole("radio", { name: "Pickup" }).click();
   await webPage.getByRole("radio", { name: "Pick a time" }).click();

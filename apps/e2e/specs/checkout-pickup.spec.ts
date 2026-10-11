@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { freshPhone, ITEM, openAllDayAndResume } from "../helpers/db";
 
 // Pickup journey: −10% discount, 19% on-site VAT (design/README "VAT 7% delivery / 19% on-site"), and
@@ -14,7 +14,7 @@ test("pickup order: 10% discount, 19% VAT, and what completion actually does to 
 
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen");
   await webPage.goto("/checkout");
   await webPage.getByRole("radio", { name: "Pickup" }).click();
   await webPage.getByPlaceholder("Your name").fill("E2E Guest Pickup");

@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { anon, freshPhone, ITEM, openAllDayAndResume } from "../helpers/db";
 
 test.beforeAll(openAllDayAndResume);
@@ -6,7 +6,7 @@ test.beforeAll(openAllDayAndResume);
 test("item stoplisted after it's already in the guest's cart", async ({ webPage, db }) => {
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen");
 
   await db.from("menu_items").update({ stoplist_until: "2999-01-01" }).eq("id", ITEM.ramen);
   try {

@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { anon, freshPhone, ITEM, openAllDayAndResume, POSTAL } from "../helpers/db";
 import { euroWeb, parseMoneyText } from "../helpers/money";
 
@@ -15,8 +15,7 @@ test("one order's cents agree across quote_order, cart UI, checkout summary, boa
 
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen", 2); // qty 2
   await webPage.goto("/checkout");
   await webPage.getByPlaceholder("Street and number").fill("Kastanienallee 1");
   await webPage.getByPlaceholder("10119").fill(POSTAL.zoneB);

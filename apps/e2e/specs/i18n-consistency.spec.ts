@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { freshPhone, openAllDayAndResume, POSTAL } from "../helpers/db";
 import { parseMoneyText } from "../helpers/money";
 
@@ -10,7 +10,7 @@ test("toggling the back-office DE/EN only changes labels, never the order's numb
   const phone = freshPhone();
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen");
   await webPage.goto("/checkout");
   await webPage.getByPlaceholder("Street and number").fill("Torstraße 1");
   await webPage.getByPlaceholder("10119").fill(POSTAL.zoneA);

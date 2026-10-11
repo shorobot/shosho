@@ -1,4 +1,4 @@
-import { dismissCookieBanner, expect, STAFF, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, STAFF, test } from "../fixtures";
 import { freshPhone, openAllDayAndResume, POSTAL } from "../helpers/db";
 
 // Full delivery journey across all three apps (api-contracts §5.3, §6.1, design/README "Order lifecycle"):
@@ -13,8 +13,7 @@ test("guest delivery order, driven end to end, tracking page follows along", asy
   await test.step("guest: add 2× Tonkotsu Ramen, apply SHOSHO10, check out for delivery", async () => {
     await webPage.goto("/");
     await dismissCookieBanner(webPage);
-    await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
-    await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click(); // qty 2 via a second add
+    await addToCartFromHome(webPage, "Tonkotsu Ramen", 2); // qty 2
 
     await webPage.goto("/checkout");
     await expect(webPage.getByRole("heading", { name: "How would you like it?" })).toBeVisible();

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { dismissCookieBanner, expect, test } from "../fixtures";
+import { addToCartFromHome, dismissCookieBanner, expect, test } from "../fixtures";
 import { freshPhone, openAllDayAndResume, POSTAL } from "../helpers/db";
 
 test.beforeAll(openAllDayAndResume);
@@ -8,8 +8,7 @@ async function placeDeliveryOrder(webPage: Page, name: string) {
   const phone = freshPhone();
   await webPage.goto("/");
   await dismissCookieBanner(webPage);
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
-  await webPage.getByRole("button", { name: "Add Tonkotsu Ramen" }).click();
+  await addToCartFromHome(webPage, "Tonkotsu Ramen", 2); // qty 2
   await webPage.goto("/checkout");
   await webPage.getByPlaceholder("Street and number").fill("Kastanienallee 1");
   await webPage.getByPlaceholder("10119").fill(POSTAL.zoneB);
