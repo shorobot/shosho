@@ -283,6 +283,25 @@ jobs:
           path: apps/e2e/playwright-report
           if-no-files-found: ignore
 
+      # S6-01 task 5: quantify apps/backend/tests/guest_realtime.test.ts's flake rate by actually
+      # running it N times (default 25) against the same local stack, instead of trusting the fix looks
+      # reasonable on paper. Informational only — never fails the job.
+      - name: Flake rate — guest_realtime.test.ts (N=25)
+        if: always()
+        run: |
+          set -euo pipefail
+          status_env=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          pnpm --filter @shosho/backend run seed:local-logins
+          node apps/e2e/scripts/flake-guest-realtime.mjs | tee /tmp/flake-report.txt
+          {
+            echo "### guest_realtime.test.ts flake rate (N=25)"
+            echo '```'
+            tail -40 /tmp/flake-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Stop Supabase
         if: always()
         working-directory: apps/backend

@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["specs/**/*.ts", "helpers/**/*.ts", "scripts/**/*.ts", "fixtures.ts", "playwright.config.ts"]
+  "include": ["specs/**/*.ts", "helpers/**/*.ts", "scripts/**/*.ts", "fixtures.ts", "playwright.config.ts", "global-setup.ts"]
 }

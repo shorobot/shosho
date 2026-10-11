@@ -9,6 +9,7 @@ const BO_PORT = 3102; // apps/backoffice/e2e already defaults to 3101 — stay o
 
 export default defineConfig({
   testDir: "./specs",
+  globalSetup: "./global-setup.ts",
   timeout: 90_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,
