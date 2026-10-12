@@ -59,9 +59,9 @@ export function TrackingClient({ token }: { token: string }) {
 
   // Realtime (api-contracts §3/§5.6): the DB broadcasts on order:<token> on every meaningful change;
   // re-fetch on each message rather than trusting the payload. Subscribed once per token/mount —
-  // not re-run on every `order` update, which would tear down and rejoin the channel on every poll
-  // tick. `getApi()` is implemented as the dependency: it is a plain async function so its identity
-  // never changes, matching `load`'s own `[token]`-only dependency below it.
+  // deliberately NOT depending on `order`, which would tear the channel down and rejoin it on every
+  // single poll tick or broadcast-triggered reload. `getApi()` itself isn't a dependency either: it
+  // is a plain top-level function, so its identity never changes across renders.
   useEffect(() => {
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
