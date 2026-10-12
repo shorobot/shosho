@@ -2277,3 +2277,122 @@ The owner is restarting the session and asked for a snapshot, everything in memo
 - **S3-03** is the tracking-realtime fix plus the banners the storefront still cannot display. Worth noting what this one actually is: not a new feature but **implementing a contract that has been documented since S2-02 and never built** — §3/§5.6 specify a subscription with the 15 s poll as *fallback*, and the app shipped only the fallback. The boot carries the security property explicitly (token-scoped channel only, never table-wide or guest-changeable), tells S3 to keep the poll because websockets fail where polling does not, and points at both S2-03's and S6's independent reproductions of the same subscribe-then-change race rather than letting S3 invent its own timing. It also tells S3 that **S6's spec is written to flip red when the fix lands** and not to edit `apps/e2e/` — that inversion is the signal, not a regression.
 
 **What I deliberately did not issue.** S2's `place_order` throttle stays queued behind #77 (D-018) because it lands in the surface S6's specs measure. S5 Automation stays unstarted: it is the largest unbuilt thing and the first real decision about it — whether to re-add an `api` service under D-013 — deserves its own boot once the campaign screens have a sender to be wired to. And the customer-accounts phases stay queued on two owner answers, not on engineering: the SMTP choice (D-017) and the one clause of D-016 I inferred rather than was told, that accounts are *optional* and guest checkout continues unchanged.
+
+## 2026-10-12 — S3 Frontend — S3-03 — realtime wired, banners rendered, honest about what staging could and couldn't confirm
+
+**Resumed via `checkout -f -b s3-03 origin/main`** (D-008) — the worktree had stale staged changes
+from before a session restart (an older `state.md`/`log.md`, a deleted `S2-05-seed-credentials.md`
+that still exists on `origin/main`); diffed first to confirm they were strictly older than
+`origin/main`, not unmerged work, then discarded them per the known gotcha rather than `reset --hard`.
+
+**Task 1 — tracking page realtime (api-contracts §3/§5.6).** `TrackingClient.tsx` only polled
+`get_order_by_token` every 15 s; migration 16 (S2-02) has broadcast on `order:<token>` since
+September and nothing on this side ever subscribed. Added `ShoshoApi.subscribeToOrder(token,
+onUpdate)` to the seam (`lib/api.ts`) so the UI never touches the Supabase SDK directly — real
+implementation in `lib/api-supabase.ts` opens `sb.channel('order:' + token, { config: { private:
+true } }).on('broadcast', { event: 'order_updated' }, onUpdate)`; the mock is a no-op (no realtime
+there, the poll alone drives `NEXT_PUBLIC_API=mock`).
+
+**How I proved realtime actually arrives, and what I did about reconnection.** Read
+`@supabase/supabase-js`'s own source before trusting it: with no auth session,
+`_getAccessToken()` falls back to `supabaseKey` — so an anon client really does authorise the
+private-channel join with the plain anon key, matching migration 16's `realtime.messages` policy for
+`anon`/`authenticated` on `order:%` topics. Then verified it live rather than from the source alone:
+placed a real **scheduled** order on staging (`https://shos.hellfiresol.com/`, order **#1005**,
+`cab70644f568ad524dae4e875ac72b3a`) — ASAP would have hit `outside_hours` at 00:4x local time, which
+is itself worth knowing: this boot's own verification window landed outside opening hours, and a
+scheduled slot inside hours is a legitimate way around that, not a workaround of the rule under test.
+Subscribed with a plain anon client exactly as the app now does; first attempt hit a transient
+`CHANNEL_ERROR: MissingPartition` that self-healed to `SUBSCRIBED` in ~1.2 s (the same
+subscribe-then-change race S2-03's and S6's own tests independently found — `realtime.messages` is
+partitioned by day and the fan-out for a brand-new topic is not necessarily ready the instant the
+client is told `SUBSCRIBED`); a clean re-run joined in 373 ms and **stayed `joined`/socket-connected
+for 45 s** polling the client's own state every 5 s. **What I could not do myself: trigger a live
+status change.** `set_order_status` needs a staff session; this boot's boundary is anon-key-only
+(no secrets in the repo), and typing a real staff password into `https://bo-shos.hellfiresol.com`
+would be entering live credentials into a non-local site — out of bounds regardless of boundary. So
+the "a status change arrives without the poll" box is proven **server-side, independently, twice**
+(`apps/backend/tests/guest_realtime.test.ts` from S2-02/S2-03, and S6-01's own
+`apps/e2e/specs/realtime-and-tracking.spec.ts` re-check) with the identical subscribe call this PR now
+makes from the browser — but not by my own hand on staging end to end. Asked S0/the owner to flip
+order #1005's status via the board as the one remaining confirmation; noted as open in
+`proposed/S3-contract-notes.md` item 11 rather than claimed as done.
+
+Reconnection: did not hand-roll it. `@supabase/realtime-js@2.116.0` ships a default stepped-backoff
+`reconnectAfterMs` and a heartbeat, and Phoenix-style channels rejoin on socket reopen — read the
+library source to confirm this is the default, not assumed from the docs. What I did add: the 15 s
+poll stays **unconditional** (never disabled while realtime is connected — api-contracts §3's own
+words, "a dropped socket must not freeze the page"), a `CHANNEL_ERROR`/`TIMED_OUT` status is logged
+with `console.warn` and otherwise invisible to the guest (no UI path reads it at all), and a
+`visibilitychange` listener forces an immediate re-fetch the moment a backgrounded tab is looked at
+again — covering the real risk in "left open for hours": browsers throttle a backgrounded tab's own
+timers (the poll included) far past 15 s, independent of whatever state the socket is in. Subscribed
+once per token (effect deps `[token, load]`, not `[order, ...]`) so a broadcast-triggered reload never
+tears the channel down and rejoins it — recreating a channel every poll tick would itself reproduce
+the exact race the determinism fix above is about. Unsubscribed on unmount (`removeChannel`). Footer
+copy changed from "This page refreshes every 15 seconds" (stated as the mechanism, which is how this
+gap survived unnoticed) to "This page updates automatically — no need to refresh" (true regardless of
+which path is doing the work at any moment).
+
+`apps/e2e/specs/realtime-and-tracking.spec.ts`'s second test asserts the page does **not** update
+within 5 s — its own comment says failing means the fix landed. Did not touch `apps/e2e/`; noting
+here for S6/S0 that this test is now expected to flip red, which is the intended signal, not a
+regression — same note already in `proposed/S3-contract-notes.md`.
+
+**Task 2 — banners (api-contracts §8.6).** `Catalog.banners` now comes from `banners_live` — the
+**only** anon-reachable surface; `banners` itself was never queried (confirmed live: `banners_live` →
+`200 []` for anon on staging, `banners` → `401 42501`, "permission denied for table banners" — belt
+and braces, matching `order_attempts` rather than relying on RLS alone). `BannerSlot.tsx` renders the
+three "strip" slots (`home_strip`, `product`, `checkout`): a card per row, image optional, sorted by
+`sort` — and sorted **again on the client**, after the per-slot filter, rather than trusting the
+`banners_live` query's own `order by slot, sort` to survive being filtered down to one slot. Caught by
+my own test, not by inspection: a deliberately-reversed-input unit test failed on the first pass
+(`toEqual(['First','Second'])` → got `['Second','First']`) because `BannerSlot` only filtered and
+never re-sorted; `Hero.tsx`'s own `home_hero` lookup had the identical gap (`.find()` returns array
+order, not `sort` order) and got the same fix once the first one surfaced it.
+
+**What the empty case looks like.** Zero banners is the normal case (a new site, between campaigns),
+and it must look deliberate, not broken (api-contracts §8.6, this boot's own words). `BannerSlot`
+renders nothing at all for an empty slot — no placeholder, no skeleton. `home_hero` is different on
+purpose: `Hero.tsx` keeps the **original static hero** as its fallback, because the hero is the first
+thing on the page and a true gap there reads as broken in a way an absent strip banner further down
+does not. A `home_hero` banner (lowest `sort` if more than one is ever active) swaps in the CMS
+copy/image/CTA; the live "from … €" price renders either way, same as before this boot.
+
+**Images.** `image_path` resolves once in the data layer (`lib/photos.ts`'s new
+`resolveBannerImage`/`siteObjectKey`, bucket `site`) — generalised the existing `photoObjectKey`
+internals (`objectKeyInBucket(p, bucket)`) rather than duplicating the validation logic, without
+changing `photoObjectKey`'s own external behaviour (its test file still passes unmodified).
+**img-src needed no code change** — checked rather than assumed: `lib/csp.ts`'s `img-src` is built
+from `supabaseSources()`, which only ever returns the project **origin**, never a path, so the one
+existing rule already covers `/storage/v1/object/public/site/...` exactly as it covers `.../menu/...`.
+Added an explicit test asserting that origin-scoping (`tests/csp.test.tsx`) instead of touching the
+policy file the boot's own comment warns is enforcing-and-load-bearing.
+
+**DE fields.** `title_de`/`subtitle_de`/`cta_label_de` are read into `Banner` and carried through
+every component but not rendered — there is no language toggle (a separate, later boot; the rest of
+the storefront is 100 % English today), so rendering EN is the only consistent choice available. The
+data side is ready for the toggle when it lands.
+
+**Banners end to end: not verified, and said so rather than implied.** No banner exists on staging
+yet — asked the owner to create one via `/website` (S4-04's screen) so this can be checked visually
+against the real deploy. Covered instead by `tests/banners.test.tsx` (slot filtering, `sort`, the
+CTA label+href pairing, the DE/EN choice, the home_hero fallback) and the live RLS probe above.
+
+**Verification run:** `tsc --noEmit` clean, `eslint .` clean, `vitest run` 89/89 (12 new: 7 in
+`tests/photos.test.ts`, 1 in `tests/csp.test.tsx`, both re-run clean after rebasing onto S6-01's
+merged `apps/e2e`), `tests/banners.test.tsx` new. `next build` with `NEXT_PUBLIC_API=mock`: every
+route still `ƒ (Dynamic)` — the nonce CSP's `force-dynamic` precondition holds.
+
+**Not done, and why.** Finding 0 in the same QA proposal (`'unsafe-eval'` missing from `script-src`
+for `next dev`, so the guest site is 100 % non-interactive under `pnpm dev`) is real, already
+diagnosed with the exact fix shape, and sits in the same file I touched for this boot — but it is not
+in S3-03's Tasks or Done-when list, and `lib/csp.ts`'s own header warns it is enforcing-and-safety-
+load-bearing in a way that argues for its own reviewed change rather than riding along here. Left open
+for S0 to route (likely a one-line `NODE_ENV` branch — `apps/backoffice/lib/csp.ts` has the identical
+line and is S4's matching proposal, not mine to also fix).
+
+**Boundaries respected.** No edits to `apps/backend`, `apps/backoffice`, `apps/infra`, `apps/e2e`. No
+client-side analytics (D-015). No i18n toggle, PWA/service worker, favourites, or payments UI — those
+stay queued (`proposed/S3-02-payments-ui.md` still blocked on the owner's Stripe keys; DE/EN toggle,
+PWA+push, favourites unchanged). PR [shorobot/shosho#87](https://github.com/shorobot/shosho/pull/87).
