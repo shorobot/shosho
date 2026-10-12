@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Badge, type Tone } from "@/components/ui/Badge";
 import { Pill } from "@/components/ui/Pill";
 import { CancelDialog } from "@/components/orders/CancelDialog";
+import { CashDialog } from "@/components/orders/CashDialog";
 import { DriverDialog } from "@/components/orders/DriverDialog";
 import { RefundDialog } from "@/components/orders/RefundDialog";
 import { useOrderAction } from "@/components/orders/useOrderAction";
@@ -14,7 +15,7 @@ import { euro, km } from "@/lib/money";
 import { actionsFor, addressOf, timerFor, type Action } from "@/lib/orders";
 import { useOrders } from "@/lib/store";
 import { elapsedLabel, hhmm, scheduleLabel } from "@/lib/time";
-import type { OptionSnapshot, Order, OrderItemRow } from "@/lib/types";
+import type { OptionSnapshot, Order, OrderItemRow, OrderStatus } from "@/lib/types";
 
 const ACTION_KEY: Record<Action["id"], Key> = {
   accept: "action.accept",
@@ -97,7 +98,9 @@ export function OrderCard({ order, big = false, showDriver = false }: { order: O
   const { t, lang } = useI18n();
   const { me, now, staff } = useOrders();
   const { run, busy } = useOrderAction();
-  const [dialog, setDialog] = useState<null | "driver" | "cancel" | "refund">(null);
+  const [dialog, setDialog] = useState<null | NonNullable<Action["dialog"]>>(null);
+  // the status the open dialog is completing to — "cash" is the only dialog that needs it
+  const [dialogTo, setDialogTo] = useState<OrderStatus>("delivered");
   const timer = timerFor(order, now);
   const actions = actionsFor(order, me.role, me.id);
   const addr = addressOf(order);
@@ -163,7 +166,11 @@ export function OrderCard({ order, big = false, showDriver = false }: { order: O
               size={big ? "xl" : "md"}
               className={a.primary ? "flex-1" : ""}
               disabled={working}
-              onClick={() => (a.dialog ? setDialog(a.dialog) : void run(order, a.to))}
+              onClick={() => {
+                if (!a.dialog) return void run(order, a.to);
+                setDialogTo(a.to);
+                setDialog(a.dialog);
+              }}
             >
               {working && a.primary ? t("action.working") : a.id === "accept" ? t("action.acceptMin", { n: order.promised_minutes ?? 22 }) : t(ACTION_KEY[a.id])}
             </Pill>
@@ -172,6 +179,7 @@ export function OrderCard({ order, big = false, showDriver = false }: { order: O
       )}
 
       <DriverDialog order={order} open={dialog === "driver"} onClose={() => setDialog(null)} />
+      <CashDialog order={order} to={dialogTo} open={dialog === "cash"} onClose={() => setDialog(null)} />
       <CancelDialog order={order} open={dialog === "cancel"} onClose={() => setDialog(null)} />
       <RefundDialog order={order} open={dialog === "refund"} onClose={() => setDialog(null)} />
     </article>

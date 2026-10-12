@@ -25,6 +25,7 @@ import type { Staff } from "@/lib/types";
 
 const siteData = vi.hoisted(() => ({ current: null as unknown }));
 const marketingData = vi.hoisted(() => ({ current: null as unknown }));
+const reportsData = vi.hoisted(() => ({ current: null as unknown }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
@@ -51,6 +52,24 @@ vi.mock("@/lib/siteStore", async (orig) => ({
 vi.mock("@/lib/marketingStore", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   useMarketing: () => marketingData.current,
+}));
+
+vi.mock("@/lib/reportsStore", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  useReports: () => reportsData.current,
+}));
+
+const settingsData = vi.hoisted(() => ({ current: null as unknown }));
+
+vi.mock("@/lib/settingsStore", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  useSettings: () => settingsData.current,
+}));
+
+// The one browser dependency NotificationsPanel has — lib/sound.ts reads/writes localStorage.
+vi.mock("@/lib/sound", () => ({
+  soundEnabled: () => false,
+  setSoundEnabled: () => {},
 }));
 
 /* ---------------------------------------------------------------- fixtures */
@@ -126,6 +145,57 @@ function marketing(over: Record<string, unknown> = {}) {
     customerCount: 5, loading: false, error: null, now: NOW,
     from: new Date("2026-09-11T12:00:00Z"), to: NOW,
     reload: async () => {}, resolveSegment: async () => [],
+    ...over,
+  };
+}
+
+const RANGE = { from: "2026-09-13", to: "2026-10-12" };
+
+const REVENUE_DAY = {
+  day: "2026-10-01", orders_count: 10, revenue_cents: 20000, delivery_revenue_cents: 15000, pickup_revenue_cents: 5000,
+  upsell_cents: 1000, delivery_fee_cents: 2000, tip_cents: 500, discount_cents: 1000, vat_cents: 1400,
+  avg_basket_cents: 2000, cancelled_count: 1, refunded_cents: 0,
+};
+
+const TOP_ITEM = { item_id: "i1", sku: "RL-014", name: "Philadelphia Roll", name_de: "Philadelphia Roll", qty: 42, orders_count: 30, revenue_cents: 62580, cost_cents: 20000, margin_cents: 42580, share_pct: 18.5 };
+
+const DELIVERY_TIME = { zone_id: "z1", zone_code: "A", zone_name: "Mitte", orders_count: 10, avg_actual_minutes: 30, avg_promised_minutes: 32, delta_minutes: -2, overdue_count: 1, overdue_share_pct: 10 };
+
+const FUNNEL = {
+  attempts: 5, attempts_with_problems: 2, placed: 40, paid: 38, cancelled: 2,
+  attempts_to_placed_pct: 12.5, placed_to_paid_pct: 95, upsell_orders: 10, upsell_cents: 3000,
+  attempts_window_from: "2026-09-26", attempts_window_to: "2026-10-01",
+};
+
+const PAYMENT_ROW = { payment_method: "cash", payment_status: "paid", orders_count: 5, total_cents: 10000, refunded_cents: 0, failed_jobs_count: 0 };
+
+function reports(over: Record<string, unknown> = {}) {
+  return {
+    me: ME, range: RANGE, setRange: () => {},
+    revenueByDay: [] as unknown[], topItems: [] as unknown[], funnel: null, deliveryTimes: [] as unknown[],
+    payments: null, paymentsError: null, loading: false, error: null, reload: async () => {},
+    ...over,
+  };
+}
+
+const TEAM = [
+  { id: "u1", name: "K. Sato", role: "owner", active: true },
+  { id: "u2", name: "Marek K.", role: "operator", active: true },
+  { id: "u3", name: "Lena N.", role: "kitchen", active: false },
+];
+
+const SETTINGS_SETTINGS = new Map([
+  ["ops", { key: "ops", value: { prep_default_min: 22, rush_extra_min: 15, preorder_max_days: 7, auto_accept_paid_under_cents: 5000, pause_allowed: true, pickup_discount_pct: 10 }, draft: null, created_at: "", updated_at: "" }],
+  ["kitchen.status", { key: "kitchen.status", value: { paused: false, since: null, capacity: 8 }, draft: null, created_at: "", updated_at: "" }],
+  ["payments", { key: "payments", value: { provider: "stripe", cash_on_delivery: true, payout: { iban_last4: null } }, draft: null, created_at: "", updated_at: "" }],
+  ["payments.enabled", { key: "payments.enabled", value: { methods: ["card", "cash"], tip_presets_cents: [0, 100, 200], capture: "on_delivery" }, draft: null, created_at: "", updated_at: "" }],
+]);
+
+function settings(over: Record<string, unknown> = {}) {
+  return {
+    me: ME, canEdit: true, settingsByKey: SETTINGS_SETTINGS,
+    business: { impressum: "Shosho Sushi GmbH · Torstraße 000 · Berlin", ust_id: "DE000000000" },
+    team: TEAM, loading: false, error: null, reload: async () => {}, writeKey: async () => true,
     ...over,
   };
 }
@@ -403,5 +473,114 @@ describe("the Kampagne wizard renders", () => {
     const out = html(<CampaignGate id="00000000-0000-4000-8000-000000000000" />);
     expect(out).toContain("Noch keine Kampagne");
     expect(out).toContain("Zurück zu Marketing");
+  });
+});
+
+/* ================================================================ Reports (S4-05) */
+
+describe("BO · Berichte renders", () => {
+  it("the whole screen with content", async () => {
+    reportsData.current = reports({ revenueByDay: [REVENUE_DAY], topItems: [TOP_ITEM], funnel: FUNNEL, deliveryTimes: [DELIVERY_TIME], payments: [PAYMENT_ROW] });
+    const { ReportsScreen } = await import("@/components/reports/ReportsScreen");
+    const out = html(<ReportsScreen />);
+    expect(out).toContain("Berichte");
+    expect(out).toContain("Philadelphia Roll");
+    expect(out).toContain("Mitte");
+  });
+
+  it("EMPTY STATE — no rows in the period, with the reason and the period named", async () => {
+    reportsData.current = reports();
+    const { ReportsScreen } = await import("@/components/reports/ReportsScreen");
+    const out = html(<ReportsScreen />);
+    expect(out).toContain("Keine Daten im Zeitraum");
+    expect(out).toContain(RANGE.from);
+  });
+
+  it("funnel: MENÜ → WARENKORB is always unavailable, and ANFRAGEN → BESTELLT says 'nothing recorded yet' when the window is null (D-015 / §6.9 row 5)", async () => {
+    reportsData.current = reports({ funnel: { ...FUNNEL, attempts_window_from: null, attempts_window_to: null } });
+    const { FunnelPanel } = await import("@/components/reports/FunnelPanel");
+    const out = html(<FunnelPanel />);
+    expect(out).toContain("Nicht erfassbar");
+    expect(out).toContain("Noch nichts erfasst");
+  });
+
+  it("funnel: once the window resolves, the sub-range it actually covers is shown, not hidden", async () => {
+    reportsData.current = reports({ range: { from: "2026-09-01", to: "2026-10-12" }, funnel: FUNNEL });
+    const { FunnelPanel } = await import("@/components/reports/FunnelPanel");
+    const out = html(<FunnelPanel />);
+    expect(out).toContain(FUNNEL.attempts_window_from);
+    expect(out).toContain(FUNNEL.attempts_window_to);
+  });
+
+  it("report_payments: owner/operator-only refusal is shown as a designed state, not an error", async () => {
+    reportsData.current = reports({ paymentsError: { code: "42501" } });
+    const { PaymentsPanel } = await import("@/components/reports/PaymentsPanel");
+    const out = html(<PaymentsPanel />);
+    expect(out).toContain("nur für Inhaber und Betrieb sichtbar");
+  });
+
+  it("report_payments: every row reading zero renders 'no data yet', never €0,00 (§8.5)", async () => {
+    reportsData.current = reports({ payments: [{ ...PAYMENT_ROW, orders_count: 0, total_cents: 0, refunded_cents: 0, failed_jobs_count: 0 }] });
+    const { PaymentsPanel } = await import("@/components/reports/PaymentsPanel");
+    const out = html(<PaymentsPanel />);
+    expect(out).toContain("Noch keine Zahlungsdaten");
+    expect(out).not.toContain("0,00 €");
+  });
+});
+
+/* ================================================================ Settings (S4-05) */
+
+describe("BO · Einstellungen renders", () => {
+  it("the whole screen with content, team sorted and invite shown unavailable with the reason", async () => {
+    settingsData.current = settings();
+    const { SettingsScreen } = await import("@/components/settings/SettingsScreen");
+    const out = html(<SettingsScreen />);
+    expect(out).toContain("Einstellungen");
+    expect(out).toContain("K. Sato");
+    expect(out).toContain("Marek K.");
+    // team via staff_directory — the invite flow is not built (needs a service-role Edge Function)
+    expect(out).toContain("Service-Role-Funktion");
+    expect(out).toContain("Shosho Sushi GmbH");
+  });
+
+  it("is read-only for an operator, with the reason, rather than a write form that silently no-ops", async () => {
+    settingsData.current = settings({ canEdit: false });
+    const { OperationsPanel } = await import("@/components/settings/OperationsPanel");
+    const out = html(<OperationsPanel />);
+    expect(out).toContain("Nur lesbar");
+    expect(out).not.toContain("Speichern</button");
+  });
+
+  it("owner sees a Save button on the operations panel", async () => {
+    settingsData.current = settings({ canEdit: true });
+    const { OperationsPanel } = await import("@/components/settings/OperationsPanel");
+    const out = html(<OperationsPanel />);
+    expect(out).toContain("Speichern");
+  });
+
+  it("payments overview reads settings.payments / payments.enabled read-only", async () => {
+    settingsData.current = settings();
+    const { PaymentsOverview } = await import("@/components/settings/PaymentsOverview");
+    const out = html(<PaymentsOverview />);
+    expect(out).toContain("stripe");
+    expect(out).toContain("card, cash");
+  });
+
+  it("legal fields are read-only here, pointing at BO · Website rather than opening a second write path", async () => {
+    settingsData.current = settings();
+    const { LegalPanel } = await import("@/components/settings/LegalPanel");
+    const out = html(<LegalPanel />);
+    expect(out).toContain("Shosho Sushi GmbH");
+    expect(out).toContain("DE000000000");
+    expect(out).toContain("kein gespeicherter Wert"); // retention: unavailable, not invented
+    expect(out).toContain("BO · Website");
+  });
+
+  it("danger zone points at the per-customer GDPR tools and invents no project-wide reset", async () => {
+    settingsData.current = settings();
+    const { DangerZonePanel } = await import("@/components/settings/DangerZonePanel");
+    const out = html(<DangerZonePanel />);
+    expect(out).toContain("projektweiten Reset gibt es nicht");
+    expect(out).toContain("DSGVO");
   });
 });

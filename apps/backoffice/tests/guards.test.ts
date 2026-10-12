@@ -68,6 +68,8 @@ type Entry = { name: string; load: () => Promise<{ default: (props: { children: 
 const ENTRIES: Entry[] = [
   { name: "/website page", load: () => import("@/app/(shell)/website/page") },
   { name: "/marketing layout", load: () => import("@/app/(shell)/marketing/layout") },
+  { name: "/reports page", load: () => import("@/app/(shell)/reports/page") },
+  { name: "/settings page", load: () => import("@/app/(shell)/settings/page") },
 ];
 
 beforeEach(() => {

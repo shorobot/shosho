@@ -96,3 +96,27 @@ export type ConsentChannel = "email" | "push" | "phone";
 
 /** `{granted_at, source}` or null — the shape stored in each `consent_*` column. */
 export type Consent = { granted_at?: string | null; source?: string | null } | null;
+
+/* --------------------------------------------------------------------- Berichte (api-contracts §6.10 / §8.5) */
+
+export type Functions = Database["public"]["Functions"];
+
+export type RevenueByDayRow = Functions["report_revenue_by_day"]["Returns"][number];
+export type TopItemRow = Functions["report_top_items"]["Returns"][number];
+export type FunnelRow = Functions["report_funnel"]["Returns"][number];
+export type DeliveryTimeRow = Functions["report_delivery_times"]["Returns"][number];
+export type PaymentReportRow = Functions["report_payments"]["Returns"][number];
+
+/* --------------------------------------------------------------------- Einstellungen (api-contracts §6.9) */
+
+export type PaymentsValue = {
+  provider?: string;
+  cash_on_delivery?: boolean;
+  payout?: { iban_last4?: string | null };
+};
+
+export type PaymentsEnabledValue = {
+  methods?: string[];
+  tip_presets_cents?: number[];
+  capture?: string;
+};

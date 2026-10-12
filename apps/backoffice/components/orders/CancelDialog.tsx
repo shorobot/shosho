@@ -4,16 +4,15 @@ import { useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Pill } from "@/components/ui/Pill";
 import { useOrderAction } from "@/components/orders/useOrderAction";
-import { useT, type Key } from "@/lib/i18n";
+import { useT } from "@/lib/i18n";
+import { CANCEL_REASON_CODES, CANCEL_REASON_KEY, type CancelReasonCode } from "@/lib/orders";
 import type { Order } from "@/lib/types";
 
-const REASONS: Key[] = ["cancel.reason.customer", "cancel.reason.unreachable", "cancel.reason.soldout", "cancel.reason.outOfZone", "cancel.reason.payment", "cancel.reason.other"];
-
-/** Cancel / reject with a reason — stored in orders.cancel_reason, note goes to the timeline. */
+/** Cancel / reject with a reason — a stable code in orders.cancel_reason, translated at render (lib/orders.ts's cancelReasonLabel); note goes to the timeline. */
 export function CancelDialog({ order, open, onClose }: { order: Order; open: boolean; onClose: () => void }) {
   const t = useT();
   const { run, busy } = useOrderAction();
-  const [reason, setReason] = useState<Key>(REASONS[0] as Key);
+  const [reason, setReason] = useState<CancelReasonCode>(CANCEL_REASON_CODES[0]);
   const [note, setNote] = useState("");
 
   return (
@@ -21,10 +20,10 @@ export function CancelDialog({ order, open, onClose }: { order: Order; open: boo
       <div className="flex flex-col gap-3">
         <label className="flex flex-col gap-1.5">
           <span className="label-caps">{t("cancel.reason")}</span>
-          <select className="field" value={reason} onChange={(e) => setReason(e.target.value as Key)}>
-            {REASONS.map((r) => (
-              <option key={r} value={r}>
-                {t(r)}
+          <select className="field" value={reason} onChange={(e) => setReason(e.target.value as CancelReasonCode)}>
+            {CANCEL_REASON_CODES.map((code) => (
+              <option key={code} value={code}>
+                {t(CANCEL_REASON_KEY[code])}
               </option>
             ))}
           </select>
@@ -43,7 +42,7 @@ export function CancelDialog({ order, open, onClose }: { order: Order; open: boo
             className="flex-1"
             disabled={busy === order.id}
             onClick={async () => {
-              const ok = await run(order, "cancelled", { reason: t(reason), note: note.trim() || undefined });
+              const ok = await run(order, "cancelled", { reason, note: note.trim() || undefined });
               if (ok) onClose();
             }}
           >
