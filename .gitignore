@@ -16,6 +16,11 @@ __pycache__/
 .venv/
 venv/
 
+# Playwright artifacts (apps/web, apps/backoffice, apps/e2e)
+playwright-report/
+test-results/
+blob-report/
+
 # os / ide
 .DS_Store
 .idea/
