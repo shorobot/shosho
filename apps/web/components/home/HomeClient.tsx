@@ -4,6 +4,7 @@ import { CategoryChip } from "@/components/ui/CategoryChip";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Pill, PillLink } from "@/components/ui/Pill";
 import { ProductCard } from "@/components/ui/ProductCard";
+import { BannerSlot } from "@/components/site/BannerSlot";
 import { CartPanel } from "@/components/site/CartPanel";
 import { StatusBanners, useOrderingState } from "@/components/site/StatusBanners";
 import { useUi } from "@/components/site/UiProvider";
@@ -65,6 +66,7 @@ export function HomeClient({ categories, initialQuery, initialCategory }: { cate
       <div className="flex flex-wrap items-start gap-[22px]">
         <div className="flex min-w-0 flex-1 basis-[520px] flex-col gap-5">
           <Hero fromCents={Number.isFinite(fromCents) ? fromCents : null} />
+          <BannerSlot slot="home_strip" />
           <StatusBanners />
 
           {/* category rail */}

@@ -2,10 +2,11 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@shosho/backend/types/database";
 import { publicEnv } from "./env";
-import { PHOTO_BUCKET, resolvePhotos } from "./photos";
+import { PHOTO_BUCKET, SITE_BUCKET, resolveBannerImage, resolvePhotos } from "./photos";
 import type { ShoshoApi } from "./api";
 import {
   OrderRejectedError,
+  type Banner,
   type Catalog,
   type DeliveryZone,
   type ItemOptionGroups,
@@ -26,11 +27,14 @@ type Client = SupabaseClient<Database>;
 const EMPTY_SETTINGS: PublicSettings = { business: null, opening_hours: null, site: null, payments_enabled: null, kitchen_status: null };
 
 export function emptyCatalog(online = false): Catalog {
-  return { categories: [], items: [], itemOptionGroups: [], zones: [], settings: EMPTY_SETTINGS, online };
+  return { categories: [], items: [], itemOptionGroups: [], zones: [], settings: EMPTY_SETTINGS, banners: [], online };
 }
 
 const ITEM_COLUMNS =
   "id, sku, category_id, name_de, name_en, name_ja, transliteration, description_de, description_en, base_price_cents, photos, tags, prep_minutes, allergens, weight_g, kcal_per_100g, sort, recommended_item_ids, max_per_order";
+
+// banners_live's own column list (api-contracts §8.6) — no draft, no active/valid_from/valid_to.
+const BANNER_COLUMNS = "id, slot, image_path, title_de, title_en, subtitle_de, subtitle_en, cta_label_de, cta_label_en, cta_href, sort";
 
 function makeClient(): Client | null {
   const env = publicEnv();
@@ -79,7 +83,7 @@ export function createSupabaseApi(): ShoshoApi {
       const sb = get();
       if (!sb) return emptyCatalog(false);
       try {
-        const [cats, items, groups, zones, settings] = await Promise.all([
+        const [cats, items, groups, zones, settings, banners] = await Promise.all([
           sb.from("menu_categories").select("id, slug, name_de, name_en, name_ja, sort, schedule").order("sort"),
           sb.from("menu_items_on_sale").select(ITEM_COLUMNS).order("sort"),
           sb
@@ -93,6 +97,10 @@ export function createSupabaseApi(): ShoshoApi {
             .select("code, name, areas, min_order_cents, fee_cents, free_delivery_over_cents, promised_minutes, postal_codes")
             .order("code"),
           sb.from("settings").select("key, value").in("key", ["business", "opening_hours", "site", "payments.enabled", "kitchen.status"]),
+          // banners_live (api-contracts §8.6) — the only anon-reachable banner surface; already
+          // filtered to active, in-window rows and ordered by slot then sort. Never query `banners`
+          // itself: anon's grant on the base table is revoked outright.
+          sb.from("banners_live").select(BANNER_COLUMNS).order("slot").order("sort"),
         ]);
         if (cats.error) throw cats.error;
         if (items.error) throw items.error;
@@ -154,6 +162,27 @@ export function createSupabaseApi(): ShoshoApi {
         for (const s of settings.data ?? []) settingRows.set(s.key, s.value);
         const pick = <T,>(k: string): T | null => (settingRows.get(k) as T | undefined) ?? null;
 
+        const publicSiteUrl = (key: string) => sb.storage.from(SITE_BUCKET).getPublicUrl(key).data.publicUrl || null;
+        const bannerRows: Banner[] = (banners.data ?? []).flatMap((r) =>
+          r.id && r.slot
+            ? [
+                {
+                  id: r.id,
+                  slot: r.slot,
+                  title_de: r.title_de ?? null,
+                  title_en: r.title_en ?? null,
+                  subtitle_de: r.subtitle_de ?? null,
+                  subtitle_en: r.subtitle_en ?? null,
+                  cta_label_de: r.cta_label_de ?? null,
+                  cta_label_en: r.cta_label_en ?? null,
+                  cta_href: r.cta_href ?? null,
+                  sort: r.sort ?? 0,
+                  image_path: resolveBannerImage(r.image_path, publicSiteUrl),
+                },
+              ]
+            : [],
+        );
+
         return {
           categories,
           items: menuItems,
@@ -166,6 +195,7 @@ export function createSupabaseApi(): ShoshoApi {
             payments_enabled: pick("payments.enabled"),
             kitchen_status: pick("kitchen.status"),
           },
+          banners: bannerRows,
           online: true,
         };
       } catch (e) {
@@ -208,6 +238,34 @@ export function createSupabaseApi(): ShoshoApi {
       const { data, error } = await sb.rpc("get_order_by_token", { token });
       if (error) throw new ApiError(error.message, error.code);
       return (data as unknown as TrackedOrder | null) ?? null;
+    },
+
+    subscribeToOrder(token: string, onUpdate: () => void): () => void {
+      const sb = get();
+      if (!sb) return () => {};
+      // api-contracts §3/§5.6: broadcast from the database on the private topic `order:<token>` —
+      // the token is the capability, same as get_order_by_token; the anon key authorises the join
+      // (realtime evaluates RLS with the subscriber's JWT, which is the anon key here — migration 16
+      // grants `anon`/`authenticated` select on `realtime.messages` for topics matching `order:%`).
+      // The payload carries no PII, so re-fetching get_order_by_token on every message is enough.
+      const channel = sb
+        .channel(`order:${token}`, { config: { private: true } })
+        .on("broadcast", { event: "order_updated" }, () => onUpdate())
+        .subscribe((status) => {
+          // Never surface this to the guest (api-contracts §3: "a dropped socket must not freeze
+          // the page") — the 15s poll the caller keeps running is the documented fallback, and a
+          // CHANNEL_ERROR/TIMED_OUT here is frequently transient (corporate proxy, flaky mobile,
+          // the realtime server's own fan-out not being ready for a brand-new topic yet — the race
+          // apps/backend/tests/guest_realtime.test.ts task 8 found). The realtime-js client retries
+          // with its own stepped backoff and rejoins the channel once the socket reopens; nothing
+          // here needs to force that.
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            console.warn("[shosho] tracking realtime degraded, relying on the 15s poll:", status);
+          }
+        });
+      return () => {
+        void sb.removeChannel(channel);
+      };
     },
   };
 }

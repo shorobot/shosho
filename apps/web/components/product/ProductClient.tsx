@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { BannerSlot } from "@/components/site/BannerSlot";
 import { CartPanel } from "@/components/site/CartPanel";
 import { StatusBanners, useOrderingState } from "@/components/site/StatusBanners";
 import { Pill } from "@/components/ui/Pill";
@@ -137,6 +138,8 @@ export function ProductClient({ item, category, recommended }: { item: MenuItem;
             </div>
           </div>
         </section>
+
+        <BannerSlot slot="product" />
 
         {recommended.length > 0 && (
           <section className="card p-5 md:p-6">

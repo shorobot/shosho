@@ -55,6 +55,14 @@ describe("content security policy", () => {
     expect(directive("img-src")).toContain("data:");
   });
 
+  it("is origin-scoped, not path-scoped — the same rule already covers the site bucket (banners, S3-03)", () => {
+    // img-src only ever carries the project origin (supabaseSources), never a bucket path, so
+    // `/storage/v1/object/public/menu/...` and `/storage/v1/object/public/site/...` are both already
+    // allowed; no CSP change was needed when banners (bucket `site`) shipped.
+    expect(`${SB}/storage/v1/object/public/menu/i/1.jpg`.startsWith(directive("img-src").split(" ").find((s) => s.startsWith("https://"))!)).toBe(true);
+    expect(`${SB}/storage/v1/object/public/site/b1/1.jpg`.startsWith(directive("img-src").split(" ").find((s) => s.startsWith("https://"))!)).toBe(true);
+  });
+
   it("keeps inline styles, which React style attributes need", () => {
     expect(directive("style-src")).toContain("'unsafe-inline'");
   });

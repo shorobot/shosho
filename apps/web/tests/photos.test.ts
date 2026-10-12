@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
-import { PHOTO_BUCKET, isAbsolutePhotoUrl, photoObjectKey, resolvePhotos, storagePublicUrl } from "@/lib/photos";
+import { PHOTO_BUCKET, isAbsolutePhotoUrl, photoObjectKey, resolveBannerImage, resolvePhotos, siteObjectKey, storagePublicUrl } from "@/lib/photos";
 
 const SUPABASE_URL = "https://bvmitglwwqsvufetlkff.supabase.co";
 const publicUrl = (key: string) => storagePublicUrl(SUPABASE_URL, key);
@@ -95,5 +95,43 @@ describe("storagePublicUrl", () => {
 
   it("tolerates a trailing slash on the project URL", () => {
     expect(storagePublicUrl(`${SUPABASE_URL}/`, "a/1.jpg")).toBe(storagePublicUrl(SUPABASE_URL, "a/1.jpg"));
+  });
+});
+
+describe("siteObjectKey", () => {
+  // Same shape as photoObjectKey (lib/photos.ts's objectKeyInBucket), parameterised on `site`
+  // instead of `menu` — banner image_path (api-contracts §8.6).
+  it("strips the site bucket prefix", () => {
+    expect(siteObjectKey("site/b1/1.jpg")).toBe("b1/1.jpg");
+    expect(siteObjectKey("/site/b1/1.jpg")).toBe("b1/1.jpg");
+  });
+
+  it("refuses absolute URLs and malformed input, same as photoObjectKey", () => {
+    expect(siteObjectKey("https://cdn.example.com/a.jpg")).toBeNull();
+    expect(siteObjectKey("site/../../etc/passwd")).toBeNull();
+    expect(siteObjectKey("")).toBeNull();
+    expect(siteObjectKey(null)).toBeNull();
+  });
+
+  it("does NOT strip a menu/ prefix — the two buckets are not interchangeable", () => {
+    expect(siteObjectKey("menu/item-1/1.jpg")).toBe("menu/item-1/1.jpg");
+  });
+});
+
+describe("resolveBannerImage", () => {
+  const siteBucketUrl = (key: string) => (storagePublicUrl(SUPABASE_URL, key) ?? "").replace("/public/menu/", "/public/site/");
+
+  it("resolves a site-bucket path", () => {
+    expect(resolveBannerImage("site/b1/1.jpg", siteBucketUrl)).toBe(`${SUPABASE_URL}/storage/v1/object/public/site/b1/1.jpg`);
+  });
+
+  it("keeps an absolute URL as-is", () => {
+    expect(resolveBannerImage("https://cdn.example.com/a.jpg", siteBucketUrl)).toBe("https://cdn.example.com/a.jpg");
+  });
+
+  it("is null for no image — a banner may have none (api-contracts §8.6)", () => {
+    expect(resolveBannerImage(null, siteBucketUrl)).toBeNull();
+    expect(resolveBannerImage(undefined, siteBucketUrl)).toBeNull();
+    expect(resolveBannerImage("", siteBucketUrl)).toBeNull();
   });
 });

@@ -63,6 +63,9 @@ export function createMockApi(opts: MockOptions = {}): ShoshoApi {
     itemOptionGroups: MOCK_ITEM_OPTION_GROUPS,
     zones: MOCK_ZONES,
     settings: { ...MOCK_SETTINGS, kitchen_status: { paused: opts.paused ?? false, since: opts.paused ? now().toISOString() : null } },
+    // No CMS in the mock layer — empty is the normal, "deliberate" case (api-contracts §8.6); every
+    // slot's fallback (the static Hero, or simply nothing) is what mock mode exercises.
+    banners: [],
     online: true,
   };
 
@@ -269,6 +272,10 @@ export function createMockApi(opts: MockOptions = {}): ShoshoApi {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { tracking_token, phone, ...pub } = progressed(o);
       return pub;
+    },
+    subscribeToOrder() {
+      // No realtime in the mock — NEXT_PUBLIC_API=mock exercises the 15s poll path only.
+      return () => {};
     },
   };
 }

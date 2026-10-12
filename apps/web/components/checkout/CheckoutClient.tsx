@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import { BannerSlot } from "@/components/site/BannerSlot";
 import { CartLines, Totals } from "@/components/site/CartLines";
 import { FreeDeliveryBar } from "@/components/site/FreeDeliveryBar";
 import { PromoField } from "@/components/site/PromoField";
@@ -135,6 +136,7 @@ export function CheckoutClient() {
       <div className="flex min-w-0 flex-col gap-[18px]">
         <Stepper done={done} current={current} />
         <StatusBanners />
+        <BannerSlot slot="checkout" />
 
         {/* 1 · CART */}
         <section id="step-1" className="card flex scroll-mt-[96px] flex-col gap-4 p-5 md:p-6">
