@@ -1,7 +1,22 @@
-# PROPOSAL (filed by S6-01 QA) — two findings for S3
+# PROPOSAL (filed by S6-01 QA) — two findings for S3, plus one open question
 
 ## Owner
 S3 Frontend (`apps/web`).
+
+## Open question (not a confirmed finding — flagging the trace, not the diagnosis)
+With finding 0 below fixed, every e2e checkout spec that fills the delivery postal code still fails: the
+UI reports *"We don't deliver to this postal code"* for `10243`, which is genuinely in Zone B
+(`apps/backend/supabase/seed.sql:103`) — and `apps/e2e/specs/product-rules.spec.ts`'s own
+"free delivery over the zone's threshold" test calls `quote_order` directly with the same postal code and
+passes, every run. So the RPC and the seed data are both correct; only the path from the checkout UI's
+postal-code field to the quote it sends isn't resolving a zone, and raising the test's timeout from 15s
+to 25s changed nothing — this is deterministic, not slow. **I did not trace this one** (eight CI rounds
+were enough for one boot); my unconfirmed guess is that `state.address.postal_code` and `state.lines`
+are two different slices of the same `cart.tsx` reducer state, and the add-to-cart race (finding 0's
+sibling cause in `apps/e2e/fixtures.ts`'s own history) already proved "reaches `localStorage`" and
+"reaches a debounced `quote_order` call" are not the same guarantee for this reducer. Whoever next
+touches `apps/web/lib/cart.tsx` or `components/checkout/DeliveryStep.tsx` should pull a Playwright trace
+from a failing `apps/e2e` run first — the same technique that found finding 0 — rather than guess.
 
 ## Finding 0 (HIGH, filed first because it blocks local development, not just this boot) —
 ## CSP has no `'unsafe-eval'` carve-out for `next dev`, so the guest site is 100% non-interactive under `pnpm dev`
