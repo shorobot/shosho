@@ -2279,7 +2279,7 @@ The owner is restarting the session and asked for a snapshot, everything in memo
 **What I deliberately did not issue.** S2's `place_order` throttle stays queued behind #77 (D-018) because it lands in the surface S6's specs measure. S5 Automation stays unstarted: it is the largest unbuilt thing and the first real decision about it — whether to re-add an `api` service under D-013 — deserves its own boot once the campaign screens have a sender to be wired to. And the customer-accounts phases stay queued on two owner answers, not on engineering: the SMTP choice (D-017) and the one clause of D-016 I inferred rather than was told, that accounts are *optional* and guest checkout continues unchanged.
 
 ## 2026-10-15 — S7 Security — S7-02
-Audit-only, as the boot required: two sessions (S4-04/S4-05 in back-office, S6-01's unlanded
+PR #92 (branch `s7-02`). Audit-only, as the boot required: two sessions (S4-04/S4-05 in back-office, S6-01's unlanded
 `apps/e2e`) were live in the surfaces this boot was reading, so **no RLS policy, grant, trigger or
 migration was changed.** `docs/security.md` updated in place (never replaced): §2.1 (new) is the
 full view/`security_invoker` sweep; §4 gained three standing rules (7: the view/join rule itself,
