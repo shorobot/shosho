@@ -2329,3 +2329,30 @@ The lesson is the one I keep relearning in a new costume: **I asserted a mechani
 **Sequencing ruling on #87.** S3-03 asked me to merge it and asked the owner to flip order #1005's status and create a banner so they can finish verifying. Both verifications are **impossible right now and would not be made possible by merging**: `Deploy staging` has been skipping since 10-12, so staging runs the 10-11 build and will keep running it no matter what lands on `main`. Merging #87 is harmless but pointless until **S1-09** restores the chain. The one thing that *is* time-sensitive: `apps/web`'s CSP carve-out is a one-line fix in S3's own file, their session is live now, and after #87 merges it costs a whole new session — so it belongs in #87 before merge, not after.
 
 **Also noted, not acted on:** S3-03's report characterises the `e2e` failures as "CI resource-contention timeouts". S6's own root-causing says otherwise — an un-root-caused delivery-zone resolution failure in the checkout UI, 15 passed / 16 failed held across four runs. The "no new failures introduced" part of S3's check is sound and is what matters for the merge; the attributed cause is not, and should not enter the record as fact.
+## 2026-10-15 — S1 DevOps — S1-09
+Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred from PR CI — PR checks cannot prove this because `workflow_run` never fires on a PR branch.
+
+**Mechanism, confirmed exactly as the boot stated it.** #77's `e2e` job lived inside `ci.yml`. S6 correctly kept it out of the `ci` gate job's `needs`, so PRs stayed mergeable — but `migrate-staging.yml`'s `push` job and `deploy-staging.yml` both gate on `workflow_run.conclusion == 'success'`, and a workflow run's `conclusion` is every job in the run, `needs` or not. 15 passed / 16 failed by design (several specs assert product gaps falsifiably), so every `CI` run on `main` since #77 concluded `failure`. Confirmed on the actual run history before touching anything: `CI` run `38227747259` (sha `2bef358`, 2026-10-12) → `failure`, and both `Migrate staging` (`38229595996`) and `Deploy staging` (`38229602837`) show **`skipped`**, not merely never-triggered — the `if` condition evaluated false and the job itself records that. Nothing pushed to `main` between that and this fix, so it was live the whole time, as the boot said.
+
+**Fix.** Moved the `e2e` job verbatim — same steps, same timeout/retries, nothing it *does* changed — out of `ci.yml` into a new standalone `e2e.yml`, mirrored byte-for-byte to `apps/infra/.github/workflows/e2e.yml` (the `infra` CI job's own `diff -r` check covers it). Same triggers (`pull_request`, `push` to `main`), so it still reports per-PR/per-push on its own check; it just no longer contributes to `CI`'s run `conclusion`. No `continue-on-error` — confirmed it stays a visible failure on its own check rather than a silently-green job hiding 16 real failures. `ci.yml`'s `ci` gate job and `needs: [node, python, infra, backend]` are byte-identical to before (diffed, not assumed) — e2e was never in that list and still isn't.
+
+**`workflow_run` sweep (task 3), grepped across both `.github/workflows` and `apps/infra/.github/workflows`:**
+| Workflow | Listens to | Same exposure? |
+|---|---|---|
+| `migrate-staging.yml` | `workflow_run: [CI]` | **Yes — this was it.** Fixed above. |
+| `deploy-staging.yml` | `workflow_run: [Migrate staging]` | Same shape, one hop downstream; chains correctly off `Migrate staging`'s own conclusion, so fixing the CI hop fixes this one too. No separate change needed. |
+| `deploy-prod.yml` | **Nothing — no `workflow_run` trigger at all.** Triggers on `push: tags: [v*]` with a required manual approver (D-005). | No exposure, no warning comment needed. |
+
+**Verified on `main`, four run IDs, after merging #91 (merge commit `dfc7861`) — PR CI did not and could not prove this:**
+| Workflow | Run ID | Conclusion |
+|---|---|---|
+| `CI` | `38806034798` | **success** |
+| `Migrate staging` | `38806466073` | **success** |
+| `Deploy staging` | `38806580158` | **success** |
+| `e2e` | `38806034845` | **failure** — correctly isolated: still red on its own, no longer touches the three above |
+
+**Boundary held.** Touched only `.github/workflows/{ci,e2e}.yml` and their `apps/infra` mirrors. Did not touch `apps/e2e` (moved a job definition, not the suite), did not add `e2e` to `needs`, did not touch `apps/web`, `apps/backoffice`, `apps/backend`, or `docs/security.md`. `state.md`: S1 row only.
+
+**For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
+
+Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
