@@ -2296,3 +2296,30 @@ Tasks 3–5 (verify Cloudflare Access, then ask TETA+PI to drop basic-auth toget
 **docs/security.md still says `bo.shos.hellfiresol.com`** (lines 176, 218) — stale since the 2026-10-05 rename, surfaced by TETA+PI's correction. Outside my boundary (S7-02 live on that file per the boot); not fixed, flagged here and worth S7/S0 picking up rather than left for someone to rediscover.
 
 Next: per the boot, stop and wait for S0. `proposed/S1-prod-target.md` and `proposed/S1-explicit-secrets-map.md` stay queued, S0's call.
+## 2026-10-15 — S1 DevOps — S1-09
+Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred from PR CI — PR checks cannot prove this because `workflow_run` never fires on a PR branch.
+
+**Mechanism, confirmed exactly as the boot stated it.** #77's `e2e` job lived inside `ci.yml`. S6 correctly kept it out of the `ci` gate job's `needs`, so PRs stayed mergeable — but `migrate-staging.yml`'s `push` job and `deploy-staging.yml` both gate on `workflow_run.conclusion == 'success'`, and a workflow run's `conclusion` is every job in the run, `needs` or not. 15 passed / 16 failed by design (several specs assert product gaps falsifiably), so every `CI` run on `main` since #77 concluded `failure`. Confirmed on the actual run history before touching anything: `CI` run `38227747259` (sha `2bef358`, 2026-10-12) → `failure`, and both `Migrate staging` (`38229595996`) and `Deploy staging` (`38229602837`) show **`skipped`**, not merely never-triggered — the `if` condition evaluated false and the job itself records that. Nothing pushed to `main` between that and this fix, so it was live the whole time, as the boot said.
+
+**Fix.** Moved the `e2e` job verbatim — same steps, same timeout/retries, nothing it *does* changed — out of `ci.yml` into a new standalone `e2e.yml`, mirrored byte-for-byte to `apps/infra/.github/workflows/e2e.yml` (the `infra` CI job's own `diff -r` check covers it). Same triggers (`pull_request`, `push` to `main`), so it still reports per-PR/per-push on its own check; it just no longer contributes to `CI`'s run `conclusion`. No `continue-on-error` — confirmed it stays a visible failure on its own check rather than a silently-green job hiding 16 real failures. `ci.yml`'s `ci` gate job and `needs: [node, python, infra, backend]` are byte-identical to before (diffed, not assumed) — e2e was never in that list and still isn't.
+
+**`workflow_run` sweep (task 3), grepped across both `.github/workflows` and `apps/infra/.github/workflows`:**
+| Workflow | Listens to | Same exposure? |
+|---|---|---|
+| `migrate-staging.yml` | `workflow_run: [CI]` | **Yes — this was it.** Fixed above. |
+| `deploy-staging.yml` | `workflow_run: [Migrate staging]` | Same shape, one hop downstream; chains correctly off `Migrate staging`'s own conclusion, so fixing the CI hop fixes this one too. No separate change needed. |
+| `deploy-prod.yml` | **Nothing — no `workflow_run` trigger at all.** Triggers on `push: tags: [v*]` with a required manual approver (D-005). | No exposure, no warning comment needed. |
+
+**Verified on `main`, four run IDs, after merging #91 (merge commit `dfc7861`) — PR CI did not and could not prove this:**
+| Workflow | Run ID | Conclusion |
+|---|---|---|
+| `CI` | `38806034798` | **success** |
+| `Migrate staging` | `38806466073` | **success** |
+| `Deploy staging` | `38806580158` | **success** |
+| `e2e` | `38806034845` | **failure** — correctly isolated: still red on its own, no longer touches the three above |
+
+**Boundary held.** Touched only `.github/workflows/{ci,e2e}.yml` and their `apps/infra` mirrors. Did not touch `apps/e2e` (moved a job definition, not the suite), did not add `e2e` to `needs`, did not touch `apps/web`, `apps/backoffice`, `apps/backend`, or `docs/security.md`. `state.md`: S1 row only.
+
+**For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
+
+Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
