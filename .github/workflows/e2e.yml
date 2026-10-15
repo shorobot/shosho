@@ -1,0 +1,98 @@
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # S6-01: cross-app Playwright suite (apps/e2e) against a local Supabase stack — no staging, no Stripe
+  # keys needed (every spec here uses cash / v1 client-reported payment, never create-payment-intent).
+  # Deliberately NOT in the `ci` gate's `needs` below: browser install + two Next dev servers booting is
+  # a materially flakier, slower gate than anything else in that list today (S3-01/S4-01 kept their own
+  # Playwright smoke out of the required check for the same reason — see apps/e2e/README.md). It still
+  # runs on every PR and reports its own status; promote it into `needs` once it's proven stable.
+  #
+  # S1-09: moved out of ci.yml into this standalone workflow. Being a job inside `CI` meant it counted
+  # toward that *workflow run's* `conclusion` even though it was never in the `ci` gate job's `needs` —
+  # `needs` only protects the merge gate, but `migrate-staging.yml`'s `push` job and `deploy-staging.yml`
+  # both key off `workflow_run.conclusion == 'success'`, and a run's conclusion is every job in it, gate
+  # or not. S6-01 (PR #77) added this suite genuinely red (15 passed / 16 failed, by design — several
+  # specs assert product gaps falsifiably until S3/S4 fix them), which made every `CI` run on `main`
+  # conclude `failure` and silently stopped `Migrate staging` / `Deploy staging` from ever firing again.
+  # Do not move this back into `ci.yml` and do not add it to the `ci` gate's `needs` (16 failing specs
+  # would then block every PR) — if it needs to gate something again once green, give it its own
+  # `workflow_run` listener rather than folding it back into `CI`'s conclusion.
+  e2e:
+    name: e2e (apps/e2e)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright chromium
+        run: pnpm --filter @shosho/e2e exec playwright install --with-deps chromium
+
+      - name: Start local Supabase (applies migrations + seed)
+        working-directory: apps/backend
+        run: pnpm exec supabase start
+
+      - name: Run the suite against the local stack
+        run: |
+          set -euo pipefail
+          status_env=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          export NEXT_PUBLIC_SUPABASE_URL="$API_URL" NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY"
+          # S2-05: seed.sql gives every staff account a random password; this sets the documented
+          # local-only one ("local-dev-only") that apps/e2e/helpers/db.ts expects.
+          pnpm --filter @shosho/backend run seed:local-logins
+          pnpm --filter @shosho/e2e exec playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: apps/e2e/playwright-report
+          if-no-files-found: ignore
+
+      # S6-01 task 5: quantify apps/backend/tests/guest_realtime.test.ts's flake rate by actually
+      # running it N times (default 25) against the same local stack, instead of trusting the fix looks
+      # reasonable on paper. Informational only — never fails the job.
+      - name: Flake rate — guest_realtime.test.ts (N=25)
+        if: always()
+        run: |
+          set -euo pipefail
+          status_env=$(pnpm --filter @shosho/backend exec supabase status -o env | sed 's/^/export /')
+          eval "$status_env"
+          export SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          pnpm --filter @shosho/backend run seed:local-logins
+          node apps/e2e/scripts/flake-guest-realtime.mjs | tee /tmp/flake-report.txt
+          {
+            echo "### guest_realtime.test.ts flake rate (N=25)"
+            echo '```'
+            tail -40 /tmp/flake-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Supabase
+        if: always()
+        working-directory: apps/backend
+        run: pnpm exec supabase stop --no-backup
