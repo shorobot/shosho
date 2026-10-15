@@ -5,7 +5,7 @@ and standing rules are in `decisions.md`; this file is only *what is left, in wh
 Status: `[ ]` not started · `[~]` in flight · `[x]` done · `[!]` blocked on someone outside the session ·
 `[—]` deliberately not doing.
 
-Last moved: 2026-10-15 (S0)
+Last moved: 2026-10-15 (S0 — folded in S7-02's #92 findings; confirmed S7-01's payment CRITICAL is shipped)
 
 ---
 
@@ -32,6 +32,8 @@ The staging deploy chain was dead 2026-10-12 → 2026-10-15 and is now **live ag
 | `[ ]` | **`orders_kitchen_read` is unbounded** — bind by status, not time | **S2** | S7-02 finding. Kitchen currently reads every order ever placed |
 | `[ ]` | **`settings.draft` leaks to kitchen/driver** | **S2** | S7-02 finding, **verified by S0**: migration 32 line 23–24 revokes and re-grants columns for `anon` only, so `authenticated` keeps `draft` via `settings_staff_common_read` |
 | `[ ]` | The two tests titled "non-staff" only exercise `anon()` — the real regression test does not exist | **S7/S6** | S7-02 finding. A named test that does not test the named thing is worse than no test |
+| `[ ]` | **The live-RLS-sweep CI test silently skips every view** | **S7/S6** | S7-02 finding. A green test that exercises nothing — same class as the one above, and it is the sweep that is supposed to catch Finding-A regressions |
+| `[ ]` | HTTP-layer tests for the Edge Functions | **S2/S6** | the only open item of S7's payment proposal (task 6) — a coverage suggestion, never a defect |
 | `[ ]` | Re-point S6's inverted specs once #87 and #89 land | **S6** | several specs assert gaps falsifiably and flip red on the fix — by design, but they must then be rewritten |
 | `[ ]` | The un-root-caused delivery-zone failure (16 of 33 specs) | **S6** | the one honest gap in the suite; checkout UI fails to resolve a zone the identical RPC resolves |
 
@@ -100,7 +102,19 @@ while the code that needs them is still being written.
 Treating these as a stage that follows the build is how both become theatre. F1 grows a new leg as soon
 as C3 lands an agent; F2's largest single piece is C2 and it starts now.
 
-## G. What S0 is holding
+## G. Closed, recorded so nobody re-opens it
+- **S7-01's payment findings are all shipped** — tasks 1–5, re-verified by S7-02 on 2026-10-15 against
+  the live code, not against their own earlier note: the `place_order` trust boundary (**the CRITICAL
+  free-order vector**) in `20260928000025_payment_trust_boundary.sql`, refund dedup and the worker's
+  service-role check in `payment-worker/index.ts`, `timingSafeEqual` on `tracking_token` at
+  `create-payment-intent/index.ts:60`, `search_path` pinning in `20260928000026`. `docs/security.md` §5
+  had still been showing the CRITICAL as live and was corrected in #92. **Only task 6 (Edge Function
+  HTTP tests) remains**, and it is coverage, not a defect. The proposal file is kept rather than deleted
+  so each fix keeps its "why" — treat the file's RESOLVED header as authoritative over its task headings.
+- **The VAT change S4-05 filed against S2 is cancelled** (D-019), not deferred. S2 must be told so it does
+  not find the filing and execute it — it would add 12 points of tax to every Abholung order.
+
+## H. What S0 is holding
 - S2 is **idle on purpose** and its D-018 `place_order` throttle is unblocked now that #77 landed — but
   B4/B5 (its two S7 findings) and C1 are ahead of it in value.
 - The VAT task S4-05 filed against S2 is **cancelled**, not deferred (D-019). S2 must be told, so it does
