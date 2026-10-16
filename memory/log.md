@@ -2356,3 +2356,85 @@ Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred
 **For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
 
 Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
+
+## 2026-10-16 — S2 Backend — S2-08
+
+D-020's agent runtime: migration `20261006000033` → renumbered and claimed as
+`20261016000033_agent_runtime.sql` (D-014, first commit). Four tables — `agents` (registry),
+`agent_tasks` (claimable queue), `agent_runs` (one row per invocation), `agent_run_logs` (ordered
+log lines) — plus `claim_agent_tasks`/`finish_agent_run` (service-role only). Schema and contract
+only, as scoped: no `apps/automation`, no orchestrator, no `ANTHROPIC_API_KEY`/
+`SUPABASE_SERVICE_ROLE_KEY` reference anywhere. `docs/api-contracts.md` §8.8 written. PR #96,
+merged.
+
+**Role matrix, stated explicitly (task 5/§8.8).** `owner`/`operator`: full CRUD on `agents`,
+read-only on the other three. `kitchen`/`driver`: nothing — `is_staff('owner','operator')` is the
+only predicate on every policy, never the unconditional role-only shape S7-02 found on
+`orders_kitchen_read`. `anon`: table grant revoked outright on all four, not left to RLS alone —
+closing the other S7-02 finding (`settings.draft`'s column-grant/row-policy mismatch), though this
+schema has no anon-reachable surface at all so the revoke is belt-and-braces, not a fix for
+anything live here. Tested against rows **known to exist** (an `admin()` count first), not
+inferred from an empty result — S4-03's "RLS matching zero rows returns `200 []`" finding is
+exactly the trap a lazier test would fall into.
+
+**Realtime: table replication, not broadcast.** `agent_tasks`/`agent_runs`/`agent_run_logs` added
+to `supabase_realtime`; `agents` deliberately not (mutates rarely, same as `automations`/
+`campaigns`, neither of which is in the publication either). Chose replication over S2-02's
+guest-tracking broadcast because the dashboard reads these as a staff session with a real per-user
+JWT — `is_staff()` RLS applies cleanly, and broadcast exists only to work around a *shared* anon
+JWT with no header-scoped RLS, which doesn't apply here.
+
+**Claim locking reused, status shape diverges — said why rather than quietly diverging (per the
+boot).** `for update skip locked` + a stale-claim timeout is identical to `claim_campaign_recipients`/
+`claim_payment_jobs`. The *status* shape follows `payment_jobs` (an enum with a `processing` state
++ `started_at`), not `campaign_recipients`'s `claimed_at`-only shape: an agent task can run for a
+while (an LLM call, not a queue hop), and the dashboard needs "in flight" visibly distinct from
+"waiting," which `campaign_recipients` has no way to express. Claiming a task opens its run in the
+same transaction, so there is never a claimed task with nothing to log against.
+
+**Cost is recorded, not capped.** Every `agent_runs` row carries `input_tokens`/`output_tokens`/
+`cost_usd`, written in the same statement as the run's conclusion. No rate limiter or spend ceiling
+in front of the claim/run loop — that's S7's call at plan.md C2, same posture D-016 took with SMS
+pumping. Flagging again here so it isn't lost: an agent that loops burns the owner's Anthropic
+account with nothing currently stopping it short of a human reading the dashboard.
+
+**GDPR nullability carried, one exception named.** `agent_tasks.customer_id` and
+`agent_runs.customer_id` are nullable, `on delete set null` — same shape `automation_runs`
+established. Tested: deleting the customer leaves both rows in place with the link cleared. **Not**
+attempted: scrubbing customer PII that may appear inside `result` or a log line's free-text
+`message` (model prompts/outputs are unbounded free text) — redacting that safely without
+destroying the audit trail is a harder problem than this boot's scope, and is named as an open gap
+in §8.8 rather than silently skipped.
+
+**Marketing-runner ruling: `automations`/`automation_runs` stay separate, not folded in.** Reasons
+in §8.8 — it already has a working config surface and a UI (S4-04's Marketing screen) keyed to its
+specific shape (`automation_kind`, per-customer rows); folding it in means either teaching this
+generic runtime "one row per customer considered" (which most agents have no use for) or rewriting
+a working UI for no functional gain. Cost: two runtimes to observe, which is S4's small, bounded UI
+concern to label clearly, not a schema one.
+
+**`agents.key` is text, not an enum — the mistake the boot named explicitly.** D-020's agent set
+(sales/accounting/warehouse/grow/quality) is expected to grow, unlike `automation_kind`'s fixed
+four. An enum would mean a migration every time S5 adds an agent.
+
+**Could not run `supabase start` locally — no Docker daemon in this sandbox** (checked: no
+`/var/run/docker.sock`, no `Docker.app`; `colima` needs `qemu`, not installed, and building it from
+source on this Intel Mac was going to cost real time for no gain since GitHub Actions has real
+Docker). Relied on the actual `backend (supabase)` CI job instead: pushed, watched, fixed what it
+found. It caught two real things, exactly as it's meant to: `security.test.ts`'s function-grants
+sweep flagged `claim_agent_tasks`/`finish_agent_run` as new, unlisted functions (added to
+`SERVICE_ROLE_ONLY`, same shape as `claim_campaign_recipients`) — and `types/database.ts` was
+stale, fixed by downloading the run's own `backend-types` artifact (produced by the same
+`pnpm run db:types` the local workflow would run) rather than hand-editing a 2000-line generated
+file. Second CI run fully green (`db reset`, `db lint`, seed-idempotency, all 175 tests, types
+diff clean) before merging.
+
+**Boundary held.** No `apps/automation`, `apps/web`, `apps/backoffice`, `apps/infra`, `apps/e2e`.
+Touched `docs/api-contracts.md` only for the one §8.8 subsection. Did not touch
+`docs/security.md`, `decisions.md`, `plan.md`, `sessions.md`. Did not execute S4-05's cancelled
+VAT filing (D-019) — saw it in `proposed/`, left it alone. Did not touch B4/B5 (`orders_kitchen_read`,
+`settings.draft`) — those are separate PRs per the boot, still open. `state.md`: S2 row only.
+
+Next: B4 (`orders_kitchen_read` unbounded), B5 (`settings.draft` leak), D-018's `place_order`
+throttle (unblocked, #77 landed), C8 (ingredient/recipe/stock schema, large). Stopping here per the
+boot, waiting for S0.
