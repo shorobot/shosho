@@ -93,6 +93,10 @@ const SERVICE_ROLE_ONLY = new Set([
   // S2-06 §8.6 — bucket `site` installer, service_role only (same shape as ensure_menu_bucket_policies,
   // but starting correct: revoked from anon AND authenticated directly, not just `public`).
   "ensure_site_bucket_policies",
+  // S2-08 §8.8 — agent runtime queue. Same "anon key, service-role authority" shape as
+  // claim_campaign_recipients above: unreachable with anon OR authenticated.
+  "claim_agent_tasks",
+  "finish_agent_run",
 ]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what
