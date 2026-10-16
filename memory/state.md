@@ -1,7 +1,7 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-10-12 (S0 — RESTART SNAPSHOT: see the snapshot block directly below; S4-05 and S3-03 issued, S1-08 and S7-02 still unrun)
+Last update: 2026-10-15 (S0 — all four boots ran; #87/#88/#89 open and awaiting review; **the staging deploy chain is still skipping** → S1-09; S6's finding 0 still unfixed → re-filed as a proposal)
 
 ## SNAPSHOT — 2026-10-12, taken before a session restart
 Read this first; everything below it is the detail. Nothing here is a claim S0 has not measured.
@@ -12,9 +12,13 @@ Read this first; everything below it is the detail. Nothing here is a claim S0 h
 
 **Never started.** S5 Automation (`apps/automation` is an empty directory, so campaigns can be *created* and nothing can *send* them) · push transport (no `push_subscriptions`, no VAPID, no service worker) · customer accounts / cabinet / bonuses (queued under D-016/D-017) · **any production environment** — `deploy-prod.yml` exists but there is no host, no prod Supabase project, no `PROD_*` secrets.
 
+**Unfixed and unrouted: S6's finding 0, HIGH.** Both apps' CSP (`apps/web/lib/csp.ts:53`, `apps/backoffice/lib/csp.ts:137`) emit `script-src` with no `'unsafe-eval'` and no `NODE_ENV` branch, so under `pnpm dev` **no client JavaScript executes in either app** — HTML paints, nothing hydrates, a click does nothing, no console error. Invisible under `next build`, which is what staging runs. S6 filed it first in both routing files; **S0's boots put it in both sessions' reading and neither's task list**, so both sessions ran without it (verified 10-15: zero `unsafe-eval` on `main`, `s3-03`, `s4-05`). Re-filed as `proposed/S6-finding-0-csp-dev-carveout.md` — one line each, S3 owns the web file, S4 the back-office one. **It bit the two boots that could least afford it:** a click-driven cash dialog and a realtime subscription, both pure client JS — so any "verified locally" claim about interactive behaviour in #87 or #89 was made against a page whose JS never ran.
+
+**Broken right now, and it is S0's doing — this gates the other PRs.** Merging #77 put an intentionally-failing `e2e` job *inside* the `CI` workflow. S6 kept it out of the `ci` gate's `needs`, so PRs stay mergeable — but `Migrate staging` gates on `workflow_run.conclusion == 'success'`, and a **run's** conclusion counts every job, not the gate job. Measured: `CI 38227747259` FAILURE → `Migrate 38229595996` SKIPPED → `Deploy 38229602837` SKIPPED (10-12 09:23Z), against `CI → Migrate → Deploy` all green the night before (`38180213644 / 38180402557 / 38180450228`). Still the live state on 2026-10-15 — nothing has pushed to `main` since. **It will not heal:** S6's last four runs held at 15 passed / 16 failed and only four of those are routed. **Consequence for sequencing: merging #87 or #89 now lands their code on `main` and deploys nothing**, so S3-03's required staging verification and S4-05's real-order cash proof both remain impossible. Fix first — **S1-09**, move `e2e` to its own workflow file, explicitly *not* `continue-on-error`, which would report green over 16 real failures.
+
 **Built, never exercised.** The whole Stripe path. **No live payment has ever run**, so `report_payments` reads zero until owner actions 2–3.
 
-**Sessions.** S1-08 issued, not run · S7-02 issued, not run · **S4-05 issued 2026-10-12** · **S3-03 issued 2026-10-12** · S6-01's PR #77 open with a deliberately-advisory failing `e2e` job (several specs assert gaps falsifiably, so they stay red until S3-03/S4-05 land) · S2 idle, its throttling boot waits for #77 (D-018) · S5 never started.
+**Sessions.** All four issued boots ran. **Three PRs open since 2026-10-12, all `MERGEABLE/UNSTABLE`** (unstable = the advisory `e2e`, by design): **#89** S4-05 (+3152/-44, 47 files) · **#88** S1-08 (+16/-1) · **#87** S3-03 (+650/-23, 18 files). **S7-02** has branch `s7-02` and no PR. **#77 merged 09:05Z 2026-10-12** (`2bef358`, true merge commit) — all 21 `apps/e2e` files on `main`. Both S4-05 and S3-03 branched *before* that merge, so neither could read the spec its boot named as its oracle; review their work against the specs, not against their reports. **S1-09 issued 2026-10-15** (unbreak the deploy chain). S2 idle, no longer blocked by #77 (D-018). S5 never started.
 
 **Owner-only, in priority order.** (0) choose an SMTP provider — D-017, email OTP is unusable without it; (1b) get the basic-auth plaintext from TETA+PI; (2–3) the two Stripe secrets + webhook; (6b) Cloudflare Access, which would retire 1b permanently; then the low/cosmetic ones.
 
