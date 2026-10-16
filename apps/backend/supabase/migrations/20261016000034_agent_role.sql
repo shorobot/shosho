@@ -26,6 +26,16 @@ comment on role agent is
   'per-agent DB roles "not yet" — so nothing here distinguishes which agent is connected; that '
   'separation is the orchestrator''s own code (S5), not the database''s.';
 
+-- `postgres` (the role every migration runs as, here and on hosted Supabase) is not a literal
+-- Postgres superuser on this platform, so creating a role grants no automatic ability to assume
+-- it — `SET ROLE agent` needs explicit membership, same as any other role switch would. This buys
+-- nothing extra once granted: switching into `agent` replaces the session's effective privileges
+-- with exactly `agent`'s own (non-BYPASSRLS, narrowly granted), it does not add `agent`'s grants on
+-- top of `postgres`'s. Needed for `tests/agent_role.test.ts`'s `SET ROLE agent` checks against the
+-- live catalog, and generally useful for the same debugging/impersonation reason `postgres` already
+-- owns every object here.
+grant agent to postgres;
+
 ---------------------------------------------------------------- universal revokes (§9.4)
 -- Stated explicitly even where the default is already deny, so the next person reading this file
 -- does not have to re-derive "does agent have X" from absence of a grant. agent has never been

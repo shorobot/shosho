@@ -314,9 +314,23 @@ describe("RLS sweep (live catalog: public, storage, realtime)", () => {
   it("payment_events, payment_jobs, customer_events: staff read-only, no direct write policy exists", async () => {
     for (const table of ["payment_events", "payment_jobs", "customer_events"]) {
       const rows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === table);
-      expect(rows.map((p) => p.cmd), table).toEqual(["SELECT"]);
-      expect(rows[0].roles, table).toEqual(["authenticated"]);
+      expect(rows.map((p) => p.cmd), table).not.toEqual(expect.arrayContaining(["INSERT", "UPDATE", "DELETE"]));
+      const staffRow = rows.find((p) => p.roles.includes("authenticated"));
+      expect(staffRow, `${table}: no authenticated policy found`).toBeTruthy();
+      expect(staffRow!.cmd, table).toBe("SELECT");
+      expect(staffRow!.roles, table).toEqual(["authenticated"]);
     }
+  });
+
+  it("payment_events / payment_jobs carry the `agent` role's own SELECT policy too (S2-09 §9.1); customer_events does not", async () => {
+    for (const table of ["payment_events", "payment_jobs"]) {
+      const rows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === table);
+      const agentRow = rows.find((p) => p.roles.includes("agent"));
+      expect(agentRow, `${table}: no agent policy found`).toBeTruthy();
+      expect(agentRow!.cmd, table).toBe("SELECT");
+    }
+    const customerEventsRows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === "customer_events");
+    expect(customerEventsRows.some((p) => p.roles.includes("agent")), "customer_events must not grant agent anything").toBe(false);
   });
 });
 
