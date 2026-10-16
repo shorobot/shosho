@@ -43,7 +43,8 @@ QA and Security are **not** steps here; they are section F, continuous. Only thi
 
 | | # | What | Who | Blocked by |
 |---|---|---|---|---|
-| `[~]` | **1** | Agent runtime schema: registry, runs, claimable queue, logs, realtime, cost | **S2** | **issued as `S2-08-agent-runtime-schema.md`** — not greenfield: `automations`/`automation_runs` (migration 28) already cover the *marketing* half, so S2 extends rather than duplicates |
+| `[x]` | **1** | Agent runtime schema — shipped as migration 33 (#96/#97). S0 review: no defect found | **S2** | done 2026-10-16 |
+| `[~]` | **1b** | **`agent` role + grants + the approval state C1 left out** | **S2** | **issued as `S2-09-agent-role-and-approval-state.md`.** Migration 33 grants the claim/finish functions to `service_role` (lines 208, 263) and S7-03 ruled the orchestrator must never be `service_role` — so **C3 is blocked on this and nothing else** |
 | `[~]` | **2** | Privilege boundary for `apps/automation` | **S7** | **issued as `S7-03-automation-privilege-boundary.md`** — design-only ruling, parallel to 1 |
 | `[ ]` | 3 | Orchestrator skeleton + **Accounting agent** (#1) | S5 | 1 and 2 |
 | `[ ]` | 4 | Agent dashboards in the back-office (status/queue/logs, realtime) | S4 | 1 |
