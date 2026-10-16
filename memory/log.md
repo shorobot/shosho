@@ -2356,3 +2356,96 @@ Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred
 **For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
 
 Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
+
+## 2026-10-16 — S7 Security — S7-03
+
+Design and rule, step C2, as the boot said. `docs/security.md` §9 has the full ruling; this is the
+measurement trail and the parts that bite.
+
+**The identity ruling, and what settled it.** `.env.example` asks for `SUPABASE_SERVICE_ROLE_KEY` *and*
+`DATABASE_URL` — two different connection shapes, which the boot didn't flag but turned out to matter
+more than the headline question. `service_role` bypasses RLS outright, so handing it to an LLM-driven
+process means its blast radius on a bug or a successful injection is "the whole schema." Measured, not
+assumed, why a dedicated role is a real alternative rather than a weaker-sounding compromise: I read
+`auth_role()` (`20260920000002_settings_staff_zones.sql:41-49`) and confirmed it reads `auth.uid()`,
+which PostgREST sets per-request from the caller's JWT. A role connecting over `DATABASE_URL` directly
+has no JWT at all, so `auth_role()` returns null and every `is_staff()` check — `coalesce(null = any(...),
+false)` — evaluates `false` regardless of who's asking. **This means a dedicated `agent` role was never
+going to inherit staff policies by accident; it needs its own, written against `current_user`.** That's
+a cleaner line than I expected going in — "agent" and "staff" can't be conflated even by a lazy policy,
+because the mechanism that would let them (`auth.uid()`) simply isn't populated for a direct-Postgres
+caller. Ruled: dedicated `agent` role, not `service_role`, not per-agent roles yet (one role, enumerated
+grants per table, is enough until a second agent actually ships and the first one's grants prove too
+coarse). Enumerated each D-020 agent's real read/write needs in §9.1's table rather than leaving "the
+orchestrator needs X" asserted — Accounting and Grow are read-only against data that already exists;
+Warehouse and Sales both need schema that doesn't exist yet (C8, and a drafts table), so their grants
+are placeholders for whoever builds that schema, not present-tense requirements.
+
+**The shared-host ruling.** Weighed keeping the privileged work in a Supabase Edge Function (Vault-
+stored secret, same pattern `payment-worker` already uses for its anon key) against putting it in the
+droplet's `.env` like everything else. Edge Functions are Deno; D-020 is explicit that the orchestrator
+is native Python/FastAPI via the Claude Agent SDK — splitting it across two runtimes for a security
+property is an architecture change outside this boot's boundary, so rejected for now rather than
+dismissed, and named as the thing to revisit first if the host terms ever tighten. Ruled: yes, both
+secrets land in `.env` on the shared droplet, because there's no alternative host for this architecture
+— what changes the risk is §9.1's role scope and §9.3's spend ceiling, not where the bytes sit. Worth
+stating plainly since it's easy to read as "nothing changed": every secret `_deploy.yml` has ever
+rendered so far (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `NEXT_PUBLIC_*`) is, by design, a value a stranger
+could read from any browser's dev tools. This is the first time that file will hold something that
+actually grants a capability if read. Rotation on any suspected host compromise is the same trigger
+`infra-access.md` already names for the SSH key, not a new process.
+
+**Anthropic key.** Named the failure concretely — a retry-loop bug or a successful injection re-invoking
+itself, billing the owner with nothing watching, the exact shape D-016 named for SMS pumping. Per-run
+and per-day ceilings have to be enforced in the orchestrator's dispatch loop, before a call goes out —
+a ceiling checked only after C1 records the cost is not a ceiling, it's a receipt. Console-level spend
+limit is the backstop, same role Turnstile plays for D-017's SMS numbers. Alarm has to surface in the
+back-office dashboard specifically, because D-017 still means there's no transport to alarm *through* —
+flagged this is unchanged since S7-01, not a new gap this boot found.
+
+**Where I had to say "convention only":** the "never sends anything to a customer" line in §9.4's table.
+It currently holds for exactly one reason — no transport exists — which is not a control, it's an
+absence. Said so plainly rather than listing it as enforced, and flagged that the day any transport
+ships (push, SMTP), this stops being free and needs an actual code gate plus a human-confirmation step.
+"No touching host files" is real only conditional on S1 configuring the automation container with zero
+host bind mounts — put in the §9.7 checklist rather than counted as already true.
+
+**Prompt injection, tied to the identity ruling as the boot asked.** The mitigation that matters is not
+"the model resists the injection" — unprovable — it's that a successful injection can't do anything the
+`agent` role's grants don't already allow. Wrote a three-tier action model (read/summarise autonomous,
+draft-write autonomous, anything externally-visible-or-live-state-promoting needs a human click through
+the existing trusted RPC) and said honestly that the tiering logic itself is code (S5's, fallible) while
+the backstop — Tier C actions corresponding to grants `agent` doesn't have — is structural. Sales is the
+one agent reading attacker-controlled text and is deliberately the narrowest grant in the table for
+that reason.
+
+**Ordinary wrongness, and the gap this surfaced in C1's own shape.** C1's run records answer "what
+happened"; they don't answer "is this number currently trusted" — a run can finish clean and log a wrong
+figure. Nothing in the registry/run/queue/log tables S2-08 is building distinguishes an agent's
+conclusion from a human's sign-off on it. Filed as a concrete, non-urgent addition in
+`proposed/S7-03-S2-agent-role-grants.md` (§2) rather than silently assumed covered — a status column
+(pending/approved/rejected, reviewer, timestamp) on whatever an agent produces, separate from the run
+log. The same proposal carries §1: the actual grants C1's tables need for `agent` to write to them at
+all, since the existing `automations`/`automation_runs` shape (migration 28) gives `agent` nowhere to
+write once it exists.
+
+**What this showed to be wrong in D-020/the plan, if anything:** nothing in D-020 itself — the owner's
+architecture call stands. But the plan's framing ("the orchestrator needs the service role is an
+assumption nobody has tested") undersold how different the fix is: it isn't just "a smaller role," it's
+that the whole auth mechanism the rest of the schema relies on (`auth.uid()`) doesn't reach a direct-
+Postgres connection at all, so this was never going to be a one-line grant change — new policies, on
+every table `agent` touches, are now a real line item for S2, on top of whatever C8/Sales-drafts need
+once those exist. **This does not block C3 or C5 as the plan describes them — both can proceed once S2
+writes the grants in `proposed/S7-03-S2-agent-role-grants.md`** — but it is more schema work for S2 than
+"C1 ships, C2 rules, C3 starts" implied, worth S0 knowing before sequencing C3's start date.
+
+**Boundary held.** No migration, policy, grant, trigger or function written. No file in `apps/automation`,
+`apps/web`, `apps/backoffice`, `apps/e2e`. No edit to `.github/workflows/*` or `apps/infra/**` — §9.7
+states what `_deploy.yml`'s D-013 comment must become, S1 writes it. No key provisioned, requested or
+valued — D3 stays the owner's. No edit to `decisions.md`/`plan.md` — this entry and the proposal are the
+record for S0 to act on. Did not touch S7-02's two green-tests-that-test-nothing (separate work, still
+open). Fixed the one surviving `bo.shos.` reference `docs/security.md` still had after #92 (line 218,
+"the back-office is not yet on a public host" — #92 only caught the §5 instance, not this one).
+
+Next: still mine — S7-02's two green-tests-that-test-nothing, and F2 (audit before any production
+deploy, which still hasn't happened). `state.md`: S7 row only. Stopping here per the boot.
