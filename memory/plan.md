@@ -5,7 +5,7 @@ and standing rules are in `decisions.md`; this file is only *what is left, in wh
 Status: `[ ]` not started · `[~]` in flight · `[x]` done · `[!]` blocked on someone outside the session ·
 `[—]` deliberately not doing.
 
-Last moved: 2026-10-15 (S0 — #90 merged; C1 and C2 issued as S2-08 and S7-03; D7 may already be in the owner's own key store; #88 and #90 conflicts resolved)
+Last moved: 2026-10-16 (S0 — owner declined D10 and chose Option A, basic-auth with two holders; D7 is now the whole critical path; S7-03 ruled, #95 open)
 
 ---
 
@@ -74,12 +74,19 @@ while the code that needs them is still being written.
 | `[ ]` | D4 | **SMTP provider** for `shosho-staging` (D-017) | email OTP; any agent that sends |
 | `[ ]` | D5 | **`STRIPE_SECRET_KEY`** (`sk_test_…`) → staging env | any live payment |
 | `[ ]` | D6 | **Stripe webhook endpoint + `STRIPE_WEBHOOK_SECRET`** | as above |
-| `[!]` | D7 | **Check the owner's OWN key store first.** TETA+PI declined to relay the plaintext (not theirs to paste) and declined to rotate unilaterally (never distributed, so no exposure to close; the D10 decision would make a fresh pair moot within days). They report the current value sits on **the owner's machine**, key store, mode `0600`, **written 2026-10-10** — current, not a Sep-26 relic. Unverified by any session; that file is on the owner's machine, not ours. **May need nobody at all.** #88 |
+| `[!]` | D7 | **NOW THE WHOLE CRITICAL PATH for back-office access, since D10 is declined.** Check the owner's OWN key store first. TETA+PI declined to relay the plaintext (not theirs to paste) and declined to rotate unilaterally (never distributed, so no exposure to close; the D10 decision would make a fresh pair moot within days). They report the current value sits on **the owner's machine**, key store, mode `0600`, **written 2026-10-10** — current, not a Sep-26 relic. Unverified by any session; that file is on the owner's machine, not ours. **May need nobody at all.** #88 |
 | `[ ]` | D8 | Verify the four rotated passwords actually authenticate (one command, owner-only) | knowing the credentials in hand work before staff see them |
 | `[ ]` | D9 | **Set the real 7/19 VAT rate per menu item**, with the Steuerberater | D-019. The control already exists; the values are a tax judgement |
-| `[ ]` | D10 | **Cloudflare Access for `bo-shos.hellfiresol.com` — decide this BEFORE D7.** TETA+PI's own recommendation: with Access they remove the htpasswd entry outright and no pair is ever needed; if basic-auth stays they rotate on the owner's word. **S1-08's tasks 3-5 are gated on this decision** | handing the back-office to staff |
+| `[—]` | D10 | **DECLINED by the owner 2026-10-16 — Option A: basic-auth stays, the pair is held by 2 people.** Told to TETA+PI directly. S0 had recommended Access; the owner's reason removes the main objection, which was that a shared secret spreads across four-plus people and one departure forces rotating everyone — at two it barely applies. Option A also avoids the risk Access carried: basic-auth covers **both** the Cloudflare path and the direct-origin path, so there is no half-change window and no origin IP restriction needed. Accepted cost: no per-person audit of who opened the gate, and rotation on any departure. **S1-08's tasks 3-5 are now moot** — they existed only to verify Access and then retire basic-auth. Revisit only if the holder count grows |
 | `[ ]` | D11 | Revoke the 2026-09-20 Supabase personal access token | low |
 | `[ ]` | D12 | Replace the placeholder image on `RL-014 Philadelphia Deluxe` | cosmetic |
+
+## D-bis. Consequence of Option A that must be chosen, not inherited
+`/kitchen` and `/driver` exist as real screens behind the **same** outer gate as `/orders`. If the basic-auth pair is known to two people, kitchen staff and drivers cannot reach their own screens at all — and S7-02 spent a whole boot auditing kitchen's RLS reach, which only matters if kitchen can log in.
+
+This does **not** force distributing the pair. Basic-auth is device-bound in practice: the browser caches it. So the owner enters the pair **once** on the kitchen tablet and on the driver's phone, and those people then use their own staff logins inside the app. Four roles work; two people know the secret. Known costs: the cache is lost to a site-data clear, a private window, and sometimes a browser update — each time the owner must re-enter it; and a lost device is a leaked pair, so it means rotation.
+
+**Owner has not yet confirmed which they want** — staged rollout (owner/operator only for now, kitchen and driver screens dormant) or the per-device setup above. S0 should not assume.
 
 ## E. Never started, and not in section C
 
