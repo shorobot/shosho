@@ -630,3 +630,86 @@ operator continue to see `draft` on the rows their own row policies already admi
 `banners.draft` needs no equivalent column-grant narrowing: the base `banners` table has **no**
 `anon` policy or grant at all (§8.6), so there is nothing on that table for `anon` to reach regardless
 of column; `banners_live`'s explicit column list is the only surface, and it never selects `draft`.
+
+### 8.8 Agent runtime — registry, task queue, runs, logs — S2-08
+
+D-020's automation layer: the tables the (not-yet-written) `apps/automation` orchestrator runs on
+and the (not-yet-written) back-office agent dashboards read. This is schema and contract only —
+no runner, no agent, no sending. **Not** the marketing automations of §8.4: that pair is kept
+exactly as it is (see "marketing runner" below) rather than folded into this.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `agents` | `key text` **unique, not an enum** (`sales`/`accounting`/`warehouse`/`grow`/`quality` seeded, inactive), `active`, `config jsonb`, `last_run_at` | Registry, one row per agent. `key` is text rather than an enum (contrast `automation_kind`) because D-020's agent set is expected to grow — a new agent must not need a migration to add its enum value. owner/operator CRUD directly (`agents_staff_all`), same shape as `automations_staff_all`. |
+| `agent_tasks` | `agent_id`, `customer_id null`, `payload jsonb`, `status agent_task_status` (queued/processing/done/failed), `attempts`, `last_error`, `started_at` | The claimable queue — one row per unit of work, not per customer and not per run. `payload` shape is S5's vocabulary, not specified here. `customer_id` nullable, `on delete set null` — most agents (accounting, warehouse) are not about a customer at all. |
+| `agent_runs` | `task_id null`, `agent_id`, `customer_id null`, `started_at`, `finished_at`, `conclusion text`, `error`, `input_tokens`, `output_tokens`, `cost_usd numeric(12,6)`, `result jsonb` | One row **per invocation**, not per customer (contrast `automation_runs`) — created the moment a task is claimed. `conclusion` is free text, S5's vocabulary, same choice as `automation_runs.outcome`. Cost is first-class: every finished run records `input_tokens`/`output_tokens`/`cost_usd`, so a runaway agent is visible in the dashboard and in a report. **No spend ceiling is built here** — a rate limiter / cap in front of the agent loop is S7's call at `plan.md` C2, same posture D-016 took with SMS pumping. |
+| `agent_run_logs` | `run_id`, `seq bigserial`, `at`, `level text`, `message text` | Log lines attached to a run, ordered by `seq` (not `at` — concurrent writers can share a millisecond). |
+
+**Role matrix**, identical across all four tables (stated explicitly so S5/S4 do not each infer a
+different one): `owner`/`operator` — `agents` full CRUD, the other three **read-only** (no
+insert/update/delete policy for anyone; written only by the orchestrator's service-role
+connection, not built here). `kitchen`/`driver` — nothing; `is_staff('owner','operator')` is the
+only predicate on every policy, never the unconditional role-only shape S7-02 found on
+`orders_kitchen_read`. `anon` — table grant revoked outright on all four, not left to RLS alone
+(closing the other S7-02 finding: a row policy alone is not sufficient when a column grant can
+leak around it, as `settings.draft` did — not this schema's shape, since there is no
+anon-reachable surface here at all, but the revoke costs nothing). `service_role` — bypasses RLS
+as always; the two RPCs below exist to centralize *logic* (atomic claim, retry bookkeeping), not
+to grant access service_role already has.
+
+Agent runs and logs can contain model prompts and outputs, so they may carry customer data and
+operational detail — hence the same owner/operator-only posture as `payment_events`/
+`customer_events`, not the wider staff visibility `settings.ops` or the reports get.
+
+```ts
+rpc('claim_agent_tasks', { p_limit: 10 })  // service_role only
+→ { run_id, task_id, agent_id, customer_id, payload, attempts }[]
+```
+Claims up to `p_limit` queued (or stale-`processing`, >10 min since `started_at`) tasks with
+`for update skip locked` — the same locking `claim_payment_jobs`/`claim_campaign_recipients` use,
+so concurrent pollers never claim the same row. The **status shape** follows `payment_jobs`
+(an enum with a `processing` state + `started_at`), not `campaign_recipients`' `claimed_at`-only
+shape, because a task can run for a while (an LLM call, not a queue hop) and the dashboard needs
+"in flight" visibly distinct from "waiting". Claiming a task **starts its run** in the same
+transaction — the two are never a claimed task with no run to log against. `EXECUTE` is revoked
+from `anon` and `authenticated` explicitly, the exact shape S7-01/S1 found wrong in
+`payment-worker`.
+
+```ts
+rpc('finish_agent_run', {
+  p_run_id, p_ok, p_conclusion?, p_error?, p_input_tokens?, p_output_tokens?, p_cost_usd?, p_result?, p_final?
+})  // service_role only
+→ agent_runs row
+```
+Closes a run (`finished_at`, `conclusion`, cost columns, `result`) and reconciles its task in the
+same call: `p_ok = true` → task `done`; `p_ok = false` → task `queued` again (retry) unless
+`attempts >= 5` or `p_final = true`, in which case `failed` — the exact threshold and shape
+`finish_payment_job` already uses. `EXECUTE` is revoked from `anon`/`authenticated` the same way.
+
+**Realtime**: `agent_tasks`, `agent_runs` and `agent_run_logs` are added to the `supabase_realtime`
+publication — plain `postgres_changes` table replication, not broadcast-from-DB. The dashboard
+reads these as a staff session with a real per-user JWT, so `is_staff()` RLS applies exactly as it
+does to `orders`/`order_items`/`order_events`/`customer_events` — none of the reasons guest order
+tracking (§3) needed broadcast (a shared anon JWT, no header-scoped RLS) apply to a staff login.
+**Not** added: `agents` — the registry mutates rarely and, like `automations`/`campaigns` (neither
+of which is in the publication either), a refetch after save is enough.
+
+**Marketing-runner ruling**: `automations`/`automation_runs` (§8.4) stay exactly as they are and
+do **not** become an agent under these tables. Reasons: it already has a working config surface and
+a UI (S4-04's Marketing screen) that reads its specific shape (`automation_kind`, per-customer
+`automation_runs` rows); folding it in would mean either teaching this generic runtime to also
+model "one row per customer considered" (which most agents have no use for) or rewriting a UI that
+already works for no functional gain. The cost is two runtimes to observe instead of one — the
+back-office dashboard must show both, clearly labelled as separate systems rather than presented as
+though they were the same thing, which is a small, bounded UI concern for S4-04/S4 rather than a
+schema one.
+
+**What is not here yet.** No orchestrator, no agent, no FastAPI code (C3, S5). No privilege
+boundary for `apps/automation`'s secrets — `SUPABASE_SERVICE_ROLE_KEY` / `ANTHROPIC_API_KEY` are
+not referenced anywhere in this schema on purpose; that boundary is S7's, parallel at C2. No spend
+ceiling — cost is recorded, not capped (above). No task-payload vocabulary — `agent_tasks.payload`
+and `agent_runs.result`/`conclusion` are deliberately unshaped jsonb/text; each agent defines its
+own when S5 writes it. No scrubbing of customer PII that might appear inside `result` or a log
+`message` (model prompts/outputs are unbounded free text) — only the `customer_id` columns carry
+the GDPR nullable/`on delete set null` shape `automation_runs` established, on `agent_tasks` and
+`agent_runs`.
