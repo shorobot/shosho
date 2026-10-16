@@ -2456,3 +2456,23 @@ VAT filing (D-019) — saw it in `proposed/`, left it alone. Did not touch B4/B5
 Next: B4 (`orders_kitchen_read` unbounded), B5 (`settings.draft` leak), D-018's `place_order`
 throttle (unblocked, #77 landed), C8 (ingredient/recipe/stock schema, large). Stopping here per the
 boot, waiting for S0.
+
+## 2026-10-16 — S1 DevOps — S1-08 closed
+TETA+PI reported the owner's decision. Nothing left for S1 to do; recording it closes the boot.
+
+**Owner's decision: keep basic-auth. No Cloudflare Access, no rotation.** Headcount decided it — exactly two people need the back office and that is not expected to change, which is below the threshold where Access's advantages (per-person revocation, an access log, no shared secret to re-issue on departure) are worth a Cloudflare dependency on the staff gate plus the origin-side work Access alone wouldn't cover (the origin stays directly reachable, so Access would still need an origin gate or `Cf-Access-Jwt-Assertion` validation in nginx). So the gate already verified from outside — Gap 1/Gap 2 in `state.md`'s "Back-office access" section — is the final design, and my original request resolves to: the owner hands the existing pair to the two people himself.
+
+**TETA+PI verified server-side, not asserted:** `/etc/nginx/.htpasswd-shos-bo` present, `0640 root:www-data`, one entry, bcrypt (`$2b$`, not a weak apache variant); `auth_basic_user_file` referenced in **both** the `:80` and `:443` server blocks, so there is no plain-HTTP bypass of the gate; nginx config unchanged since the file's creation, 2026-09-26 21:51.
+
+**One open detail, correctly left to the owner rather than papered over.** The hash's mtime (2026-09-26 21:51) predates the owner's local record of the plaintext (last written 2026-10-10) — if that later write changed the value rather than annotated it, the pair he holds won't match what's deployed and the two users would get 401. Neither TETA+PI nor I can test this from outside (they won't read the plaintext or probe the gate with credentials; I have neither). The owner is doing one browser login himself to confirm before handing it out; TETA+PI rotates and reports a new location if it fails.
+
+**Boot's "Done when" reconciled against what actually happened** (the boot wrote tasks 3–5 assuming either branch of the owner's choice, and only the Access branch executes further steps):
+- Message sent, delivered to the owner directly, Access caveat included — done (2026-10-12).
+- "Either: Access verified — or correctly reported as not yet configured" — **superseded**: Access was never configured because the owner chose not to. Reporting that decision is the equivalent closure.
+- Tasks 3–5 (verify Access, request basic-auth removal + origin restriction, re-verify) — **do not apply**. They were conditioned on the owner picking 6b; he picked option A instead, so there is nothing to verify and nothing to ask TETA+PI to remove.
+- No credential anywhere in the repo, the log, a commit, or a PR — held throughout.
+- PR `s1-08` → merging alongside this entry.
+
+**Boundary held throughout.** Did not touch nginx/DNS/Cloudflare/htpasswd; did not configure Access; did not hand the URL or any credential to anyone; did not verify the pair myself (that's the owner's one browser login, not ours to perform).
+
+Next: if headcount ever grows past two or someone with access leaves, TETA+PI said the Access reasoning flips and this should reopen — worth remembering rather than re-deriving. Nothing else queued under S1-08. `proposed/S1-prod-target.md` and `proposed/S1-explicit-secrets-map.md` stay queued, S0's call. Stopping here, per the original boot.
