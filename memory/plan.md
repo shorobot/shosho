@@ -5,7 +5,7 @@ and standing rules are in `decisions.md`; this file is only *what is left, in wh
 Status: `[ ]` not started · `[~]` in flight · `[x]` done · `[!]` blocked on someone outside the session ·
 `[—]` deliberately not doing.
 
-Last moved: 2026-10-15 (S0 — folded in S7-02's #92 findings; confirmed S7-01's payment CRITICAL is shipped)
+Last moved: 2026-10-16 (S0 — owner declined D10 and chose Option A, basic-auth with two holders; D7 is now the whole critical path; S7-03 ruled, #95 open)
 
 ---
 
@@ -16,10 +16,10 @@ The staging deploy chain was dead 2026-10-12 → 2026-10-15 and is now **live ag
 
 | | PR | What | Gate |
 |---|---|---|---|
-| `[!]` | **#90** | S0: S1-09 boot, D-019, D-020, this plan, two proposals | `MERGEABLE/UNSTABLE`, green — **owner runs `gh pr merge 90`** (classifier blocks S0) |
-| `[~]` | **#92** | S7-02 security audit (audit-only, no policy changed) | S0 review in progress |
+| `[x]` | **#90** | S0: S1-09 boot, D-019, D-020, this plan, two proposals | merged 2026-10-15 |
+| `[ ]` | **#92** | S7-02 security audit (audit-only, no policy changed) | **S0 review done — clean, zero SQL touched.** Conflicts with #90 on `log.md`/`state.md`; S0 resolves, then merge |
 | `[ ]` | **#89** | S4-05: cash fix, CSP, VAT label, cancel codes, Berichte, Einstellungen | `BEHIND` — update branch, then merge. Review verdict already positive |
-| `[ ]` | **#88** | S1-08: ask TETA+PI for the gate credential | `BEHIND` — S0 review not yet done |
+| `[ ]` | **#88** | S1-08: ask TETA+PI for the gate credential | **S0 review done — memory-only, clean.** Conflict with #93 resolved by S0 (D-009, S1 had stopped): both log entries kept, main's S1 row taken because #93 had already rolled S1-08's outcome into it |
 | `[!]` | **#87** | S3-03: tracking realtime + banners | waiting on S3 to add the `apps/web/lib/csp.ts` carve-out (B2) before merge |
 
 ## B. Small, named, unblocked — each is one file
@@ -43,8 +43,8 @@ QA and Security are **not** steps here; they are section F, continuous. Only thi
 
 | | # | What | Who | Blocked by |
 |---|---|---|---|---|
-| `[ ]` | **1** | Agent-run schema: queues, statuses, execution logs, RLS | **S2** | nothing — **start here** |
-| `[ ]` | **2** | Privilege boundary for `apps/automation` | **S7** | nothing — **parallel to 1** |
+| `[~]` | **1** | Agent runtime schema: registry, runs, claimable queue, logs, realtime, cost | **S2** | **issued as `S2-08-agent-runtime-schema.md`** — not greenfield: `automations`/`automation_runs` (migration 28) already cover the *marketing* half, so S2 extends rather than duplicates |
+| `[~]` | **2** | Privilege boundary for `apps/automation` | **S7** | **issued as `S7-03-automation-privilege-boundary.md`** — design-only ruling, parallel to 1 |
 | `[ ]` | 3 | Orchestrator skeleton + **Accounting agent** (#1) | S5 | 1 and 2 |
 | `[ ]` | 4 | Agent dashboards in the back-office (status/queue/logs, realtime) | S4 | 1 |
 | `[!]` | 5 | Deploy surface: container, the two secrets, CI lane | S1 | 2 · **owner: Anthropic key** |
@@ -74,12 +74,19 @@ while the code that needs them is still being written.
 | `[ ]` | D4 | **SMTP provider** for `shosho-staging` (D-017) | email OTP; any agent that sends |
 | `[ ]` | D5 | **`STRIPE_SECRET_KEY`** (`sk_test_…`) → staging env | any live payment |
 | `[ ]` | D6 | **Stripe webhook endpoint + `STRIPE_WEBHOOK_SECRET`** | as above |
-| `[ ]` | D7 | **TETA+PI's basic-auth plaintext** (hash-only on the server, not reversible) | any staff reaching the back-office. #88 |
+| `[!]` | D7 | **NOW THE WHOLE CRITICAL PATH for back-office access, since D10 is declined.** Check the owner's OWN key store first. TETA+PI declined to relay the plaintext (not theirs to paste) and declined to rotate unilaterally (never distributed, so no exposure to close; the D10 decision would make a fresh pair moot within days). They report the current value sits on **the owner's machine**, key store, mode `0600`, **written 2026-10-10** — current, not a Sep-26 relic. Unverified by any session; that file is on the owner's machine, not ours. **May need nobody at all.** #88 |
 | `[ ]` | D8 | Verify the four rotated passwords actually authenticate (one command, owner-only) | knowing the credentials in hand work before staff see them |
 | `[ ]` | D9 | **Set the real 7/19 VAT rate per menu item**, with the Steuerberater | D-019. The control already exists; the values are a tax judgement |
-| `[ ]` | D10 | Cloudflare Access for `bo-shos.hellfiresol.com` — retires D7 permanently | handing the back-office to staff |
+| `[—]` | D10 | **DECLINED by the owner 2026-10-16 — Option A: basic-auth stays, the pair is held by 2 people.** Told to TETA+PI directly. S0 had recommended Access; the owner's reason removes the main objection, which was that a shared secret spreads across four-plus people and one departure forces rotating everyone — at two it barely applies. Option A also avoids the risk Access carried: basic-auth covers **both** the Cloudflare path and the direct-origin path, so there is no half-change window and no origin IP restriction needed. Accepted cost: no per-person audit of who opened the gate, and rotation on any departure. **S1-08's tasks 3-5 are now moot** — they existed only to verify Access and then retire basic-auth. Revisit only if the holder count grows |
 | `[ ]` | D11 | Revoke the 2026-09-20 Supabase personal access token | low |
 | `[ ]` | D12 | Replace the placeholder image on `RL-014 Philadelphia Deluxe` | cosmetic |
+
+## D-bis. Consequence of Option A that must be chosen, not inherited
+`/kitchen` and `/driver` exist as real screens behind the **same** outer gate as `/orders`. If the basic-auth pair is known to two people, kitchen staff and drivers cannot reach their own screens at all — and S7-02 spent a whole boot auditing kitchen's RLS reach, which only matters if kitchen can log in.
+
+This does **not** force distributing the pair. Basic-auth is device-bound in practice: the browser caches it. So the owner enters the pair **once** on the kitchen tablet and on the driver's phone, and those people then use their own staff logins inside the app. Four roles work; two people know the secret. Known costs: the cache is lost to a site-data clear, a private window, and sometimes a browser update — each time the owner must re-enter it; and a lost device is a leaked pair, so it means rotation.
+
+**Owner has not yet confirmed which they want** — staged rollout (owner/operator only for now, kitchen and driver screens dormant) or the per-device setup above. S0 should not assume.
 
 ## E. Never started, and not in section C
 
