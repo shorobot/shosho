@@ -2331,3 +2331,163 @@ Guards: both new routes stay `requireRole(["owner","operator"])`, same as the st
 Cash fix verified on a real order, operator asked not defaulted — done. VAT label shows the rate actually used — done (and the deeper backend bug filed separately). `method="post"`, hydration decision stated — done. `cancel_reason` stable code — done. Berichte: five reports, `report_payments` owner/operator-only shown as "no data yet," funnel gaps stated, XLSX export — done. Einstellungen: team via `staff_directory`, invite unavailable with the reason, owner-write respected read-only — done. Kitchen/driver refused on both routes, guards tested — done. `node (backoffice)` green — done locally (lint/typecheck/test/build); PR not yet opened at the time of this entry.
 
 Next, per the boot: stop and wait for S0. Remaining S4-adjacent work, flagged but not started: `S7-02-S4-backoffice-hardening.md` leftovers, `S7-S4-03-httponly-correction.md`. The VAT backend fix (`quote_order`/`update_order_items` branching on order type) is S2's, flagged via `spawn_task`, not a proposal file — worth S0 confirming it got picked up since it sits outside the normal `boots/proposed/` channel.
+## 2026-10-12 — S0 Orchestrator — #77 merged and it killed the staging deploy chain; found S4-05 live mid-flight; two boots were missing S6's HIGH finding
+
+**Resumed the role after a restart and did the first five minutes, then found three things the snapshot had wrong.** All three came from measuring rather than reading, which is the only reason they surfaced.
+
+**1. `apps/e2e` was not on `main` at all — zero files — and both freshly-issued boots named S6's specs as their oracle.** S4-05: "S6's `checkout-pickup.spec.ts` is the oracle for what 'right' means." S3-03: `apps/e2e/specs/realtime-and-tracking.spec.ts:33`, by line number. Both branch from `origin/main`, so neither could read the file it was told to judge itself against. That made merging #77 a precondition of the two boots rather than a loose end, which is not how the snapshot framed it. Reviewed it (21 `apps/e2e` files, both mirrored `ci.yml` copies updated, actions SHA-pinned per S1-07, `e2e` correctly outside the `ci` gate's `needs`), proved the merge clean with a local test-merge, updated the branch under D-009 since S6 had stopped. Merged at 09:05:59Z as `2bef358`, a true merge commit — the owner ran the command because the permission classifier blocked mine, and I did not route around it.
+
+**2. Merging it broke the staging deploy chain, and I did not see that coming.** The `e2e` job lives *inside* the `CI` workflow. S6 kept it out of the `ci` gate's `needs`, which is correct and keeps PRs mergeable — but `Migrate staging` triggers on `workflow_run: workflows: [CI]` and gates on `workflow_run.conclusion == 'success'`, and **a run's conclusion is computed from every job in it, not from the gate job**. Measured:
+```
+2026-10-11 22:23Z  CI 38180213644 success → Migrate 38180402557 success → Deploy 38180450228 success
+2026-10-12 09:06Z  CI 38227747259 FAILURE → Migrate 38229595996 SKIPPED → Deploy 38229602837 SKIPPED
+                   (that CI run: `CI` gate job success; only `e2e (apps/e2e)` failed)
+```
+Staging auto-deploy is dead, and it will not heal on its own — S6's last four runs held at 15 passed / 16 failed and only four of those failures are routed. **The distinction I missed is the one worth keeping: `needs` protects the merge gate, the workflow's *conclusion* protects nothing and gates everything downstream.** S6's report stated "e2e stayed advisory and pending as planned, not part of the gate" — true of branch protection, false of the chain, and the chain is what ships code. Fix issued as **S1-08 task 0**: move `e2e` into its own workflow file, both copies, explicitly **not** `continue-on-error`, which would report green over 16 real failures. Verification must be a real `Deploy staging` run on `main` — this boot's own standing rule, which exists because S1-07 broke this same chain on green PR checks.
+
+**3. S4-05 was not "issued, not run" — it was live and writing while I was measuring.** The `s4` worktree held 7 modified files (+191/-22) and an untracked `CashDialog.tsx`, with **zero commits**. I caught it by accident: between two measurements minutes apart, `LoginForm.tsx` went from absent to present and from 9 to 17 changed lines; its mtime read 11:03:13 against my clock at 11:03:47. Had anyone "fixed" the `checkout -b s4-05` collision with `-B` or `-f`, that work would be gone. S3-03 started in the same minute (00:42) and stalled at 00:43:58 with only three throwaway `s3-probe*.local.mjs` files and no product code. **Lesson: before advising a branch reset, read the worktree — `git status` plus mtimes, not the session table.** The session table said both were unstarted and was wrong about both, in opposite directions.
+
+**4. My own two boots omitted S6's HIGH finding.** S6's routing file is titled "**four** back-office findings: CSP, cash confirmation, VAT label, login hardening". My S4-05 boot opens "**Three** of S6-01's QA findings are yours" and tasks only cash / VAT / login; S3-03 tasks only realtime / banners. **Finding 0 — `apps/web/lib/csp.ts:53` and `apps/backoffice/lib/csp.ts:137` set `script-src` with no `'unsafe-eval'` and no `NODE_ENV` branch, so under `pnpm dev` no client JavaScript executes in either app** — was in both sessions' *reading* and in neither's *tasks*. That is the worst place to leave a HIGH finding: present enough to look routed, absent from the checklist. And it bites these two boots hardest, because S4-05 is building a click-driven dialog and S3-03 a realtime subscription — both pure client JS, neither verifiable locally as shipped. I drafted task 0 into both boots — and **never shipped it**: the session paused before I committed, and by the time it resumed all four sessions had finished and opened PRs. So both ran on the original boots and finding 0 is still unfixed (verified 2026-10-15: zero `unsafe-eval` in either `csp.ts` on `main`, `s3-03` or `s4-05`). Retroactively editing an issued boot would misrepresent what was actually asked, so I reverted those edits and re-filed the work as `proposed/S6-finding-0-csp-dev-carveout.md` instead. **The boot amendment that is not committed before the session runs does not exist** — that is the actual failure here, and it is a process one, not a judgement one.
+
+**What this says about reading a handoff.** My snapshot was written to be authoritative and was wrong on three counts within the hour: a dependency it did not know existed, two session states inverted, and a finding count that undercounted S6's own file title. None of it was discoverable by reading — the worktrees, the run IDs and S6's file title were. "Verify, don't relay" has to include verifying my own notes from four hours ago, not just a child session's claims.
+
+**Open and mine:** merge the S1-08/S3-03 amendments; after S1-08 lands task 0, confirm `Migrate` and `Deploy` actually run; when S4-05 reports, check its dialog against `checkout-pickup.spec.ts` rather than its report, because it chose that shape without being able to read the spec; then D-018 for S2, which #77 no longer blocks.
+
+## 2026-10-15 — S0 Orchestrator — three days on: all four sessions landed PRs, and the two gaps I found are still open
+
+**Re-measured before reporting anything, because the session resumed after a three-day gap and my own notes were the stale part.** `main` has not moved since `2bef358` (#77). What changed is that all four boots ran: **#89** S4-05 (+3152/-44, 47 files), **#88** S1-08 (+16/-1, 2 files), **#87** S3-03 (+650/-23, 18 files), all opened 2026-10-12 and all `MERGEABLE/UNSTABLE` — unstable being the advisory `e2e`, as designed. S7-02 has a branch and no PR. The `s4` worktree is clean with 3 commits, so that session finished rather than stalled; the liveness I recorded on 10-12 was real and is now spent.
+
+**Both gaps from 10-12 survive, and one of them now gates the other three.**
+- **The CSP dev carve-out (S6's finding 0, HIGH) is unfixed everywhere** — `grep -c unsafe-eval` is 0 for `apps/web/lib/csp.ts` and `apps/backoffice/lib/csp.ts` on `main`, `s3-03` and `s4-05` alike. Neither session did it, because neither boot asked. Re-filed as `proposed/S6-finding-0-csp-dev-carveout.md`.
+- **The staging deploy chain is still skipping.** `e2e` is still inside the `CI` workflow on `main` and on `s1-08`; there is no separate `e2e.yml`. The last chain runs on `main` remain `CI 38227747259 FAILURE → Migrate SKIPPED → Deploy SKIPPED` from 10-12 09:23Z, and nothing has pushed to `main` since to change it.
+
+**The ordering consequence, which is the thing worth acting on.** Merging #87 or #89 right now puts their code on `main` and **does not deploy it** — CI concludes failure on the advisory `e2e`, `Migrate` skips, `Deploy` skips. S3-03's own boot requires staging verification ("Verify both against staging, not just locally"), and S4-05's cash fix is only meaningfully proven on a real order. So the workflow fix is not housekeeping to do after the merges; **it is the precondition for either merge to mean anything.** Issued as `S1-09-unbreak-staging-deploy-chain.md`.
+
+**Standing correction to S6's close-out note.** Their report says the `e2e` job "stayed advisory and pending as planned, not part of the gate". That is exactly right about branch protection and exactly wrong about the deploy chain, which keys off the workflow *run's* conclusion rather than the gate job. No fault of theirs — the distinction is invisible unless you look at what `workflow_run` consumes — but the sentence should not stand unqualified in the record, because it reads as "nothing further to do" and there is.
+
+## 2026-10-15 — S0 Orchestrator — reviewed S4-05's report: it caught a boot error of mine that is a tax question, and drew two wrong inferences
+
+**S4-05 reported done (PR #89) and four of its claims would overturn things I had recorded as measured. I checked all four.**
+
+**1. The CSP fix — true, and better than my own paperwork.** `origin/s4-05:apps/backoffice/lib/csp.ts:139` now reads `process.env.NODE_ENV === "production" ? \`script-src ${base}\` : \`script-src ${base} 'unsafe-eval'\`` — production byte-identical, dev carved out, exactly the shape required. S4 got there by reading `proposed/S6-02-S4-...md` finding 0, which arrived on `main` with #77 mid-session, **after** my boot had told them they had "three" findings. So the routing file did the job my task list failed to do. My earlier note that "both sessions ran without it" is now half wrong: S4 did it, **S3 did not** — `origin/s3-03:apps/web/lib/csp.ts` still greps 0 for `unsafe-eval`, so `apps/web` remains 100% non-interactive under `pnpm dev`.
+
+**2. The pickup VAT finding — true about the code, and the conclusion drawn from it is the dangerous half. This one is my error.** My boot stated: *"Pickup VAT is computed at 19% server-side from `menu_items.vat_onsite_pct` and is correct — only the label is wrong."* Both halves false. Measured: `rpc.sql:237` uses `it.vat_delivery_pct` **unconditionally** (default 7); `v_type` is branched on only at line 271, for the delivery fee, never for VAT; `vat_onsite_pct` (default 19) is **read by nothing in the backend** — its only non-definition references are the back-office menu editor's 7/19 dropdown and one test; and `order_type` is `enum ('delivery','pickup')` with **no dine-in value**. So every order is taxed at the reduced rate.
+S4 filed this for S2 as a backend bug to fix. **Executing that filing would add 12 points of VAT to every Abholung order.** German VAT on food turns on where it is consumed, and SHOSHO has no on-premises channel at all — so on the ordinary reading 7% on pickup is *correct* and `vat_onsite_pct` is config for a product that does not exist. I am not a tax adviser and did not rule; filed as `proposed/S0-vat-pickup-rate-owner-decision.md` for the owner's Steuerberater, with S2's task put on hold. **The label was telling the truth** — `detail.vat` said 7% and pickup orders were charged 7%. S4's fix (render the rate actually used) is right under every outcome and should merge regardless.
+The lesson is the one I keep relearning in a new costume: **I asserted a mechanism I had not read, inside a task that told a session the code was "correct".** A boot that says "X is correct, only the label is wrong" forecloses the check that would have caught it. S4 checked anyway. That is twice now that a child session's refusal to trust my stated mechanism was the thing that worked — S2 on the `security_invoker` view, S4 here.
+
+**3. "S3-03 has landed" — false, and the inference is worth naming.** S4 saw `report_funnel`'s `attempts_window_from/to` come back non-null and concluded S3-03 had shipped. It has not: #87 is **open**, `main` is still `2bef358`, and `origin/s4-05` does not contain `origin/s3-03` (checked with `merge-base --is-ancestor`). What they actually saw is `order_attempts`, migration `20260926000023`, dated **2026-09-26** — S2's table, populated by the order RPCs, nothing to do with S3-03's tracking/banners work. Harmless to their code; recorded because "a value is non-null, therefore session X shipped" is the same class of reasoning as reading a log line and naming a cause.
+
+**4. "`report_payments` already has real data" — true, and it fixes my own sloppy wording.** S4 measured a cash order, `total_cents: 6800` across `orders_count: 5`, residue from earlier sessions' staging walk-throughs. The snapshot's "no live payment has ever run" meant **no Stripe payment**, and cash orders obviously write payment rows; stated flatly, it was wrong. Corrected in `state.md`: the Stripe path is still unexercised, and `report_payments` is non-zero from cash. S4's `allZero` branch was exercised against the real non-zero path, which is better than testing the hypothetical.
+
+**Sequencing ruling on #87.** S3-03 asked me to merge it and asked the owner to flip order #1005's status and create a banner so they can finish verifying. Both verifications are **impossible right now and would not be made possible by merging**: `Deploy staging` has been skipping since 10-12, so staging runs the 10-11 build and will keep running it no matter what lands on `main`. Merging #87 is harmless but pointless until **S1-09** restores the chain. The one thing that *is* time-sensitive: `apps/web`'s CSP carve-out is a one-line fix in S3's own file, their session is live now, and after #87 merges it costs a whole new session — so it belongs in #87 before merge, not after.
+
+**Also noted, not acted on:** S3-03's report characterises the `e2e` failures as "CI resource-contention timeouts". S6's own root-causing says otherwise — an un-root-caused delivery-zone resolution failure in the checkout UI, 15 passed / 16 failed held across four runs. The "no new failures introduced" part of S3's check is sound and is what matters for the merge; the attributed cause is not, and should not enter the record as fact.
+## 2026-10-15 — S1 DevOps — S1-09
+Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred from PR CI — PR checks cannot prove this because `workflow_run` never fires on a PR branch.
+
+**Mechanism, confirmed exactly as the boot stated it.** #77's `e2e` job lived inside `ci.yml`. S6 correctly kept it out of the `ci` gate job's `needs`, so PRs stayed mergeable — but `migrate-staging.yml`'s `push` job and `deploy-staging.yml` both gate on `workflow_run.conclusion == 'success'`, and a workflow run's `conclusion` is every job in the run, `needs` or not. 15 passed / 16 failed by design (several specs assert product gaps falsifiably), so every `CI` run on `main` since #77 concluded `failure`. Confirmed on the actual run history before touching anything: `CI` run `38227747259` (sha `2bef358`, 2026-10-12) → `failure`, and both `Migrate staging` (`38229595996`) and `Deploy staging` (`38229602837`) show **`skipped`**, not merely never-triggered — the `if` condition evaluated false and the job itself records that. Nothing pushed to `main` between that and this fix, so it was live the whole time, as the boot said.
+
+**Fix.** Moved the `e2e` job verbatim — same steps, same timeout/retries, nothing it *does* changed — out of `ci.yml` into a new standalone `e2e.yml`, mirrored byte-for-byte to `apps/infra/.github/workflows/e2e.yml` (the `infra` CI job's own `diff -r` check covers it). Same triggers (`pull_request`, `push` to `main`), so it still reports per-PR/per-push on its own check; it just no longer contributes to `CI`'s run `conclusion`. No `continue-on-error` — confirmed it stays a visible failure on its own check rather than a silently-green job hiding 16 real failures. `ci.yml`'s `ci` gate job and `needs: [node, python, infra, backend]` are byte-identical to before (diffed, not assumed) — e2e was never in that list and still isn't.
+
+**`workflow_run` sweep (task 3), grepped across both `.github/workflows` and `apps/infra/.github/workflows`:**
+| Workflow | Listens to | Same exposure? |
+|---|---|---|
+| `migrate-staging.yml` | `workflow_run: [CI]` | **Yes — this was it.** Fixed above. |
+| `deploy-staging.yml` | `workflow_run: [Migrate staging]` | Same shape, one hop downstream; chains correctly off `Migrate staging`'s own conclusion, so fixing the CI hop fixes this one too. No separate change needed. |
+| `deploy-prod.yml` | **Nothing — no `workflow_run` trigger at all.** Triggers on `push: tags: [v*]` with a required manual approver (D-005). | No exposure, no warning comment needed. |
+
+**Verified on `main`, four run IDs, after merging #91 (merge commit `dfc7861`) — PR CI did not and could not prove this:**
+| Workflow | Run ID | Conclusion |
+|---|---|---|
+| `CI` | `38806034798` | **success** |
+| `Migrate staging` | `38806466073` | **success** |
+| `Deploy staging` | `38806580158` | **success** |
+| `e2e` | `38806034845` | **failure** — correctly isolated: still red on its own, no longer touches the three above |
+
+**Boundary held.** Touched only `.github/workflows/{ci,e2e}.yml` and their `apps/infra` mirrors. Did not touch `apps/e2e` (moved a job definition, not the suite), did not add `e2e` to `needs`, did not touch `apps/web`, `apps/backoffice`, `apps/backend`, or `docs/security.md`. `state.md`: S1 row only.
+
+**For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
+
+Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
+
+## 2026-10-16 — S2 Backend — S2-08
+
+D-020's agent runtime: migration `20261006000033` → renumbered and claimed as
+`20261016000033_agent_runtime.sql` (D-014, first commit). Four tables — `agents` (registry),
+`agent_tasks` (claimable queue), `agent_runs` (one row per invocation), `agent_run_logs` (ordered
+log lines) — plus `claim_agent_tasks`/`finish_agent_run` (service-role only). Schema and contract
+only, as scoped: no `apps/automation`, no orchestrator, no `ANTHROPIC_API_KEY`/
+`SUPABASE_SERVICE_ROLE_KEY` reference anywhere. `docs/api-contracts.md` §8.8 written. PR #96,
+merged.
+
+**Role matrix, stated explicitly (task 5/§8.8).** `owner`/`operator`: full CRUD on `agents`,
+read-only on the other three. `kitchen`/`driver`: nothing — `is_staff('owner','operator')` is the
+only predicate on every policy, never the unconditional role-only shape S7-02 found on
+`orders_kitchen_read`. `anon`: table grant revoked outright on all four, not left to RLS alone —
+closing the other S7-02 finding (`settings.draft`'s column-grant/row-policy mismatch), though this
+schema has no anon-reachable surface at all so the revoke is belt-and-braces, not a fix for
+anything live here. Tested against rows **known to exist** (an `admin()` count first), not
+inferred from an empty result — S4-03's "RLS matching zero rows returns `200 []`" finding is
+exactly the trap a lazier test would fall into.
+
+**Realtime: table replication, not broadcast.** `agent_tasks`/`agent_runs`/`agent_run_logs` added
+to `supabase_realtime`; `agents` deliberately not (mutates rarely, same as `automations`/
+`campaigns`, neither of which is in the publication either). Chose replication over S2-02's
+guest-tracking broadcast because the dashboard reads these as a staff session with a real per-user
+JWT — `is_staff()` RLS applies cleanly, and broadcast exists only to work around a *shared* anon
+JWT with no header-scoped RLS, which doesn't apply here.
+
+**Claim locking reused, status shape diverges — said why rather than quietly diverging (per the
+boot).** `for update skip locked` + a stale-claim timeout is identical to `claim_campaign_recipients`/
+`claim_payment_jobs`. The *status* shape follows `payment_jobs` (an enum with a `processing` state
++ `started_at`), not `campaign_recipients`'s `claimed_at`-only shape: an agent task can run for a
+while (an LLM call, not a queue hop), and the dashboard needs "in flight" visibly distinct from
+"waiting," which `campaign_recipients` has no way to express. Claiming a task opens its run in the
+same transaction, so there is never a claimed task with nothing to log against.
+
+**Cost is recorded, not capped.** Every `agent_runs` row carries `input_tokens`/`output_tokens`/
+`cost_usd`, written in the same statement as the run's conclusion. No rate limiter or spend ceiling
+in front of the claim/run loop — that's S7's call at plan.md C2, same posture D-016 took with SMS
+pumping. Flagging again here so it isn't lost: an agent that loops burns the owner's Anthropic
+account with nothing currently stopping it short of a human reading the dashboard.
+
+**GDPR nullability carried, one exception named.** `agent_tasks.customer_id` and
+`agent_runs.customer_id` are nullable, `on delete set null` — same shape `automation_runs`
+established. Tested: deleting the customer leaves both rows in place with the link cleared. **Not**
+attempted: scrubbing customer PII that may appear inside `result` or a log line's free-text
+`message` (model prompts/outputs are unbounded free text) — redacting that safely without
+destroying the audit trail is a harder problem than this boot's scope, and is named as an open gap
+in §8.8 rather than silently skipped.
+
+**Marketing-runner ruling: `automations`/`automation_runs` stay separate, not folded in.** Reasons
+in §8.8 — it already has a working config surface and a UI (S4-04's Marketing screen) keyed to its
+specific shape (`automation_kind`, per-customer rows); folding it in means either teaching this
+generic runtime "one row per customer considered" (which most agents have no use for) or rewriting
+a working UI for no functional gain. Cost: two runtimes to observe, which is S4's small, bounded UI
+concern to label clearly, not a schema one.
+
+**`agents.key` is text, not an enum — the mistake the boot named explicitly.** D-020's agent set
+(sales/accounting/warehouse/grow/quality) is expected to grow, unlike `automation_kind`'s fixed
+four. An enum would mean a migration every time S5 adds an agent.
+
+**Could not run `supabase start` locally — no Docker daemon in this sandbox** (checked: no
+`/var/run/docker.sock`, no `Docker.app`; `colima` needs `qemu`, not installed, and building it from
+source on this Intel Mac was going to cost real time for no gain since GitHub Actions has real
+Docker). Relied on the actual `backend (supabase)` CI job instead: pushed, watched, fixed what it
+found. It caught two real things, exactly as it's meant to: `security.test.ts`'s function-grants
+sweep flagged `claim_agent_tasks`/`finish_agent_run` as new, unlisted functions (added to
+`SERVICE_ROLE_ONLY`, same shape as `claim_campaign_recipients`) — and `types/database.ts` was
+stale, fixed by downloading the run's own `backend-types` artifact (produced by the same
+`pnpm run db:types` the local workflow would run) rather than hand-editing a 2000-line generated
+file. Second CI run fully green (`db reset`, `db lint`, seed-idempotency, all 175 tests, types
+diff clean) before merging.
+
+**Boundary held.** No `apps/automation`, `apps/web`, `apps/backoffice`, `apps/infra`, `apps/e2e`.
+Touched `docs/api-contracts.md` only for the one §8.8 subsection. Did not touch
+`docs/security.md`, `decisions.md`, `plan.md`, `sessions.md`. Did not execute S4-05's cancelled
+VAT filing (D-019) — saw it in `proposed/`, left it alone. Did not touch B4/B5 (`orders_kitchen_read`,
+`settings.draft`) — those are separate PRs per the boot, still open. `state.md`: S2 row only.
+
+Next: B4 (`orders_kitchen_read` unbounded), B5 (`settings.draft` leak), D-018's `place_order`
+throttle (unblocked, #77 landed), C8 (ingredient/recipe/stock schema, large). Stopping here per the
+boot, waiting for S0.
