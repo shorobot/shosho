@@ -9,6 +9,209 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      agent_run_logs: {
+        Row: {
+          at: string
+          id: string
+          level: string
+          message: string
+          run_id: string
+          seq: number
+        }
+        Insert: {
+          at?: string
+          id?: string
+          level?: string
+          message: string
+          run_id: string
+          seq?: number
+        }
+        Update: {
+          at?: string
+          id?: string
+          level?: string
+          message?: string
+          run_id?: string
+          seq?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_run_logs_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "agent_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_runs: {
+        Row: {
+          agent_id: string
+          conclusion: string | null
+          cost_usd: number | null
+          created_at: string
+          customer_id: string | null
+          error: string | null
+          finished_at: string | null
+          id: string
+          input_tokens: number | null
+          output_tokens: number | null
+          result: Json | null
+          started_at: string
+          task_id: string | null
+        }
+        Insert: {
+          agent_id: string
+          conclusion?: string | null
+          cost_usd?: number | null
+          created_at?: string
+          customer_id?: string | null
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          input_tokens?: number | null
+          output_tokens?: number | null
+          result?: Json | null
+          started_at?: string
+          task_id?: string | null
+        }
+        Update: {
+          agent_id?: string
+          conclusion?: string | null
+          cost_usd?: number | null
+          created_at?: string
+          customer_id?: string | null
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          input_tokens?: number | null
+          output_tokens?: number | null
+          result?: Json | null
+          started_at?: string
+          task_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_runs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "agent_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_runs_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "agent_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_tasks: {
+        Row: {
+          agent_id: string
+          attempts: number
+          created_at: string
+          customer_id: string | null
+          id: string
+          last_error: string | null
+          payload: Json
+          started_at: string | null
+          status: Database["public"]["Enums"]["agent_task_status"]
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          attempts?: number
+          created_at?: string
+          customer_id?: string | null
+          id?: string
+          last_error?: string | null
+          payload?: Json
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["agent_task_status"]
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          attempts?: number
+          created_at?: string
+          customer_id?: string | null
+          id?: string
+          last_error?: string | null
+          payload?: Json
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["agent_task_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_tasks_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_tasks_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "agent_tasks_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agents: {
+        Row: {
+          active: boolean
+          config: Json
+          created_at: string
+          id: string
+          key: string
+          last_run_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          key: string
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          key?: string
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       automation_runs: {
         Row: {
           at: string
@@ -1489,6 +1692,17 @@ export type Database = {
         Args: never
         Returns: Database["public"]["Enums"]["staff_role"]
       }
+      claim_agent_tasks: {
+        Args: { p_limit?: number }
+        Returns: {
+          agent_id: string
+          attempts: number
+          customer_id: string
+          payload: Json
+          run_id: string
+          task_id: string
+        }[]
+      }
       claim_campaign_recipients: {
         Args: { p_limit?: number }
         Returns: {
@@ -1545,6 +1759,40 @@ export type Database = {
       ensure_guest_realtime_policy: { Args: never; Returns: Json }
       ensure_menu_bucket_policies: { Args: never; Returns: boolean }
       ensure_site_bucket_policies: { Args: never; Returns: boolean }
+      finish_agent_run: {
+        Args: {
+          p_conclusion?: string
+          p_cost_usd?: number
+          p_error?: string
+          p_final?: boolean
+          p_input_tokens?: number
+          p_ok: boolean
+          p_output_tokens?: number
+          p_result?: Json
+          p_run_id: string
+        }
+        Returns: {
+          agent_id: string
+          conclusion: string | null
+          cost_usd: number | null
+          created_at: string
+          customer_id: string | null
+          error: string | null
+          finished_at: string | null
+          id: string
+          input_tokens: number | null
+          output_tokens: number | null
+          result: Json | null
+          started_at: string
+          task_id: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "agent_runs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       finish_payment_job: {
         Args: {
           p_error?: string
@@ -1759,6 +2007,7 @@ export type Database = {
     }
     Enums: {
       actor_type: "customer" | "staff" | "system"
+      agent_task_status: "queued" | "processing" | "done" | "failed"
       automation_kind:
         | "welcome"
         | "win_back_45d"
@@ -1926,6 +2175,7 @@ export const Constants = {
   public: {
     Enums: {
       actor_type: ["customer", "staff", "system"],
+      agent_task_status: ["queued", "processing", "done", "failed"],
       automation_kind: [
         "welcome",
         "win_back_45d",
