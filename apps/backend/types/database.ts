@@ -9,6 +9,74 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      agent_outputs: {
+        Row: {
+          agent_id: string
+          created_at: string
+          id: string
+          kind: string
+          payload: Json
+          review_note: string | null
+          reviewed_at: string | null
+          reviewer_id: string | null
+          run_id: string
+          status: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Insert: {
+          agent_id: string
+          created_at?: string
+          id?: string
+          kind: string
+          payload?: Json
+          review_note?: string | null
+          reviewed_at?: string | null
+          reviewer_id?: string | null
+          run_id: string
+          status?: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Update: {
+          agent_id?: string
+          created_at?: string
+          id?: string
+          kind?: string
+          payload?: Json
+          review_note?: string | null
+          reviewed_at?: string | null
+          reviewer_id?: string | null
+          run_id?: string
+          status?: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_outputs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "staff_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "agent_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_run_logs: {
         Row: {
           at: string
@@ -1948,6 +2016,31 @@ export type Database = {
           has_push_consent: boolean
         }[]
       }
+      review_agent_output: {
+        Args: {
+          p_decision: Database["public"]["Enums"]["agent_output_status"]
+          p_note?: string
+          p_output_id: string
+        }
+        Returns: {
+          agent_id: string
+          created_at: string
+          id: string
+          kind: string
+          payload: Json
+          review_note: string | null
+          reviewed_at: string | null
+          reviewer_id: string | null
+          run_id: string
+          status: Database["public"]["Enums"]["agent_output_status"]
+        }
+        SetofOptions: {
+          from: "*"
+          to: "agent_outputs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       run_payment_worker: { Args: never; Returns: undefined }
       schedule_payment_worker: {
         Args: { p_anon_key: string; p_url: string }
@@ -1956,6 +2049,7 @@ export type Database = {
       security_audit_function_grants: {
         Args: never
         Returns: {
+          agent_execute: boolean
           anon_execute: boolean
           args: string
           authenticated_execute: boolean
@@ -2007,6 +2101,7 @@ export type Database = {
     }
     Enums: {
       actor_type: "customer" | "staff" | "system"
+      agent_output_status: "pending" | "approved" | "rejected"
       agent_task_status: "queued" | "processing" | "done" | "failed"
       automation_kind:
         | "welcome"
@@ -2175,6 +2270,7 @@ export const Constants = {
   public: {
     Enums: {
       actor_type: ["customer", "staff", "system"],
+      agent_output_status: ["pending", "approved", "rejected"],
       agent_task_status: ["queued", "processing", "done", "failed"],
       automation_kind: [
         "welcome",
