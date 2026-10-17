@@ -68,6 +68,33 @@ No table in `public` is missing `ENABLE ROW LEVEL SECURITY`; `storage.objects` a
 `realtime.messages` (owned by Supabase's own extensions, not our migrations) are asserted — not
 assumed — to have RLS on, by `security.test.ts`.
 
+### 2.1 Views and other `security_invoker` objects (S7-02 sweep)
+
+**The rule (see §4.7): a `security_invoker` view is only as tight as the loosest policy among
+every table it joins — not as tight as its own "main" table.** The instance that was caught
+before shipping (`report_payments` specified as a view, built as a function instead) is in
+`memory/boots/proposed/S7-report-view-rls-sweep.md`. This table is the full sweep the proposal
+asked for — every view/`security_invoker` object in `public`, what it joins, and the loosest
+policy on each join.
+
+| Object | `security_invoker` | Joins | Loosest join policy | Verdict |
+|---|---|---|---|---|
+| `customer_stats` (migration 24) | `true` | `customers` (driving table, `left join orders`) | `customers_staff_all` — owner/operator only, **no kitchen/driver read policy exists at all** | **Safe.** The driving table's own restriction means kitchen/driver get zero `customers` rows before the join to `orders` ever runs — an empty left-hand side cannot be widened by what it's joined to. Confirmed structurally; not yet confirmed with a live kitchen JWT this boot (§8). |
+| `menu_items_on_sale` (migration 8) | `true` | `menu_items` only | `items_staff_read` (owner/operator/kitchen full catalogue) / `items_public_read` (anon/driver: on-sale only) | **Safe.** Single-table view over non-PII menu data; the join concern doesn't apply (nothing to compose against). |
+| `staff_directory` (migration 21) | `false` (security definer, `security_barrier`) | none — queries `staff` as its own owner | n/a — the view's own `where auth_role() is not null` is the only gate, by design | **Safe, and correctly not `security_invoker`**: the comment explains why (the view must see rows the caller's own `staff` RLS would hide). Explicit 4-column list keeps `staff.phone` (and anything added later) behind the base table's owner/operator policy. |
+| `banners_live` (migration 31) | `false` (security definer, `security_barrier`) | none — queries `banners` as its own owner | n/a — the view's own `where active and in-window` is the gate | **Safe**, same reasoning as `staff_directory`. Explicit column list excludes `draft`. |
+| `report_payments` (migration 30) | n/a — not a view | function reads `orders` (kitchen: role-only, no row bound) `left join payment_jobs` | — | **Safe, and the file's own comment names exactly this sweep's rule as the reason**: a `security_invoker` view here would have let kitchen see every order's payment method/status through the `orders` join. Built as a `security definer` function with an explicit owner/operator-only guard instead. |
+| `resolve_segment` (migration 29) | n/a — not a view | function reads `customers left join customer_stats` | — | **Safe.** `security definer` with an explicit `auth_role() not in ('owner','operator')` guard checked *before* the query runs; kitchen/driver never reach the query regardless of what the inner join could see. |
+| `report_revenue_by_day` / `report_top_items` / `report_delivery_times` / `report_funnel` (migration 24, 32) | n/a — not views | functions read `orders`/`order_items`/`delivery_zones`/`order_attempts` directly | — | **Safe, by a different and deliberate design**: these are `security definer` functions gated by `reports_guard()` (any active staff role — **including kitchen/driver**, by S2-03's explicit ruling, not an oversight, documented in migration 24's own comment). Being functions, not views, Finding A's join-composition risk doesn't apply to them at all; every caller gets the same numbers from the same guard. |
+
+**Audit-tooling gap found while doing this sweep, not a live leak:** `security_audit_table_grants()`
+(migration 20) filters `c.relkind in ('r', 'p')` — ordinary and partitioned tables only. A view
+(`relkind = 'v'`) never matches, so `customer_stats`/`menu_items_on_sale`/`staff_directory`/
+`banners_live` have **no automated grant or RLS-applicability check at all** — `security.test.ts`'s
+"every table in `public` has RLS enabled" sweep silently says nothing about any of them. All four
+were hand-verified safe above, but the next view added to this schema gets the same blind spot
+unless the helper is widened. Proposed to S2 in `boots/proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md (task 3)`.
+
 ### RPCs / Edge Functions (EXECUTE grants, verified live via `pg_proc`/`has_function_privilege`)
 
 | Function | anon | authenticated (staff) | service_role |
@@ -131,34 +158,124 @@ that page, not a one-time check.
 6. **A new bucket or a new `realtime`-adjacent feature needs its own policy, asserted against the
    live catalog** (see `security_audit_table_grants()`/`security_audit_policies()` in migration 20) —
    don't assume Supabase's own schemas (`storage`, `realtime`) come pre-configured the way you want.
+7. **A `security_invoker` view inherits the caller's RLS on every table it joins — it is only as
+   tight as the loosest policy among them, never as tight as its "main" table's policy alone**
+   (S7-02, sweep in §2.1). `orders_kitchen_read` is role-only with no row bound, so any
+   `security_invoker` view that joins `orders` hands kitchen every order it touches, however
+   correct the *other* joined tables' own RLS is — this is what `report_payments` avoided by
+   becoming a `security definer` function with its own explicit guard instead of a view. Before
+   specifying a new report/summary as a view: name every table it joins and the loosest policy on
+   each, the same way §2.1 does; if any join is role-only rather than row-bound, build a function
+   with an explicit guard instead, or bound that join's own policy first.
+8. **Row-Level Security is row-level, not column-level** (first named by S2-06, migration 32,
+   §8.7): a `using (...)` policy that admits a row admits every column in it unless a column-level
+   `GRANT`/`REVOKE` narrows it separately — and a column grant is per **database role**
+   (`anon`/`authenticated`/`service_role`), never per `staff.role`. There is no SQL mechanism that
+   grants `authenticated` a column on some RLS-admitted rows but not others; narrowing by
+   `staff.role` within a column needs either a separate `security definer` accessor (the
+   `staff_directory`/`banners_live` pattern) or keeping the sensitive column out of any row a wider
+   staff audience can already read. See §5's `settings.draft` finding for the case this rule would
+   have prevented.
+9. **A `200` with an empty array from PostgREST is not evidence anything was refused** — a direct
+   table write whose RLS `USING`/`WITH CHECK` admits zero rows returns success with no rows changed,
+   indistinguishable from "nothing matched." This project's accepted position (S7-02, ruling in §5):
+   this is fine for a role that has read access but no write policy at all on a table (kitchen/driver
+   on `customers`/`orders`/`banners`) **as long as** (a) every state-changing action for that role
+   goes through a `security definer` RPC that raises explicitly on a role violation — true today for
+   every status/payment-affecting path — and (b) any UI that performs a direct table write checks
+   rows-affected rather than trusting the response code (`apps/backoffice/lib/write.ts`'s `wrote()`,
+   S4-03). A future direct table write exposed to a limited-privilege role that skips (b), or a new
+   state-changing RPC that can silently no-op instead of raising, is the regression to watch for —
+   not the existing `customers`/`orders` shape, which is intentional and documented here precisely so
+   the next person doesn't have to re-derive it from reading RLS text the way this boot did.
 
-## 5. Findings needing another session (see `/memory/log.md` S7-01 for the ranked list; proposals in `/memory/boots/proposed/`)
+## 5. Findings needing another session (see `/memory/log.md` S7-01/S7-02 for the ranked lists; proposals in `/memory/boots/proposed/`)
 
-- **CRITICAL — `place_order` accepts a client-supplied `payment_status` of `authorized` with no
-  relationship to `payment_method` or any real Stripe event.** An anonymous caller can place an order
-  with `payment_method: 'card', payment_status: 'authorized'` and have it marked `paid` at delivery
-  with zero real payment (`apps/backend/supabase/migrations/20260920000010_rpc.sql:435-442,533-547`;
-  `20260921000015_set_order_status_payments.sql:110-116`, the "v1 client-reported payment" branch).
-  This is contract-level (documented in `api-contracts.md` §5.3 as v1 behaviour, superseded in intent
-  but not enforcement by §5.6/D-011) and touches a large, actively-tested S2-owned function — filed to
-  S2, not fixed here. See `/memory/boots/proposed/S7-02-S2-payment-security-fixes.md`.
-- **Medium/High — a `payment-worker` refund job can be duplicated** if the process crashes between a
-  successful `stripe.refunds.create()` call and `finish_payment_job` recording it: the retry gets a
-  new idempotency key (`job:<id>:<attempt>`), and unlike `capture`/`void`, `refund` never re-checks
-  Stripe for "did this already happen" before acting again
-  (`apps/backend/supabase/functions/payment-worker/index.ts:52-58`). Filed to S2.
-- **Low — `payment-worker` accepts any valid project JWT** (including the public anon key) with no
-  in-function service-role check; by design (cron calls it via a Vault-stored anon key) but widens the
-  callable surface further than necessary. Filed to S2.
-- **Low — `tracking_token` compared with `!==`** in `create-payment-intent`, not constant-time
-  (`apps/backend/supabase/functions/create-payment-intent/index.ts:57`); low practical risk given 128
-  bits of entropy. Filed to S2.
-- **Medium — security headers (CSP, HSTS beyond Cloudflare's 1-day default, X-Frame-Options,
-  Referrer-Policy, Permissions-Policy) are not set by either Next.js app**; the back-office in
-  particular is clickjacking-able with no CSP. Filed to S3 (web) / S4 (backoffice).
-- **Medium — back-office open redirect**: `LoginForm.tsx`'s `?next=` handling accepts
-  `//evil.example` (passes a bare `startsWith("/")` check, which a protocol-relative URL also
-  satisfies). Filed to S4.
+- **Medium/High — `orders_kitchen_read` (and the matching `order_items`/`order_events` kitchen
+  policies) are role-only with no row bound, so a kitchen login can read every order ever placed —
+  including `contact_name`, `contact_phone`, `address` and `allergy_note` on orders from months ago
+  that kitchen has no operational reason to see** (`apps/backend/supabase/migrations/
+  20260920000009_rls.sql:119-121,129-131,140-142`). This is the question S0's two filed findings
+  (`proposed/S7-report-view-rls-sweep.md`, `proposed/S7-S4-03-kitchen-rls-silent-noop.md`) both
+  pointed at. **Ruling (task 4a of S7-02): bound it.** Kitchen needs today's/active tickets, not a
+  PII-bearing historical archive — recommend bounding by order *status* (the open-pipeline states),
+  not a wall-clock window, since a scheduled future order or an order stuck in `ready` for two days
+  must stay visible regardless of when it was created. Concrete SQL and the three-policy change are
+  in `proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md (task 2)`. Filed to S2 (schema owner); not changed here
+  per this boot's boundary (two sessions live in this surface).
+- **Medium — any staff role (not just owner/operator) can read `settings.draft` — the staged,
+  unpublished CMS/ops content — for every row in `settings_staff_keys()` (`business`,
+  `opening_hours`, `site`, `payments.enabled`, `kitchen.status`, `ops`).** Migration 32's
+  column-level `GRANT`/`REVOKE` (§4.8, §8.7) narrowed only `anon`'s column grant on `settings`;
+  `authenticated`'s table-wide grant — which includes `draft`, added by the same migration — was
+  never narrowed, and `settings_staff_common_read` (migration 21,
+  `20260926000021_role_access.sql:45-47`) admits **kitchen and driver**, not just owner/operator, to
+  exactly these rows. `api-contracts.md` §8.7's own stated intent — "`authenticated` keeps its
+  existing table-level grant unchanged, so **owner/operator** continue to see `draft`" — is therefore
+  not what the grants actually enforce: kitchen/driver see it too. The data at risk is staged
+  marketing copy, business/legal fields and `ops` tuning values — `payments` and `kitchen` (the two
+  genuinely sensitive private keys) correctly stay out of `settings_staff_keys()` and are
+  unaffected — which is why this is Medium, not High. Not yet confirmed with a live kitchen JWT
+  this boot (§8); confirmed by direct policy/grant tracing (§4.8). Fix sketch (a `security
+  definer` accessor for `draft`, matching the `staff_directory`/`banners_live` pattern, since a
+  plain column `GRANT` cannot be scoped to a subset of `staff.role` values) in
+  `proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md (task 1)`. Filed to S2.
+- **Low — the CI "every table in `public` has RLS enabled" sweep silently excludes views.**
+  `security_audit_table_grants()` (`20260926000020_security_audit_helpers.sql:79-81`) filters
+  `c.relkind in ('r', 'p')`, which never matches `relkind = 'v'` — so `customer_stats`,
+  `menu_items_on_sale`, `staff_directory` and `banners_live` have no automated grant check at all
+  (§2.1). All four were hand-verified safe this boot; the gap is in the tooling, not a live leak.
+  Widen the filter (or add a parallel view-inventory helper) in
+  `proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md (task 3)`. Filed to S2 — small, low-risk, folds into
+  the same migration as the `settings.draft` fix above.
+- **Low — the regression test D-016/S7-02 task 3 asked for does not exist, though the code it would
+  test already holds.** `tests/status.test.ts:107` ("anon and non-staff cannot change status") and
+  `tests/role_access.test.ts:123` ("kitchen_pause refuses a non-staff caller") both call `anon()`
+  only — neither exercises a genuinely signed-up `authenticated` user with no `staff` row, which is
+  the exact shape a future customer-account login (D-016) will be. Static re-check this boot (every
+  `to authenticated` RLS policy and every staff-gated function either carries an explicit
+  `is_staff(...)`/`auth_role() is not null`/`is distinct from` guard, or is revoked from
+  `authenticated` outright; migration 19 already closed the one NULL-unsafe guard class that would
+  have mattered) says **the matrix holds** — but nothing in CI proves it with a live token, so a
+  regression here would ship silently. Recommend a `signUpNonStaff()` test helper (plain
+  `admin().auth.admin.createUser()`, no `staff` row) plus one assertion per staff-gated surface.
+  Could not run this live myself this boot — no local Supabase stack was reachable in this
+  environment (§8) — so this is a recommendation, not a fresh pass/fail. Filed to S2 in
+  `proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md (task 4)`.
+- ~~CRITICAL — `place_order` accepts a client-supplied `payment_status` of `authorized` with no
+  relationship to `payment_method` or any real Stripe event~~ — **fixed and merged, S2-04 (PR #41,
+  migration `20260928000025_payment_trust_boundary.sql`), confirmed by re-reading the live function
+  this boot (S7-02):** a guest/anon caller may now only ever create `pending`; `authorized` is
+  reachable from exactly one place (`record_payment_event`, fed by the signature-verified Stripe
+  webhook); staff may record `paid` only (audited with an `order_events` note), never `authorized`.
+  This entry was still live/unstruck in this file as of S7-02's read — corrected here so this
+  standing reference matches `/memory/state.md` and `/memory/decisions.md` D-011 instead of lagging
+  them. The four entries below it in this list were *also* stale for the same reason — all fixed,
+  all re-verified live by S7-02 this boot. Full detail and the fix-by-fix trace:
+  `/memory/boots/proposed/S7-02-S2-payment-security-fixes.md`, now annotated resolved (only its
+  task 6, a process recommendation, stays open).
+- ~~Medium/High — a `payment-worker` refund job can be duplicated~~ — **fixed.**
+  `refund` now uses a **stable** idempotency key across attempts (`refund:job:<id>`, not
+  `job:<id>:<attempt>`) and asks Stripe what refunds already exist on the intent before acting
+  (`apps/backend/supabase/functions/payment-worker/index.ts:63-72`, `_shared/refund-plan.ts`) — the
+  same "ask the provider first" shape `capture`/`void` already had.
+- ~~Low — `payment-worker` accepts any valid project JWT~~ — **fixed.** It now requires either the
+  service-role key or `x-worker-secret` (`public.payment_worker_secret()`, a 32-byte DB-owned
+  secret only this function and `run_payment_worker()`'s cron call can present) —
+  `payment-worker/index.ts:4-10`, migration `20260928000026_search_path_and_worker_secret.sql`.
+  `{"action":"install"}` is still anon-reachable on purpose (its parameters are server-side
+  constants; the swap to a dedicated token is its own filed item, `S2-04-S1-payment-worker-install-
+  token.md`, S1's).
+- ~~Low — `tracking_token` compared with `!==`~~ — **fixed.** `create-payment-intent/index.ts:60`
+  now calls `timingSafeEqual` (`_shared/secure-compare.ts`).
+- ~~Medium — security headers are not set by either Next.js app~~ — **fixed.** Both
+  `apps/web/middleware.ts` and `apps/backoffice/middleware.ts` now set a nonce-based CSP (with
+  `frame-ancestors 'none'`), re-verified live over the deployed back-office container by S0
+  2026-10-07 (`/memory/state.md`'s "What exists now" section has the full header list).
+- ~~Medium — back-office open redirect~~ — **fixed.** `LoginForm.tsx` now resolves `?next=` through
+  `apps/backoffice/lib/safeRedirect.ts`'s `safeNextPath()` — an explicit allow-list of same-origin
+  relative paths, not the old bare `startsWith("/")` check a protocol-relative `//evil.example`
+  also satisfied. S4 re-verified live: `?next=//evil.example/phish` no longer escapes the origin.
 - **Medium/High — no rate limiting anywhere** on `place_order`, `quote_order`,
   `create-payment-intent`, or back-office `/login` beyond Supabase Auth's generic default. The only
   place this can live given our co-tenant terms (no nginx access) is a Cloudflare rule. Filed to S1.
@@ -171,15 +288,18 @@ that page, not a one-time check.
   the right endpoint; verified against the live ruleset, not taken on trust). `/memory/state.md`'s
   description was correct all along. Check `/rulesets`, not `/branches/<b>/protection`, when
   re-verifying this later.
-- **High — the four staff seed accounts share one password, published in a public repo's
-  README** (`apps/backend/README.md`), and will soon sit behind a public URL
-  (`bo-shos.hellfiresol.com`, S1-04). Rotate before that URL is announced; see S1-04's own
-  pre-conditions list and the coordination note in S7-01's log entry.
-- **Low — six `SECURITY INVOKER` functions don't pin `search_path`** (`set_updated_at`,
-  `current_actor`, `orders_before_status_change`, `settings_public_keys`, `normalize_phone`,
-  `order_transition_allowed`). Not an active privilege-escalation vector (invoker functions run with
-  the caller's own privileges), but inconsistent hygiene — low priority for S2 whenever these
-  functions are next touched.
+- ~~High — the four staff seed accounts share one password, published in a public repo's
+  README~~ — **fixed.** The owner ran `rotate-staging-passwords.mjs` 2026-10-09; the published
+  `shosho-test-2026` now returns `invalid_credentials` for all four accounts (verified against the
+  live project by S4, not inferred from the script's exit code). The new values exist only on the
+  owner's machine (`apps/backend/.staff-credentials.local`, gitignored) — see `/memory/state.md`
+  owner-action 1a for the one still-open half (confirming the *new* values authenticate, not just
+  that the old one is dead).
+- ~~Low — six `SECURITY INVOKER` functions don't pin `search_path`~~ — **fixed.** All six
+  (`set_updated_at`, `current_actor`, `orders_before_status_change`, `settings_public_keys`,
+  `normalize_phone`, `order_transition_allowed`) now carry `set search_path = public` (or
+  `public, auth` for the two needing `auth.uid()`) — migration
+  `20260928000026_search_path_and_worker_secret.sql`, re-verified live by S7-02.
 
 ## 6. GDPR / legal (Germany) — findings, not legal advice
 
@@ -222,6 +342,20 @@ shared host, TETA+PI's ports, or hellfire's services, per boundary.**
   response headers over HTTPS from this machine (§5 web-surface findings) — this is a code/config
   review, not a live external pentest.
 
+**S7-02 (2026-10-15) could not reach a live Supabase instance in its environment** — no Docker
+daemon was running, `colima start` needed `qemu-img` (not installed), and building `qemu` from
+source via Homebrew (no bottle for this host's macOS version) was abandoned after ~25 minutes with
+no realistic finish time; the owner's rotated staging credentials are deliberately out of this
+session's reach per this boot's own boundary. Every conclusion in §2.1/§5 that says "confirmed" or
+"checked" is a **static trace** — the actual grant/policy/function text, read against the live
+migration order (`create or replace` supersedes, so a few findings in old proposal files turned out
+to already be fixed by a later migration the filer hadn't re-checked) — not a fresh request against
+a running project with a role's JWT. Two places this matters most, both already flagged inline:
+the `customer_stats`/kitchen-JWT check in §2.1, and the non-staff-authenticated regression test in
+§5, which this boot recommends rather than runs. The existing test suite (`rls.test.ts`,
+`security.test.ts`) already *does* this kind of live-JWT checking in CI and its assertions are
+cited by file:line throughout this pass — that is real evidence, just not evidence this boot
+produced fresh.
 ## 9. The automation / agent privilege boundary (S7-03, step C2 of `/memory/plan.md`)
 
 Ruling, not implementation — `apps/automation` does not exist yet (D-020). This is the boundary S2

@@ -2278,6 +2278,95 @@ The owner is restarting the session and asked for a snapshot, everything in memo
 
 **What I deliberately did not issue.** S2's `place_order` throttle stays queued behind #77 (D-018) because it lands in the surface S6's specs measure. S5 Automation stays unstarted: it is the largest unbuilt thing and the first real decision about it — whether to re-add an `api` service under D-013 — deserves its own boot once the campaign screens have a sender to be wired to. And the customer-accounts phases stay queued on two owner answers, not on engineering: the SMTP choice (D-017) and the one clause of D-016 I inferred rather than was told, that accounts are *optional* and guest checkout continues unchanged.
 
+## 2026-10-15 — S7 Security — S7-02
+PR #92 (branch `s7-02`). Audit-only, as the boot required: two sessions (S4-04/S4-05 in back-office, S6-01's unlanded
+`apps/e2e`) were live in the surfaces this boot was reading, so **no RLS policy, grant, trigger or
+migration was changed.** `docs/security.md` updated in place (never replaced): §2.1 (new) is the
+full view/`security_invoker` sweep; §4 gained three standing rules (7: the view/join rule itself,
+8: RLS is row-level not column-level, 9: when a silent no-op is acceptable); §5 gained the new
+findings and had five stale "still open" entries corrected to fixed (below); §8 states plainly that
+no live Supabase instance was reached this boot.
+
+**Ranked findings** (full detail + file:line in `docs/security.md` §2.1/§5; the one proposal in
+`memory/boots/proposed/S7-02-S2-kitchen-driver-reach-and-rls-fixes.md`):
+1. **Medium/High — `orders_kitchen_read` (+ its `order_items`/`order_events` siblings) are
+   role-only with no row bound**: kitchen can read every order ever placed, including
+   `contact_name`/`contact_phone`/`address`/`allergy_note`, not just today's active tickets
+   (`rls.sql:119-121,129-131,140-142`). **Ruling on S0's task 4a: bound it, by status (open-pipeline
+   states), not by a time window** — a status bound tracks "today's tickets" correctly where a
+   wall-clock cutoff would hide a legitimate scheduled order and keep showing a stale `ready` one.
+   SQL sketch filed. **Filed to S2.**
+2. **Medium — kitchen and driver (not just owner/operator) can read `settings.draft`** for every
+   row in `settings_staff_keys()` (`business`, `opening_hours`, `site`, `payments.enabled`,
+   `kitchen.status`, `ops`). Migration 32's column-grant narrowing (the anon-draft fix S4-04 proved)
+   covered only `anon`; `settings_staff_common_read` (migration 21) admits kitchen/driver to the
+   same rows `authenticated`'s unchanged table-level grant still exposes `draft` on.
+   `api-contracts.md` §8.7's own stated intent — "owner/operator continue to see draft" — is not
+   what the live grants enforce. `payments`/`kitchen` (the two sensitive private keys) stay
+   correctly out of reach, which is why this is Medium, not High. **Filed to S2.**
+3. **Low — the CI "every table has RLS" sweep silently excludes views.**
+   `security_audit_table_grants()` filters `relkind in ('r','p')`, which never matches a view, so
+   `customer_stats`/`menu_items_on_sale`/`staff_directory`/`banners_live` have zero automated
+   grant/RLS coverage — all four hand-verified safe this boot (§2.1), but the next view added gets
+   the same blind spot silently. **Filed to S2.**
+4. **Low (test coverage) — the regression test D-016/this boot's task 3 asked for does not exist.**
+   `status.test.ts:107` and `role_access.test.ts:123` are titled around "non-staff" but both call
+   `anon()` only — a genuinely signed-up `authenticated` user with no `staff` row (exactly D-016's
+   upcoming shape) is never exercised anywhere in the suite. Static re-check this boot says the
+   matrix holds regardless (`auth_role()` is NULL-safe everywhere post-migration-19); this is a
+   coverage gap, not a live hole. `signUpNonStaff()` helper sketch filed. **Filed to S2.**
+5. **Checked, holds — the view/`security_invoker`-over-loose-RLS sweep** (`S7-report-view-rls-
+   sweep.md`'s original ask). `customer_stats` is safe because its *driving* table (`customers`)
+   already excludes kitchen/driver before the `orders` join runs — an empty left side can't be
+   widened by what it's joined to. `menu_items_on_sale`, `staff_directory`, `banners_live` all
+   checked and hold for their own, different reasons (§2.1's table has each one named). The four
+   S2-03 report functions and `report_payments`/`resolve_segment` aren't views at all — S2-03/S2-06
+   deliberately built them as `security definer` functions with explicit guards for exactly this
+   reason, and `report_payments`'s migration comment already names this sweep's rule as why.
+6. **Checked, holds — the silent-no-op generalises exactly as expected, no worse shape found.**
+   `rls.test.ts:60-62` already proves (in CI, today) that a kitchen `orders` PATCH returns `[]` —
+   the committed suite already is "a session with a token" for this specific question, just not one
+   this boot ran fresh (see the live-JWT limitation below). No table was found where this no-op
+   masks something worse than the already-filed `customers` case.
+7. **Rulings 4b/4c (raise-vs-no-op; is a route guard an acceptable real control) — accepted as the
+   documented design**, now written into `docs/security.md` §4.9, conditional on two things already
+   true today: every state-changing path goes through a `security definer` RPC that raises on a
+   role violation (confirmed for every order-status/payment/settings-owner-write path), and the
+   back-office checks rows-affected rather than trusting a 2xx (`lib/write.ts`'s `wrote()`, S4-03).
+   The regression to watch for is a *future* direct table write to a limited-privilege role that
+   skips that check — not the current `customers`/`orders` shape, which is intentional.
+8. **Housekeeping, found while fact-checking a cross-reference, not asked for but cheap:** five
+   entries in `docs/security.md` §5 were still marked open though already fixed by migrations this
+   boot re-read anyway — `place_order`'s payment-status trust (S2-04), the `payment-worker` refund
+   duplicate + anon-key reach (same Edge Function, current source), the non-constant-time
+   `tracking_token` compare, and `search_path` hygiene on the six invoker functions (both migration
+   26) — plus three more from other sessions' own completed work (security headers, S3/S4; the
+   back-office open redirect, S4; the seed-password rotation, the owner). The standing-reference
+   file had not been re-read end to end since S7-01 wrote it eleven PRs ago; corrected in place
+   with strikethrough + what actually shipped, matching `state.md`'s own convention. Also annotated
+   `proposed/S7-02-S2-payment-security-fixes.md` (S7-01's original filing) resolved — tasks 1-5
+   shipped, only task 6 (a process suggestion, never a defect) stays open.
+
+**Live-JWT limitation, stated rather than papered over:** this boot could not reach a running
+Supabase instance. No Docker daemon was available; `colima start` failed on a missing `qemu-img`;
+installing `qemu` via Homebrew was attempted (no bottle exists for this host's macOS version, so it
+would have built from source) and abandoned after roughly 25 minutes with no realistic finish time
+inside this boot's budget. The owner's rotated staging credentials are deliberately out of reach
+per this boot's own boundary (`infra-access.md`/D-004's co-tenant terms), and using the service-role
+key to test an access boundary is explicitly prohibited by the boot. Every "checked"/"confirmed" in
+`docs/security.md` §2.1/§5 is therefore a **static trace** of the live migration order (`create or
+replace` supersedes — tracking that is what caught finding 8 above), cross-referenced against the
+committed test suite's own existing live-JWT assertions where one exists (cited by file:line
+throughout). This is real evidence — the suite genuinely does run kitchen/driver/anon JWTs against
+a local stack in CI — just not fresh evidence from this session. Recommended rather than run: a
+local Docker/colima setup that doesn't need a from-source `qemu` build on this specific host, so the
+next S7 boot doesn't hit the same wall.
+
+**Boundaries respected:** no RLS policy, grant, trigger or migration changed; `apps/backoffice`,
+`apps/web`, `apps/e2e`, `apps/infra` untouched; no reseed/truncate attempted against anything (no
+stack was ever reachable to reseed); `api-contracts.md`, `decisions.md`, `sessions.md`,
+`docs/design/*` untouched. `docs/security.md` is S7's own file, updated per its own header's
+instruction ("update it, don't replace it").
 ## 2026-10-12 — S4 Back-office — S4-05: the cash fix, verified live first, then Berichte + Einstellungen
 Read `S6-02-S4-cash-confirmation-vat-label-login-hardening.md`, `S4-05-reports.md`, `S4-04-settings-cms.md`'s Einstellungen half, `/memory/state.md`'s snapshot, D-015, D-017 first, per the boot. Boundary respected: nothing in `apps/backend`, `apps/web`, `apps/infra`, `apps/e2e`, `docs/api-contracts.md`, `docs/security.md`, `memory/decisions.md`, `memory/sessions.md`, `docs/design/*` touched.
 

@@ -1,6 +1,18 @@
 # Proposal → S2 Backend: payment security fixes from the S7-01 audit
 
-From S7 Security. **Top item is CRITICAL and money-relevant** — recommend the owner prioritises this
+**RESOLVED — checked by S7-02, 2026-10-15, while fact-checking an unrelated cross-reference.**
+Tasks 1–5 have all shipped: task 1 in S2-04 (`20260928000025_payment_trust_boundary.sql`, verified
+by re-reading the live `place_order`/`set_order_status`); tasks 2–3 (refund dedup via
+`_shared/refund-plan.ts`'s stable idempotency key + Stripe pre-check, and the `x-worker-secret`/
+service-role check) in `payment-worker/index.ts`'s current header comment and body; task 4
+(`timingSafeEqual` on `tracking_token`) in `create-payment-intent/index.ts:60`; task 5
+(`search_path` pinning) in `20260928000026_search_path_and_worker_secret.sql`. Only **task 6**
+(process recommendation: HTTP-layer tests for the Edge Functions) is still open, and it was never a
+defect — it's a coverage suggestion S0/S2 can pick up whenever convenient. Kept rather than deleted
+so the "why" behind each fix stays attached to its migration; `/docs/security.md` §5's CRITICAL
+entry has been corrected to match (it was still showing this as live).
+
+From S7 Security (S7-01, original filing). **Top item is CRITICAL and money-relevant** — recommend the owner prioritises this
 boot before any real Stripe account/live payment happens. Full context: `/docs/security.md` §5,
 `/memory/log.md` S7-01 entry. S7 did not fix any of this itself: it is a contract-level behaviour
 change to functions S2 owns and tests extensively (`place_order`, `set_order_status`), not a small
