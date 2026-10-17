@@ -335,7 +335,7 @@ shared host, TETA+PI's ports, or hellfire's services, per boundary.**
 - No live Stripe test payment exists yet (no Stripe account — D-011/S2-02 status unchanged); the
   money-path review in §5 is static-code review plus the existing recorded-event-fixture test suite,
   not a live financial walkthrough.
-- The back-office is not yet on a public host (`bo.shos.hellfiresol.com` DNS not yet live) — its
+- The back-office is not yet on a public host (`bo-shos.hellfiresol.com` DNS not yet live) — its
   public-facing posture (TLS, access gate) is S1-04's job, not re-verified here beyond the findings
   above.
 - No penetration test of the deployed staging site's network/TLS layer was performed beyond reading
@@ -356,3 +356,248 @@ the `customer_stats`/kitchen-JWT check in §2.1, and the non-staff-authenticated
 `security.test.ts`) already *does* this kind of live-JWT checking in CI and its assertions are
 cited by file:line throughout this pass — that is real evidence, just not evidence this boot
 produced fresh.
+## 9. The automation / agent privilege boundary (S7-03, step C2 of `/memory/plan.md`)
+
+Ruling, not implementation — `apps/automation` does not exist yet (D-020). This is the boundary S2
+(step C1, schema), S5 (step C3, orchestrator) and S1 (step C5, deploy) build to. Everything SHOSHO has
+shipped before this is `anon`-key only; this is the first component to hold a privileged credential on
+the host at all, which is why `_deploy.yml:148-155` stopped rendering one in 2026-09-27 (D-013) rather
+than carrying an unused one forward.
+
+### 9.1 Database identity — a dedicated non-`BYPASSRLS` role, never `service_role`
+
+**Ruling: a dedicated Postgres role (`agent` below as a working name), not `service_role`, and not
+per-agent roles yet.** `service_role` bypasses RLS entirely — every policy S7-02 swept, every
+`is_staff()` guard, every column grant (`settings.draft`'s own leak was a column-grant gap, not a
+missing policy) stops applying the instant that key is used. Handing an LLM-driven process that key
+means its entire blast radius, on a bug or a successful prompt injection (§9.5), is "anything
+`service_role` can do" — the whole schema. A role with explicit, enumerated grants and
+`rolbypassrls = false` makes the blast radius "whatever was actually granted," which is the only
+version of this that stays true after the schema has grown for another year and nobody remembers what
+the orchestrator was supposed to be able to touch.
+
+**This is a different connection shape, not just a different key, and the schema side needs to know
+that.** `apps/automation/.env.example` asks for both a `SUPABASE_*` key pair and a `DATABASE_URL`. The
+existing RLS policies (`is_staff('owner','operator')` and friends) are keyed on `auth_role()`, which
+reads `auth.uid()` — a GUC PostgREST sets per-request from the caller's JWT
+(`20260920000002_settings_staff_zones.sql:41-49`). **A role connecting over a direct Postgres
+connection (`DATABASE_URL`, no PostgREST in front of it) has no JWT and so no `auth.uid()`** — every
+`is_staff()` check evaluates `null`, which `coalesce(..., false)` turns into `false` for everyone,
+agent included. So the agent role cannot piggy-back on staff policies even if someone wanted it to;
+S2 has to write new policies keyed on `current_user = 'agent'` (or `pg_has_role(current_user, 'agent',
+'member')` if the role ever gets sub-roles), parallel to the staff ones, not layered on them. That is
+a feature, not friction — it keeps "is staff" and "is agent" from ever being conflatable by accident,
+which matters once §9.5 asks what an agent may never do regardless of what it was told to do.
+Concretely, this also means `SUPABASE_SERVICE_ROLE_KEY` should come out of `.env.example` entirely,
+and whether `SUPABASE_ANON_KEY` is still needed (e.g. to call an existing RPC the same way a guest
+does) is a question for whoever writes the orchestrator's actual Supabase calls, not assumed here.
+
+**What each D-020 agent actually needs — enumerated, not assumed, since "the orchestrator needs the
+service role" was exactly the untested assumption this task exists to check:**
+
+| Agent | Reads | Writes | Notes |
+|---|---|---|---|
+| **Accounting** (#1, D-020) | `orders`, `order_items`, `payment_events`, `payment_jobs`, `settings` (business/tax keys) | nothing in the live schema — its output is a report, which is an agent-run artifact (§9.6), not a write to `orders`/`payment_*` | D-019 settled the VAT model this agent reports against; it must never be the thing that *decides* a VAT rate, only report what was already charged |
+| **Grow** (#2) | `orders`, `order_items`, the `report_*` RPCs' underlying tables, `campaigns`/`automations` | nothing | analytics only; D-015 already forbids building new client-side collection for it — this does not relax that |
+| **Warehouse** (#3, blocked on C8 — no ingredient/recipe/stock schema exists) | whatever C8 builds | **stock quantity columns only**, once C8 exists — never price, never the recipe/BOM definition itself | the schema does not exist, so this is a placeholder grant shape for whoever writes C8's RLS, not a present grant |
+| **Sales** (#10, blocked on D1/D-017) | nothing from this DB for DM content (that is Meta's API, external) | a **drafts** table only (does not exist yet) — never `orders`, `customers`, or `place_order` directly | see §9.5 — this is the one agent reading attacker-controlled text, and the narrowest agent in the set for exactly that reason |
+| **Quality** | — | — | deferred by the owner (D-020); no grant to design |
+
+**Universally revoked for the `agent` role, regardless of which agent is running:** `staff` (PII,
+owner/operator-only — see §9.4), any DDL privilege, `DELETE` on anything, and every money-bearing
+column on `orders`/`payment_events`/`payment_jobs` (`payment_status`, `payment_authorized_cents`,
+`payment_captured_cents`, `payment_refunded_cents`, `total_cents`) — the exact columns §5's CRITICAL
+finding was about a client reaching through `place_order`. **An agent is a client too**, and the fix
+S2 is about to ship for that finding (trust nothing payment-shaped from the caller) is the same fix
+this role's grants enforce structurally: the `agent` role should not be able to write those columns
+even if the orchestrator's code has a bug that tries.
+
+**Consequence for S2's C1 schema, flagged now rather than discovered after both land in parallel.**
+`automations`/`automation_runs` (migration 28) and whatever C1 adds grant writes to `service_role`
+implicitly (RLS doesn't apply to it) and give staff read-only policies. Once the `agent` role exists,
+C1's registry/run/queue/log tables need **their own insert/update policies for `agent`**, written
+against `current_user`, not inherited from anything already there — S2-08's boot was deliberately
+written not to care how the writer authenticates, which was the right call for sequencing but means
+this grant work is still outstanding. Proposed to S2 as `proposed/S7-03-S2-agent-role-grants.md`.
+
+### 9.2 Does the secret live in `.env` on that host at all
+
+**Ruling: yes, both the DB credential and the Anthropic key end up in a `.env` on the shared droplet,
+because there is no alternative host for a Python/FastAPI process (D-001/D-020) and the control that
+actually matters is what's in §9.1 and §9.3 — the role's grants and the key's ceiling — not where the
+bytes sit.** Weighed honestly against the alternatives before landing here:
+
+- **Keep the privileged work in a Supabase Edge Function, which already holds its own Vault-stored
+  secret** (the exact pattern `payment-worker` uses for its anon key) **— rejected for now, not
+  dismissed.** It would take the DB credential off our droplet entirely, onto infrastructure Supabase
+  administers rather than TETA+PI. But D-020 is explicit that the orchestrator is a native Python/
+  FastAPI service using the Claude Agent SDK, and Edge Functions are Deno/TypeScript — moving the
+  privileged half there would split the orchestrator across two runtimes for a security property,
+  which is an architecture change outside this boot's boundary (design and rule, not re-litigate
+  D-020). If the shared-host terms ever get tighter than `infra-access.md`'s current ones, this is the
+  alternative to revisit first.
+- **A narrower DB role (§9.1) whose leak is survivable — adopted, and it is the reason "the secret
+  lives in `.env`" is an acceptable answer rather than a forced one.** The file disclosure risk is
+  unchanged by this ruling; what changes is what disclosure *buys* an attacker. A leaked `agent`
+  connection string gets read access to orders and reports and write access to stock quantities. It
+  does not get `staff`, does not get DDL, does not get the service role's run of the schema.
+- **A secrets manager / Vault on the host — not available.** D-004: no sudo, no root, 512M cap,
+  TETA+PI administers the box. Nothing beyond file permissions and uid isolation is ours to add.
+
+**What actually protects the file, unchanged from every other secret `_deploy.yml` has ever rendered:**
+`chmod 600`, owned by `shos`, written over an SSH connection authenticated by a key that never leaves
+the owner's Mac (`STAGING_SSH_KEY`), never echoed to a log (the heredoc pattern `_deploy.yml` already
+uses). **What is new and worth saying plainly: this is the first time that file has held a secret with
+a real capability behind it.** Today's rendered `.env` (`SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+`NEXT_PUBLIC_*`) is, by design, entirely public-safe values — a stranger could request every line of it
+from any browser's dev tools, which is the whole point of the anon key. Adding the `agent` DB
+credential and the Anthropic key changes that file from "nothing here is secret" to "this is a real
+secret, scoped and capped" — a qualitatively different thing to get right, which is why §9.7 makes it a
+checklist rather than a sentence.
+
+**Blast radius if that file is read** (by a bug in our own container, a TETA+PI admin acting in bad
+faith, or — the scenario D-004 exists to isolate against — another co-tenant escaping its own cgroup):
+read/write per the grants in §9.1's table, and unmetered Anthropic spend until the ceilings in §9.3
+catch it or the key is rotated. **Rotate both credentials on any suspected host compromise or
+co-tenant incident**, the same trigger `infra-access.md`'s revocation clause already names for the SSH
+key — this is not a new process, it is two more credentials added to an existing one.
+
+### 9.3 The Anthropic key — a spend credential, scoped, rotated, and capped before anything calls it
+
+**The failure this prevents, named concretely:** a bug in the orchestrator's retry logic, or a
+successful prompt injection (§9.5) that gets an agent to re-invoke itself in a loop, calls the Claude
+API with no circuit breaker in front of it, and the owner discovers the cost on next month's Anthropic
+invoice — the same shape of exposure D-016 named for SMS pumping, with no OTP-style per-identifier
+throttle available because there is no "identifier" here smaller than "the whole automation layer."
+
+- **Scope:** a key created for this host only (D3, owner's action — S7 rules on treatment, never
+  provisions or sees the value, per boundary). Not reused from any other Anthropic account/workspace
+  the owner holds.
+- **Per-run ceiling:** enforced **in the orchestrator's code**, not the database — S2's C1 run record
+  gives it somewhere to persist cost *after* a call, but a ceiling that only checks after the money is
+  spent is not a ceiling. The orchestrator must track running cost for the current run and refuse to
+  issue another model call once the run's configured ceiling (a column on the agent registry row,
+  which C1 already has reason to carry) is hit, failing the run closed rather than open.
+- **Per-day ceiling:** same placement, summed across all runs/agents for the day before starting a new
+  one — a `select sum(cost) from agent_runs where started_at > today` style check at the top of the
+  orchestrator's dispatch loop, not a Postgres trigger (the DB should not need to know what "a day" is
+  for billing purposes; that is application logic).
+- **Backstop, not the control:** the owner should also set a workspace-level spend limit in the
+  Anthropic console as the outer ceiling — exactly the role Cloudflare/Turnstile plays for D-017's SMS
+  numbers: the per-run/per-day figures are the thing that should fire first, the console limit is what
+  fires if they don't.
+- **Alarm and audience:** there is no outbound transport (D-017 — still true, see §9.4) so the alarm
+  cannot be an email or a push. It has to be a surface the owner/operator already checks — a spend
+  figure on S4's C4 back-office dashboard (it already reads `agent_runs` for status; a running total and
+  an "approaching ceiling" banner are the same read), visible to owner/operator, same role matrix as
+  everything else in this document.
+- **Rotation path:** owner generates a new key in the Anthropic console → updates the GitHub Secret
+  (`STAGING_ANTHROPIC_API_KEY`, same `secrets[format('{0}_ANTHROPIC_API_KEY', inputs.secret_prefix)]`
+  shape every other secret in `_deploy.yml` already uses) → redeploy renders it → **revoke the old key
+  in the console only after a run has used the new one**, not before, so a rotation never produces a
+  gap where neither key works mid-deploy.
+
+### 9.4 What an agent may never do, and where that is actually enforced
+
+| May never | Enforced by | Honest caveat |
+|---|---|---|
+| Run DDL | `agent` role has no `CREATE`/`ALTER`/`DROP` grant at all | real control — role-level, not code |
+| Write a money column on `orders`/`payment_events`/`payment_jobs` | column-level `REVOKE UPDATE` on those specific columns from `agent` (same mechanism S2-08 needs for `settings.draft`'s fix) | real control |
+| Delete anything | no `DELETE` grant on any table for `agent` | real control |
+| Read `staff` | no `SELECT` grant, no RLS policy referencing `agent` | real control |
+| Alter its own (or another agent's) registry row — ceiling, `active` flag, config | no `UPDATE` grant on the agent registry table for `agent` | real control, and the one that makes §9.3's ceiling mean anything — a ceiling an agent can edit is not a ceiling |
+| Send anything to a customer | **nothing** — D-017 means no transport exists to send through | **convention only, and not actually a control.** The moment any transport ships (push, SMTP), this line item must become an explicit code-level gate plus, per §9.5, a human-confirmation step for Sales specifically — it does not become safe by continuing to not exist |
+| Touch `/etc/nginx/.htpasswd-shos-bo` or any host file outside its own app directory | container filesystem isolation — the automation container must ship with **zero host bind mounts** beyond its own code/working directory (checklist item, §9.7) | real control *if* S1 configures the compose service with no extra mounts; `infra-access.md`'s "attempts are logged" is detection, not prevention, and should not be counted as the control |
+
+### 9.5 Prompt injection — the new threat class, tied to §9.1's identity ruling
+
+Every input SHOSHO has trusted so far is a typed RPC payload with a server-side guard — a guest's
+`place_order` call, a staff member's form submission. **Sales (D-020) is specified to read Instagram
+and Facebook DMs; Warehouse will read supplier documents. Both are free text written by someone
+outside the system, driving a process that holds a privileged DB credential.** That is a genuinely new
+shape of input and deserves a genuinely new rule, not an extension of "validate the payload."
+
+**The mitigation is not "train the agent to recognise injected instructions."** That is a prompt-
+engineering convention — worth doing (delimit untrusted content explicitly, instruct the model in the
+system prompt to treat it as data to summarise rather than commands to follow) — but it is not a
+control, because it can be defeated by a sufficiently clever message and there is no way to prove it
+can't be. **The actual control is that a successful injection should not be able to do anything the
+`agent` role's grants (§9.1) don't already allow, and should not be able to do anything externally
+visible without a human in the loop.** This is why §9.1's narrower-role ruling is the load-bearing
+decision in this boot: the smaller the role, the smaller the set of actions an injected agent can take
+regardless of how completely it was fooled.
+
+**Tiered action model:**
+- **Tier A — read and summarise.** Reading a DM, extracting intent, drafting a reply in memory. Safe
+  regardless of injection content, because nothing external happens yet. Autonomous.
+- **Tier B — write to an append-only, non-live table.** A drafted order, a drafted reply, a logged
+  observation — written to tables an agent can `INSERT` into but never `UPDATE`/`DELETE` (§9.4), and
+  that nothing downstream treats as committed fact. Autonomous, because the write is reversible by
+  construction (it is a draft, not a live row) and is itself the audit trail §9.6 needs.
+- **Tier C — anything externally visible, financially consequential, or that promotes a draft into
+  live state.** Sending a reply, turning a Sales draft into a real order, writing a stock adjustment
+  past whatever threshold C8 sets. **Requires an explicit human action** — a back-office operator
+  clicking "approve," which is the only path that calls the already-existing trusted entry point
+  (`place_order`, same as a guest or staff member would) rather than a new privileged write-path
+  invented for agents. The agent is a client to that RPC, exactly like the free-order vector in §5 —
+  it gets no shortcut around the same trust boundary S2 is fixing there.
+
+**Where each half is enforced, stated honestly:** the A/B/C classification itself is **code** in the
+orchestrator (S5) — a bug in that logic is possible and this is not claimed to be airtight. The backstop
+is **structural**: Tier C actions correspond to grants/EXECUTE rights the `agent` role does not have
+(§9.1, §9.4), so a misclassified Tier-C action doesn't merely get flagged wrong, it gets refused by
+Postgres regardless of what the orchestrator's code decided.
+
+### 9.6 Ordinary wrongness — not compromise, just wrong
+
+An agent will produce a wrong number before it is ever maliciously manipulated — a bad total in a
+Steuerberater report, a stock figure drifting from reality, an invented food cost. None of that needs
+an attacker.
+
+- **Reversible by construction:** anything written as a draft (§9.5 Tier B) — a report, a stock
+  adjustment, a reply — stays reversible for as long as it is unapplied. The failure mode to design
+  against is a draft being *treated* as live before a human looked at it, not the draft existing.
+- **Append-only audit:** every run and every log line, win or lose, lands in C1's `agent_runs`/logs —
+  and per §9.4, the `agent` role itself must not be able to `UPDATE`/`DELETE` its own run history, or
+  the audit trail is only trustworthy until the thing being audited decides to edit it.
+- **Human-confirmed before it counts:** this is the gap. **C1's run records answer "what happened
+  during a run" — they do not answer "is this number currently trusted."** A run can complete
+  successfully and log a wrong figure; nothing in the registry/run/queue/log shape S2-08 is building
+  distinguishes "the agent concluded X" from "a human has looked at X and it stands." That needs a
+  status field — pending / approved / rejected, with a reviewer and a timestamp — on whatever an agent
+  *produces* (a report, a draft), separate from the record of the run that produced it. **This is
+  missing from C1's stated scope and is flagged to S2 now, not discovered after S5 builds against the
+  gap** — proposed as part of `proposed/S7-03-S2-agent-role-grants.md`.
+
+### 9.7 Pre-flight checklist for S1 at step C5
+
+C5 is blocked on this ruling. Before any key is provisioned or wired in:
+
+1. Confirm the two secrets to be rendered are **`AUTOMATION_DATABASE_URL`** (the dedicated `agent`
+   role from §9.1 — never `SUPABASE_SERVICE_ROLE_KEY`) and **`ANTHROPIC_API_KEY`** (scoped per §9.3).
+   If either `.env.example` or the compose file still names `SUPABASE_SERVICE_ROLE_KEY` at this point,
+   stop and check with S7/S0 — it means this ruling wasn't carried through.
+2. Verify directly against Postgres (`select rolbypassrls from pg_roles where rolname = 'agent'`) that
+   the role is **not** `BYPASSRLS` and is not a member of any role that is, before wiring its
+   connection string into CI.
+3. Add GitHub Secrets in the same `secrets[format('{0}_X', inputs.secret_prefix)]` shape every other
+   line in `_deploy.yml` already uses — `STAGING_AUTOMATION_DATABASE_URL`, `STAGING_ANTHROPIC_API_KEY`
+   — no new secret-handling pattern.
+4. Re-add the automation service to `docker-compose.staging.yml`, sized from measurement (D-013's own
+   instruction), with **zero host bind mounts** beyond its own app directory — no `/etc`, no other
+   service's volume — which is what actually enforces §9.4's "no touching host files" line.
+5. **Rewrite `_deploy.yml:148-155`'s D-013 comment.** It currently tells a future reader to "restore
+   them next to the api service" — the `api` service it means no longer exists (D-013 removed it), so
+   that sentence will mislead whoever acts on it next. Replace the last two sentences with:
+   > When restoring secrets for `apps/automation` (D-020/S7-03): render `AUTOMATION_DATABASE_URL` (the
+   > dedicated, non-`BYPASSRLS` `agent` Postgres role — never `SUPABASE_SERVICE_ROLE_KEY`) and
+   > `ANTHROPIC_API_KEY` (scoped, rotated and capped per `docs/security.md` §9), in the same
+   > `secrets[format(...)]` shape as the lines below.
+6. Confirm the per-run/per-day ceiling (§9.3) is actually wired into the orchestrator's dispatch loop —
+   exercised in a dry run, not just present in code — before any schedule/cron triggers a real run.
+7. Confirm the back-office spend banner (§9.3) is visible to owner/operator before go-live.
+8. GHCR auth for the automation image follows the existing login-via-stdin pattern (`_deploy.yml:178`)
+   — no secret on a command line.
+9. S0 verifies this list against the actual PR before C5 is reported done — this ruling exists because
+   retrofitting it after the orchestrator works is the expensive order, and a checklist nobody checks
+   is that retrofit by another name.
