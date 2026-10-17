@@ -2396,3 +2396,306 @@ line and is S4's matching proposal, not mine to also fix).
 client-side analytics (D-015). No i18n toggle, PWA/service worker, favourites, or payments UI — those
 stay queued (`proposed/S3-02-payments-ui.md` still blocked on the owner's Stripe keys; DE/EN toggle,
 PWA+push, favourites unchanged). PR [shorobot/shosho#87](https://github.com/shorobot/shosho/pull/87).
+## 2026-10-12 — S1 DevOps — S1-08
+One message sent to TETA+PI; they answered same day. No infra change, no credential anywhere in the repo, and — this is the headline — **the gate credential may already be in the owner's own hands.**
+
+**The boot's address was stale, worth recording since it will happen again.** The boot named `teta-pi-e0`, which `log.md` itself had already flagged once before (2026-09-26) as a session name that does not survive a restart. `ListAgents` no longer shows that name at all — it showed four different `teta-pi-*` sessions with no title attached, so I could not tell which was the manager by name alone. Resolved with `list_sessions` (titles included): `TTPI · MANAGER` is session `local_17b4bdd2-df68-4bdb-8c18-b0869277b149`. Sent there.
+
+| What | Detail |
+|---|---|
+| Asked | One message to `TTPI · MANAGER`: tell the owner the 2026-09-26 plaintext, or (preferred, with reason given) set a fresh pair and hand it to the owner directly — never into this repo or chat, per `infra-access.md`'s "no secrets here, ever." Included the Cloudflare Access caveat from task 2: a fresh pair might be short-lived if the owner picks 6b, in case that changes how they'd issue it. Nothing else requested. |
+| TETA+PI said | **Declining both options, for reasons worth keeping.** (1) They will not relay the plaintext — it is not theirs to read or paste: it sits on **the owner's own machine**, in his key store, mode `0600`, **last written 2026-10-10** (after the vhost went up — current, not a Sep-26 relic), and they won't pull it into a session transcript. (2) They will not rotate unilaterally either: it was never distributed (no exposure for a rotation to close), the Cloudflare Access decision is still open and would make a fresh pair moot within days, and changing a co-tenant's production auth file on a peer session's say is outside what `infra-access.md`'s terms authorize them to do without the owner's go-ahead. Their recommendation: the owner decides 6b first — if Access, they remove the htpasswd entry outright and no pair is ever needed; if basic-auth stays, they'll rotate on the owner's word and deliver the new pair the same way, via his key store with only the path mentioned. Also corrected a naming nit: the live hostname is `bo-shos.hellfiresol.com` (already what I used); flagged in case older runbooks still say `bo.shos.`. |
+| Measured | Nothing new on our side — boot says everything except the credential is already verified by S0 on 2026-10-10/11, and says not to re-verify it. Did not touch `/etc/nginx/.htpasswd-shos-bo` or the hash (boundary). |
+
+**For the owner, not a session action:** TETA+PI's claim that the current plaintext is already sitting in your own key store (written 2026-10-10) means this may not need to wait on anyone — worth checking that file yourself before deciding between keeping basic-auth and Cloudflare Access (6b). I did not attempt to read it; that file is on your machine, not ours.
+
+Tasks 3–5 (verify Cloudflare Access, then ask TETA+PI to drop basic-auth together with an origin IP restriction, then re-verify) are gated on the owner's 6b decision — per the boot, "and only then." Not started; **still waiting**, and per TETA+PI "no action needed on your side meanwhile." No boundary crossed: did not edit nginx/DNS/Cloudflare/htpasswd, did not configure Access, did not hand the URL or any credential to anyone.
+
+**docs/security.md still says `bo.shos.hellfiresol.com`** (lines 176, 218) — stale since the 2026-10-05 rename, surfaced by TETA+PI's correction. Outside my boundary (S7-02 live on that file per the boot); not fixed, flagged here and worth S7/S0 picking up rather than left for someone to rediscover.
+
+Next: per the boot, stop and wait for S0. `proposed/S1-prod-target.md` and `proposed/S1-explicit-secrets-map.md` stay queued, S0's call.
+## 2026-10-12 — S0 Orchestrator — #77 merged and it killed the staging deploy chain; found S4-05 live mid-flight; two boots were missing S6's HIGH finding
+
+**Resumed the role after a restart and did the first five minutes, then found three things the snapshot had wrong.** All three came from measuring rather than reading, which is the only reason they surfaced.
+
+**1. `apps/e2e` was not on `main` at all — zero files — and both freshly-issued boots named S6's specs as their oracle.** S4-05: "S6's `checkout-pickup.spec.ts` is the oracle for what 'right' means." S3-03: `apps/e2e/specs/realtime-and-tracking.spec.ts:33`, by line number. Both branch from `origin/main`, so neither could read the file it was told to judge itself against. That made merging #77 a precondition of the two boots rather than a loose end, which is not how the snapshot framed it. Reviewed it (21 `apps/e2e` files, both mirrored `ci.yml` copies updated, actions SHA-pinned per S1-07, `e2e` correctly outside the `ci` gate's `needs`), proved the merge clean with a local test-merge, updated the branch under D-009 since S6 had stopped. Merged at 09:05:59Z as `2bef358`, a true merge commit — the owner ran the command because the permission classifier blocked mine, and I did not route around it.
+
+**2. Merging it broke the staging deploy chain, and I did not see that coming.** The `e2e` job lives *inside* the `CI` workflow. S6 kept it out of the `ci` gate's `needs`, which is correct and keeps PRs mergeable — but `Migrate staging` triggers on `workflow_run: workflows: [CI]` and gates on `workflow_run.conclusion == 'success'`, and **a run's conclusion is computed from every job in it, not from the gate job**. Measured:
+```
+2026-10-11 22:23Z  CI 38180213644 success → Migrate 38180402557 success → Deploy 38180450228 success
+2026-10-12 09:06Z  CI 38227747259 FAILURE → Migrate 38229595996 SKIPPED → Deploy 38229602837 SKIPPED
+                   (that CI run: `CI` gate job success; only `e2e (apps/e2e)` failed)
+```
+Staging auto-deploy is dead, and it will not heal on its own — S6's last four runs held at 15 passed / 16 failed and only four of those failures are routed. **The distinction I missed is the one worth keeping: `needs` protects the merge gate, the workflow's *conclusion* protects nothing and gates everything downstream.** S6's report stated "e2e stayed advisory and pending as planned, not part of the gate" — true of branch protection, false of the chain, and the chain is what ships code. Fix issued as **S1-08 task 0**: move `e2e` into its own workflow file, both copies, explicitly **not** `continue-on-error`, which would report green over 16 real failures. Verification must be a real `Deploy staging` run on `main` — this boot's own standing rule, which exists because S1-07 broke this same chain on green PR checks.
+
+**3. S4-05 was not "issued, not run" — it was live and writing while I was measuring.** The `s4` worktree held 7 modified files (+191/-22) and an untracked `CashDialog.tsx`, with **zero commits**. I caught it by accident: between two measurements minutes apart, `LoginForm.tsx` went from absent to present and from 9 to 17 changed lines; its mtime read 11:03:13 against my clock at 11:03:47. Had anyone "fixed" the `checkout -b s4-05` collision with `-B` or `-f`, that work would be gone. S3-03 started in the same minute (00:42) and stalled at 00:43:58 with only three throwaway `s3-probe*.local.mjs` files and no product code. **Lesson: before advising a branch reset, read the worktree — `git status` plus mtimes, not the session table.** The session table said both were unstarted and was wrong about both, in opposite directions.
+
+**4. My own two boots omitted S6's HIGH finding.** S6's routing file is titled "**four** back-office findings: CSP, cash confirmation, VAT label, login hardening". My S4-05 boot opens "**Three** of S6-01's QA findings are yours" and tasks only cash / VAT / login; S3-03 tasks only realtime / banners. **Finding 0 — `apps/web/lib/csp.ts:53` and `apps/backoffice/lib/csp.ts:137` set `script-src` with no `'unsafe-eval'` and no `NODE_ENV` branch, so under `pnpm dev` no client JavaScript executes in either app** — was in both sessions' *reading* and in neither's *tasks*. That is the worst place to leave a HIGH finding: present enough to look routed, absent from the checklist. And it bites these two boots hardest, because S4-05 is building a click-driven dialog and S3-03 a realtime subscription — both pure client JS, neither verifiable locally as shipped. I drafted task 0 into both boots — and **never shipped it**: the session paused before I committed, and by the time it resumed all four sessions had finished and opened PRs. So both ran on the original boots and finding 0 is still unfixed (verified 2026-10-15: zero `unsafe-eval` in either `csp.ts` on `main`, `s3-03` or `s4-05`). Retroactively editing an issued boot would misrepresent what was actually asked, so I reverted those edits and re-filed the work as `proposed/S6-finding-0-csp-dev-carveout.md` instead. **The boot amendment that is not committed before the session runs does not exist** — that is the actual failure here, and it is a process one, not a judgement one.
+
+**What this says about reading a handoff.** My snapshot was written to be authoritative and was wrong on three counts within the hour: a dependency it did not know existed, two session states inverted, and a finding count that undercounted S6's own file title. None of it was discoverable by reading — the worktrees, the run IDs and S6's file title were. "Verify, don't relay" has to include verifying my own notes from four hours ago, not just a child session's claims.
+
+**Open and mine:** merge the S1-08/S3-03 amendments; after S1-08 lands task 0, confirm `Migrate` and `Deploy` actually run; when S4-05 reports, check its dialog against `checkout-pickup.spec.ts` rather than its report, because it chose that shape without being able to read the spec; then D-018 for S2, which #77 no longer blocks.
+
+## 2026-10-15 — S0 Orchestrator — three days on: all four sessions landed PRs, and the two gaps I found are still open
+
+**Re-measured before reporting anything, because the session resumed after a three-day gap and my own notes were the stale part.** `main` has not moved since `2bef358` (#77). What changed is that all four boots ran: **#89** S4-05 (+3152/-44, 47 files), **#88** S1-08 (+16/-1, 2 files), **#87** S3-03 (+650/-23, 18 files), all opened 2026-10-12 and all `MERGEABLE/UNSTABLE` — unstable being the advisory `e2e`, as designed. S7-02 has a branch and no PR. The `s4` worktree is clean with 3 commits, so that session finished rather than stalled; the liveness I recorded on 10-12 was real and is now spent.
+
+**Both gaps from 10-12 survive, and one of them now gates the other three.**
+- **The CSP dev carve-out (S6's finding 0, HIGH) is unfixed everywhere** — `grep -c unsafe-eval` is 0 for `apps/web/lib/csp.ts` and `apps/backoffice/lib/csp.ts` on `main`, `s3-03` and `s4-05` alike. Neither session did it, because neither boot asked. Re-filed as `proposed/S6-finding-0-csp-dev-carveout.md`.
+- **The staging deploy chain is still skipping.** `e2e` is still inside the `CI` workflow on `main` and on `s1-08`; there is no separate `e2e.yml`. The last chain runs on `main` remain `CI 38227747259 FAILURE → Migrate SKIPPED → Deploy SKIPPED` from 10-12 09:23Z, and nothing has pushed to `main` since to change it.
+
+**The ordering consequence, which is the thing worth acting on.** Merging #87 or #89 right now puts their code on `main` and **does not deploy it** — CI concludes failure on the advisory `e2e`, `Migrate` skips, `Deploy` skips. S3-03's own boot requires staging verification ("Verify both against staging, not just locally"), and S4-05's cash fix is only meaningfully proven on a real order. So the workflow fix is not housekeeping to do after the merges; **it is the precondition for either merge to mean anything.** Issued as `S1-09-unbreak-staging-deploy-chain.md`.
+
+**Standing correction to S6's close-out note.** Their report says the `e2e` job "stayed advisory and pending as planned, not part of the gate". That is exactly right about branch protection and exactly wrong about the deploy chain, which keys off the workflow *run's* conclusion rather than the gate job. No fault of theirs — the distinction is invisible unless you look at what `workflow_run` consumes — but the sentence should not stand unqualified in the record, because it reads as "nothing further to do" and there is.
+
+## 2026-10-15 — S0 Orchestrator — reviewed S4-05's report: it caught a boot error of mine that is a tax question, and drew two wrong inferences
+
+**S4-05 reported done (PR #89) and four of its claims would overturn things I had recorded as measured. I checked all four.**
+
+**1. The CSP fix — true, and better than my own paperwork.** `origin/s4-05:apps/backoffice/lib/csp.ts:139` now reads `process.env.NODE_ENV === "production" ? \`script-src ${base}\` : \`script-src ${base} 'unsafe-eval'\`` — production byte-identical, dev carved out, exactly the shape required. S4 got there by reading `proposed/S6-02-S4-...md` finding 0, which arrived on `main` with #77 mid-session, **after** my boot had told them they had "three" findings. So the routing file did the job my task list failed to do. My earlier note that "both sessions ran without it" is now half wrong: S4 did it, **S3 did not** — `origin/s3-03:apps/web/lib/csp.ts` still greps 0 for `unsafe-eval`, so `apps/web` remains 100% non-interactive under `pnpm dev`.
+
+**2. The pickup VAT finding — true about the code, and the conclusion drawn from it is the dangerous half. This one is my error.** My boot stated: *"Pickup VAT is computed at 19% server-side from `menu_items.vat_onsite_pct` and is correct — only the label is wrong."* Both halves false. Measured: `rpc.sql:237` uses `it.vat_delivery_pct` **unconditionally** (default 7); `v_type` is branched on only at line 271, for the delivery fee, never for VAT; `vat_onsite_pct` (default 19) is **read by nothing in the backend** — its only non-definition references are the back-office menu editor's 7/19 dropdown and one test; and `order_type` is `enum ('delivery','pickup')` with **no dine-in value**. So every order is taxed at the reduced rate.
+S4 filed this for S2 as a backend bug to fix. **Executing that filing would add 12 points of VAT to every Abholung order.** German VAT on food turns on where it is consumed, and SHOSHO has no on-premises channel at all — so on the ordinary reading 7% on pickup is *correct* and `vat_onsite_pct` is config for a product that does not exist. I am not a tax adviser and did not rule; filed as `proposed/S0-vat-pickup-rate-owner-decision.md` for the owner's Steuerberater, with S2's task put on hold. **The label was telling the truth** — `detail.vat` said 7% and pickup orders were charged 7%. S4's fix (render the rate actually used) is right under every outcome and should merge regardless.
+The lesson is the one I keep relearning in a new costume: **I asserted a mechanism I had not read, inside a task that told a session the code was "correct".** A boot that says "X is correct, only the label is wrong" forecloses the check that would have caught it. S4 checked anyway. That is twice now that a child session's refusal to trust my stated mechanism was the thing that worked — S2 on the `security_invoker` view, S4 here.
+
+**3. "S3-03 has landed" — false, and the inference is worth naming.** S4 saw `report_funnel`'s `attempts_window_from/to` come back non-null and concluded S3-03 had shipped. It has not: #87 is **open**, `main` is still `2bef358`, and `origin/s4-05` does not contain `origin/s3-03` (checked with `merge-base --is-ancestor`). What they actually saw is `order_attempts`, migration `20260926000023`, dated **2026-09-26** — S2's table, populated by the order RPCs, nothing to do with S3-03's tracking/banners work. Harmless to their code; recorded because "a value is non-null, therefore session X shipped" is the same class of reasoning as reading a log line and naming a cause.
+
+**4. "`report_payments` already has real data" — true, and it fixes my own sloppy wording.** S4 measured a cash order, `total_cents: 6800` across `orders_count: 5`, residue from earlier sessions' staging walk-throughs. The snapshot's "no live payment has ever run" meant **no Stripe payment**, and cash orders obviously write payment rows; stated flatly, it was wrong. Corrected in `state.md`: the Stripe path is still unexercised, and `report_payments` is non-zero from cash. S4's `allZero` branch was exercised against the real non-zero path, which is better than testing the hypothetical.
+
+**Sequencing ruling on #87.** S3-03 asked me to merge it and asked the owner to flip order #1005's status and create a banner so they can finish verifying. Both verifications are **impossible right now and would not be made possible by merging**: `Deploy staging` has been skipping since 10-12, so staging runs the 10-11 build and will keep running it no matter what lands on `main`. Merging #87 is harmless but pointless until **S1-09** restores the chain. The one thing that *is* time-sensitive: `apps/web`'s CSP carve-out is a one-line fix in S3's own file, their session is live now, and after #87 merges it costs a whole new session — so it belongs in #87 before merge, not after.
+
+**Also noted, not acted on:** S3-03's report characterises the `e2e` failures as "CI resource-contention timeouts". S6's own root-causing says otherwise — an un-root-caused delivery-zone resolution failure in the checkout UI, 15 passed / 16 failed held across four runs. The "no new failures introduced" part of S3's check is sound and is what matters for the merge; the attributed cause is not, and should not enter the record as fact.
+## 2026-10-15 — S1 DevOps — S1-09
+Deploy chain unstuck. PR #91 merged; verified on a real `main` run, not inferred from PR CI — PR checks cannot prove this because `workflow_run` never fires on a PR branch.
+
+**Mechanism, confirmed exactly as the boot stated it.** #77's `e2e` job lived inside `ci.yml`. S6 correctly kept it out of the `ci` gate job's `needs`, so PRs stayed mergeable — but `migrate-staging.yml`'s `push` job and `deploy-staging.yml` both gate on `workflow_run.conclusion == 'success'`, and a workflow run's `conclusion` is every job in the run, `needs` or not. 15 passed / 16 failed by design (several specs assert product gaps falsifiably), so every `CI` run on `main` since #77 concluded `failure`. Confirmed on the actual run history before touching anything: `CI` run `38227747259` (sha `2bef358`, 2026-10-12) → `failure`, and both `Migrate staging` (`38229595996`) and `Deploy staging` (`38229602837`) show **`skipped`**, not merely never-triggered — the `if` condition evaluated false and the job itself records that. Nothing pushed to `main` between that and this fix, so it was live the whole time, as the boot said.
+
+**Fix.** Moved the `e2e` job verbatim — same steps, same timeout/retries, nothing it *does* changed — out of `ci.yml` into a new standalone `e2e.yml`, mirrored byte-for-byte to `apps/infra/.github/workflows/e2e.yml` (the `infra` CI job's own `diff -r` check covers it). Same triggers (`pull_request`, `push` to `main`), so it still reports per-PR/per-push on its own check; it just no longer contributes to `CI`'s run `conclusion`. No `continue-on-error` — confirmed it stays a visible failure on its own check rather than a silently-green job hiding 16 real failures. `ci.yml`'s `ci` gate job and `needs: [node, python, infra, backend]` are byte-identical to before (diffed, not assumed) — e2e was never in that list and still isn't.
+
+**`workflow_run` sweep (task 3), grepped across both `.github/workflows` and `apps/infra/.github/workflows`:**
+| Workflow | Listens to | Same exposure? |
+|---|---|---|
+| `migrate-staging.yml` | `workflow_run: [CI]` | **Yes — this was it.** Fixed above. |
+| `deploy-staging.yml` | `workflow_run: [Migrate staging]` | Same shape, one hop downstream; chains correctly off `Migrate staging`'s own conclusion, so fixing the CI hop fixes this one too. No separate change needed. |
+| `deploy-prod.yml` | **Nothing — no `workflow_run` trigger at all.** Triggers on `push: tags: [v*]` with a required manual approver (D-005). | No exposure, no warning comment needed. |
+
+**Verified on `main`, four run IDs, after merging #91 (merge commit `dfc7861`) — PR CI did not and could not prove this:**
+| Workflow | Run ID | Conclusion |
+|---|---|---|
+| `CI` | `38806034798` | **success** |
+| `Migrate staging` | `38806466073` | **success** |
+| `Deploy staging` | `38806580158` | **success** |
+| `e2e` | `38806034845` | **failure** — correctly isolated: still red on its own, no longer touches the three above |
+
+**Boundary held.** Touched only `.github/workflows/{ci,e2e}.yml` and their `apps/infra` mirrors. Did not touch `apps/e2e` (moved a job definition, not the suite), did not add `e2e` to `needs`, did not touch `apps/web`, `apps/backoffice`, `apps/backend`, or `docs/security.md`. `state.md`: S1 row only.
+
+**For whoever reads this next:** the lesson is the same shape as S1-07's — a chain that only executes on `main` is unverified by PR CI no matter how green the PR looks, and `needs` protecting the merge gate is a different thing from a run's `conclusion`, which `workflow_run` consumers actually key off.
+
+Next: #88 still awaits S0 review. `proposed/S1-prod-target.md`, `proposed/S1-explicit-secrets-map.md` stay queued — not executed. Stopping here per the boot.
+
+## 2026-10-16 — S7 Security — S7-03
+
+Design and rule, step C2, as the boot said. `docs/security.md` §9 has the full ruling; this is the
+measurement trail and the parts that bite.
+
+**The identity ruling, and what settled it.** `.env.example` asks for `SUPABASE_SERVICE_ROLE_KEY` *and*
+`DATABASE_URL` — two different connection shapes, which the boot didn't flag but turned out to matter
+more than the headline question. `service_role` bypasses RLS outright, so handing it to an LLM-driven
+process means its blast radius on a bug or a successful injection is "the whole schema." Measured, not
+assumed, why a dedicated role is a real alternative rather than a weaker-sounding compromise: I read
+`auth_role()` (`20260920000002_settings_staff_zones.sql:41-49`) and confirmed it reads `auth.uid()`,
+which PostgREST sets per-request from the caller's JWT. A role connecting over `DATABASE_URL` directly
+has no JWT at all, so `auth_role()` returns null and every `is_staff()` check — `coalesce(null = any(...),
+false)` — evaluates `false` regardless of who's asking. **This means a dedicated `agent` role was never
+going to inherit staff policies by accident; it needs its own, written against `current_user`.** That's
+a cleaner line than I expected going in — "agent" and "staff" can't be conflated even by a lazy policy,
+because the mechanism that would let them (`auth.uid()`) simply isn't populated for a direct-Postgres
+caller. Ruled: dedicated `agent` role, not `service_role`, not per-agent roles yet (one role, enumerated
+grants per table, is enough until a second agent actually ships and the first one's grants prove too
+coarse). Enumerated each D-020 agent's real read/write needs in §9.1's table rather than leaving "the
+orchestrator needs X" asserted — Accounting and Grow are read-only against data that already exists;
+Warehouse and Sales both need schema that doesn't exist yet (C8, and a drafts table), so their grants
+are placeholders for whoever builds that schema, not present-tense requirements.
+
+**The shared-host ruling.** Weighed keeping the privileged work in a Supabase Edge Function (Vault-
+stored secret, same pattern `payment-worker` already uses for its anon key) against putting it in the
+droplet's `.env` like everything else. Edge Functions are Deno; D-020 is explicit that the orchestrator
+is native Python/FastAPI via the Claude Agent SDK — splitting it across two runtimes for a security
+property is an architecture change outside this boot's boundary, so rejected for now rather than
+dismissed, and named as the thing to revisit first if the host terms ever tighten. Ruled: yes, both
+secrets land in `.env` on the shared droplet, because there's no alternative host for this architecture
+— what changes the risk is §9.1's role scope and §9.3's spend ceiling, not where the bytes sit. Worth
+stating plainly since it's easy to read as "nothing changed": every secret `_deploy.yml` has ever
+rendered so far (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `NEXT_PUBLIC_*`) is, by design, a value a stranger
+could read from any browser's dev tools. This is the first time that file will hold something that
+actually grants a capability if read. Rotation on any suspected host compromise is the same trigger
+`infra-access.md` already names for the SSH key, not a new process.
+
+**Anthropic key.** Named the failure concretely — a retry-loop bug or a successful injection re-invoking
+itself, billing the owner with nothing watching, the exact shape D-016 named for SMS pumping. Per-run
+and per-day ceilings have to be enforced in the orchestrator's dispatch loop, before a call goes out —
+a ceiling checked only after C1 records the cost is not a ceiling, it's a receipt. Console-level spend
+limit is the backstop, same role Turnstile plays for D-017's SMS numbers. Alarm has to surface in the
+back-office dashboard specifically, because D-017 still means there's no transport to alarm *through* —
+flagged this is unchanged since S7-01, not a new gap this boot found.
+
+**Where I had to say "convention only":** the "never sends anything to a customer" line in §9.4's table.
+It currently holds for exactly one reason — no transport exists — which is not a control, it's an
+absence. Said so plainly rather than listing it as enforced, and flagged that the day any transport
+ships (push, SMTP), this stops being free and needs an actual code gate plus a human-confirmation step.
+"No touching host files" is real only conditional on S1 configuring the automation container with zero
+host bind mounts — put in the §9.7 checklist rather than counted as already true.
+
+**Prompt injection, tied to the identity ruling as the boot asked.** The mitigation that matters is not
+"the model resists the injection" — unprovable — it's that a successful injection can't do anything the
+`agent` role's grants don't already allow. Wrote a three-tier action model (read/summarise autonomous,
+draft-write autonomous, anything externally-visible-or-live-state-promoting needs a human click through
+the existing trusted RPC) and said honestly that the tiering logic itself is code (S5's, fallible) while
+the backstop — Tier C actions corresponding to grants `agent` doesn't have — is structural. Sales is the
+one agent reading attacker-controlled text and is deliberately the narrowest grant in the table for
+that reason.
+
+**Ordinary wrongness, and the gap this surfaced in C1's own shape.** C1's run records answer "what
+happened"; they don't answer "is this number currently trusted" — a run can finish clean and log a wrong
+figure. Nothing in the registry/run/queue/log tables S2-08 is building distinguishes an agent's
+conclusion from a human's sign-off on it. Filed as a concrete, non-urgent addition in
+`proposed/S7-03-S2-agent-role-grants.md` (§2) rather than silently assumed covered — a status column
+(pending/approved/rejected, reviewer, timestamp) on whatever an agent produces, separate from the run
+log. The same proposal carries §1: the actual grants C1's tables need for `agent` to write to them at
+all, since the existing `automations`/`automation_runs` shape (migration 28) gives `agent` nowhere to
+write once it exists.
+
+**What this showed to be wrong in D-020/the plan, if anything:** nothing in D-020 itself — the owner's
+architecture call stands. But the plan's framing ("the orchestrator needs the service role is an
+assumption nobody has tested") undersold how different the fix is: it isn't just "a smaller role," it's
+that the whole auth mechanism the rest of the schema relies on (`auth.uid()`) doesn't reach a direct-
+Postgres connection at all, so this was never going to be a one-line grant change — new policies, on
+every table `agent` touches, are now a real line item for S2, on top of whatever C8/Sales-drafts need
+once those exist. **This does not block C3 or C5 as the plan describes them — both can proceed once S2
+writes the grants in `proposed/S7-03-S2-agent-role-grants.md`** — but it is more schema work for S2 than
+"C1 ships, C2 rules, C3 starts" implied, worth S0 knowing before sequencing C3's start date.
+
+**Boundary held.** No migration, policy, grant, trigger or function written. No file in `apps/automation`,
+`apps/web`, `apps/backoffice`, `apps/e2e`. No edit to `.github/workflows/*` or `apps/infra/**` — §9.7
+states what `_deploy.yml`'s D-013 comment must become, S1 writes it. No key provisioned, requested or
+valued — D3 stays the owner's. No edit to `decisions.md`/`plan.md` — this entry and the proposal are the
+record for S0 to act on. Did not touch S7-02's two green-tests-that-test-nothing (separate work, still
+open). Fixed the one surviving `bo.shos.` reference `docs/security.md` still had after #92 (line 218,
+"the back-office is not yet on a public host" — #92 only caught the §5 instance, not this one).
+
+Next: still mine — S7-02's two green-tests-that-test-nothing, and F2 (audit before any production
+deploy, which still hasn't happened). `state.md`: S7 row only. Stopping here per the boot.
+## 2026-10-16 — S2 Backend — S2-08
+
+D-020's agent runtime: migration `20261006000033` → renumbered and claimed as
+`20261016000033_agent_runtime.sql` (D-014, first commit). Four tables — `agents` (registry),
+`agent_tasks` (claimable queue), `agent_runs` (one row per invocation), `agent_run_logs` (ordered
+log lines) — plus `claim_agent_tasks`/`finish_agent_run` (service-role only). Schema and contract
+only, as scoped: no `apps/automation`, no orchestrator, no `ANTHROPIC_API_KEY`/
+`SUPABASE_SERVICE_ROLE_KEY` reference anywhere. `docs/api-contracts.md` §8.8 written. PR #96,
+merged.
+
+**Role matrix, stated explicitly (task 5/§8.8).** `owner`/`operator`: full CRUD on `agents`,
+read-only on the other three. `kitchen`/`driver`: nothing — `is_staff('owner','operator')` is the
+only predicate on every policy, never the unconditional role-only shape S7-02 found on
+`orders_kitchen_read`. `anon`: table grant revoked outright on all four, not left to RLS alone —
+closing the other S7-02 finding (`settings.draft`'s column-grant/row-policy mismatch), though this
+schema has no anon-reachable surface at all so the revoke is belt-and-braces, not a fix for
+anything live here. Tested against rows **known to exist** (an `admin()` count first), not
+inferred from an empty result — S4-03's "RLS matching zero rows returns `200 []`" finding is
+exactly the trap a lazier test would fall into.
+
+**Realtime: table replication, not broadcast.** `agent_tasks`/`agent_runs`/`agent_run_logs` added
+to `supabase_realtime`; `agents` deliberately not (mutates rarely, same as `automations`/
+`campaigns`, neither of which is in the publication either). Chose replication over S2-02's
+guest-tracking broadcast because the dashboard reads these as a staff session with a real per-user
+JWT — `is_staff()` RLS applies cleanly, and broadcast exists only to work around a *shared* anon
+JWT with no header-scoped RLS, which doesn't apply here.
+
+**Claim locking reused, status shape diverges — said why rather than quietly diverging (per the
+boot).** `for update skip locked` + a stale-claim timeout is identical to `claim_campaign_recipients`/
+`claim_payment_jobs`. The *status* shape follows `payment_jobs` (an enum with a `processing` state
++ `started_at`), not `campaign_recipients`'s `claimed_at`-only shape: an agent task can run for a
+while (an LLM call, not a queue hop), and the dashboard needs "in flight" visibly distinct from
+"waiting," which `campaign_recipients` has no way to express. Claiming a task opens its run in the
+same transaction, so there is never a claimed task with nothing to log against.
+
+**Cost is recorded, not capped.** Every `agent_runs` row carries `input_tokens`/`output_tokens`/
+`cost_usd`, written in the same statement as the run's conclusion. No rate limiter or spend ceiling
+in front of the claim/run loop — that's S7's call at plan.md C2, same posture D-016 took with SMS
+pumping. Flagging again here so it isn't lost: an agent that loops burns the owner's Anthropic
+account with nothing currently stopping it short of a human reading the dashboard.
+
+**GDPR nullability carried, one exception named.** `agent_tasks.customer_id` and
+`agent_runs.customer_id` are nullable, `on delete set null` — same shape `automation_runs`
+established. Tested: deleting the customer leaves both rows in place with the link cleared. **Not**
+attempted: scrubbing customer PII that may appear inside `result` or a log line's free-text
+`message` (model prompts/outputs are unbounded free text) — redacting that safely without
+destroying the audit trail is a harder problem than this boot's scope, and is named as an open gap
+in §8.8 rather than silently skipped.
+
+**Marketing-runner ruling: `automations`/`automation_runs` stay separate, not folded in.** Reasons
+in §8.8 — it already has a working config surface and a UI (S4-04's Marketing screen) keyed to its
+specific shape (`automation_kind`, per-customer rows); folding it in means either teaching this
+generic runtime "one row per customer considered" (which most agents have no use for) or rewriting
+a working UI for no functional gain. Cost: two runtimes to observe, which is S4's small, bounded UI
+concern to label clearly, not a schema one.
+
+**`agents.key` is text, not an enum — the mistake the boot named explicitly.** D-020's agent set
+(sales/accounting/warehouse/grow/quality) is expected to grow, unlike `automation_kind`'s fixed
+four. An enum would mean a migration every time S5 adds an agent.
+
+**Could not run `supabase start` locally — no Docker daemon in this sandbox** (checked: no
+`/var/run/docker.sock`, no `Docker.app`; `colima` needs `qemu`, not installed, and building it from
+source on this Intel Mac was going to cost real time for no gain since GitHub Actions has real
+Docker). Relied on the actual `backend (supabase)` CI job instead: pushed, watched, fixed what it
+found. It caught two real things, exactly as it's meant to: `security.test.ts`'s function-grants
+sweep flagged `claim_agent_tasks`/`finish_agent_run` as new, unlisted functions (added to
+`SERVICE_ROLE_ONLY`, same shape as `claim_campaign_recipients`) — and `types/database.ts` was
+stale, fixed by downloading the run's own `backend-types` artifact (produced by the same
+`pnpm run db:types` the local workflow would run) rather than hand-editing a 2000-line generated
+file. Second CI run fully green (`db reset`, `db lint`, seed-idempotency, all 175 tests, types
+diff clean) before merging.
+
+**Boundary held.** No `apps/automation`, `apps/web`, `apps/backoffice`, `apps/infra`, `apps/e2e`.
+Touched `docs/api-contracts.md` only for the one §8.8 subsection. Did not touch
+`docs/security.md`, `decisions.md`, `plan.md`, `sessions.md`. Did not execute S4-05's cancelled
+VAT filing (D-019) — saw it in `proposed/`, left it alone. Did not touch B4/B5 (`orders_kitchen_read`,
+`settings.draft`) — those are separate PRs per the boot, still open. `state.md`: S2 row only.
+
+Next: B4 (`orders_kitchen_read` unbounded), B5 (`settings.draft` leak), D-018's `place_order`
+throttle (unblocked, #77 landed), C8 (ingredient/recipe/stock schema, large). Stopping here per the
+boot, waiting for S0.
+
+## 2026-10-16 — S1 DevOps — S1-08 closed
+TETA+PI reported the owner's decision. Nothing left for S1 to do; recording it closes the boot.
+
+**Owner's decision: keep basic-auth. No Cloudflare Access, no rotation.** Headcount decided it — exactly two people need the back office and that is not expected to change, which is below the threshold where Access's advantages (per-person revocation, an access log, no shared secret to re-issue on departure) are worth a Cloudflare dependency on the staff gate plus the origin-side work Access alone wouldn't cover (the origin stays directly reachable, so Access would still need an origin gate or `Cf-Access-Jwt-Assertion` validation in nginx). So the gate already verified from outside — Gap 1/Gap 2 in `state.md`'s "Back-office access" section — is the final design, and my original request resolves to: the owner hands the existing pair to the two people himself.
+
+**TETA+PI verified server-side, not asserted:** `/etc/nginx/.htpasswd-shos-bo` present, `0640 root:www-data`, one entry, bcrypt (`$2b$`, not a weak apache variant); `auth_basic_user_file` referenced in **both** the `:80` and `:443` server blocks, so there is no plain-HTTP bypass of the gate; nginx config unchanged since the file's creation, 2026-09-26 21:51.
+
+**One open detail, correctly left to the owner rather than papered over.** The hash's mtime (2026-09-26 21:51) predates the owner's local record of the plaintext (last written 2026-10-10) — if that later write changed the value rather than annotated it, the pair he holds won't match what's deployed and the two users would get 401. Neither TETA+PI nor I can test this from outside (they won't read the plaintext or probe the gate with credentials; I have neither). The owner is doing one browser login himself to confirm before handing it out; TETA+PI rotates and reports a new location if it fails.
+
+**Boot's "Done when" reconciled against what actually happened** (the boot wrote tasks 3–5 assuming either branch of the owner's choice, and only the Access branch executes further steps):
+- Message sent, delivered to the owner directly, Access caveat included — done (2026-10-12).
+- "Either: Access verified — or correctly reported as not yet configured" — **superseded**: Access was never configured because the owner chose not to. Reporting that decision is the equivalent closure.
+- Tasks 3–5 (verify Access, request basic-auth removal + origin restriction, re-verify) — **do not apply**. They were conditioned on the owner picking 6b; he picked option A instead, so there is nothing to verify and nothing to ask TETA+PI to remove.
+- No credential anywhere in the repo, the log, a commit, or a PR — held throughout.
+- PR `s1-08` → merging alongside this entry.
+
+**Boundary held throughout.** Did not touch nginx/DNS/Cloudflare/htpasswd; did not configure Access; did not hand the URL or any credential to anyone; did not verify the pair myself (that's the owner's one browser login, not ours to perform).
+
+Next: if headcount ever grows past two or someone with access leaves, TETA+PI said the Access reasoning flips and this should reopen — worth remembering rather than re-deriving. Nothing else queued under S1-08. `proposed/S1-prod-target.md` and `proposed/S1-explicit-secrets-map.md` stay queued, S0's call. Stopping here, per the original boot.
+
+## 2026-10-16 — S1 DevOps — S1-08 addendum: two rotations, the real root cause, and a non-secret gap worth closing
+TETA+PI reported back with more detail than the closure above had. Worth a separate entry because the root cause of the owner's trouble was not what either of us assumed.
+
+**The owner's first attempt failed for a reason nobody had named: the basic-auth *username* is written down nowhere he looks.** He guessed (`owner`, `operator`, an app email) against the gate popup, all 401, and lost real time to it. The username is `shos-bo`. That is not a secret — TETA+PI was right to call it a documentation gap, not a security one, and the "no secrets here, ever" rule in `infra-access.md` was never a reason it couldn't have been written down; nobody had written it down. **I am not editing `infra-access.md` myself — its header names S0 as owner and S1 as reader-only** — but flagging here for S0 to add the line (`bo-shos.hellfiresol.com` basic-auth user: `shos-bo`), since it is exactly the kind of non-secret access fact that file exists to hold.
+
+**Rotation 1** replaced the stale pair once headcount settled the Access-vs-basic-auth question (recorded above). **Rotation 2** was TETA+PI's own mid-air correction: an authenticated `curl -w "%{url_effective}"` renders embedded credentials in that field, so the new password briefly sat in their own session transcript. They caught it, rotated again, and verified the exposed value now 401s. Worth keeping as a general caution for anyone running authenticated curl against this gate: use `%{http_code}` only, never `%{url_effective}` or a URL with `user:pass@host` baked in, when credentials are involved.
+
+**Also worth keeping, because it was the actual shape of the owner's confusion, not a credential problem at all:** there are two independent auth layers on `bo-shos.hellfiresol.com`. TETA+PI's nginx basic-auth popup (`shos-bo` / the rotated pair) is the outer gate; behind it the app serves its own login at `/login` (email + password, S4's staff accounts). The owner was typing his application email into the gate's popup. Whether he has a working app account is S4's surface, not checked here (boundary) — flagging it only because it is the second half of why "I can't get in" took as long as it did, and it is worth S0 confirming he has one before calling the handover finished.
+
+**Final state TETA+PI verified, probed with `%{http_code}` only:** correct pair → 307 to `/login`; wrong password → 401; no credentials → 401; the briefly-exposed password → 401 (confirmed dead); `/etc/nginx/.htpasswd-shos-bo` one entry, user `shos-bo`, bcrypt, `0640 root:www-data`, `nginx -t` clean, reloaded; previous hash kept as `.bak-20261016` on the box for rollback.
+
+No action taken on my side — correct per boundary, the app-account question is S4's and the infra-doc edit is S0's. Recording both so neither gets lost.

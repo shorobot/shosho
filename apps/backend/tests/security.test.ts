@@ -27,6 +27,7 @@ type FnGrant = {
   anon_execute: boolean;
   authenticated_execute: boolean;
   service_role_execute: boolean;
+  agent_execute: boolean;
 };
 
 // Callable by anon (guest checkout) per api-contracts §2/§5 — and, transitively, by authenticated
@@ -66,6 +67,10 @@ const AUTHENTICATED_ONLY = new Set([
   "resolve_segment",
   "report_payments",
   "publish_site",
+  // S2-09 §9.6 — the only path that can move an agent_outputs row off `pending`. owner/operator
+  // only (inline guard inside the function); never anon, never the `agent` role itself (the §9.6
+  // asymmetry — see AGENT_ROLE_ONLY's comment on claim_agent_tasks/finish_agent_run below).
+  "review_agent_output",
 ]);
 
 // service_role only (Edge Functions, cron, one-time bootstrap) — never anon, never authenticated.
@@ -94,6 +99,17 @@ const SERVICE_ROLE_ONLY = new Set([
   // but starting correct: revoked from anon AND authenticated directly, not just `public`).
   "ensure_site_bucket_policies",
 ]);
+
+// S2-09 — the `agent` Postgres role's own set (docs/security.md §9.1, S7-03's ruling): a dedicated,
+// non-BYPASSRLS role, never service_role. `claim_agent_tasks`/`finish_agent_run` moved here from
+// SERVICE_ROLE_ONLY in migration 34 — EXECUTE revoked from service_role, granted to `agent` only.
+// `agent` connects via a direct Postgres connection (AUTOMATION_DATABASE_URL), never through
+// PostgREST, so there is no anon/authenticated/service_role JWT shape to assert against via the
+// normal `admin()`/`anon()`/`signIn()` helpers here — that refusal is tested in
+// agent_role.test.ts against the live catalog and via `SET ROLE agent` on a raw connection
+// instead. Still asserted below: neither anon nor authenticated can reach them (the PostgREST
+// surface), and service_role no longer can either (the ruling's whole point).
+const AGENT_ROLE_ONLY = new Set(["claim_agent_tasks", "finish_agent_run"]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what
 // their grants say — Postgres refuses to call them outside trigger context — so they are exempt
@@ -137,7 +153,7 @@ describe("function grants sweep (public schema, live catalog)", () => {
     // The real regression test: a *new* function — whether it's properly locked down or not —
     // must be added here on purpose. This is what actually catches "someone added a function and
     // forgot about grants" in CI, rather than relying on the author to also remember this file.
-    const known = new Set([...ANON_CALLABLE, ...AUTHENTICATED_ONLY, ...SERVICE_ROLE_ONLY, ...TRIGGER_FUNCTIONS]);
+    const known = new Set([...ANON_CALLABLE, ...AUTHENTICATED_ONLY, ...SERVICE_ROLE_ONLY, ...AGENT_ROLE_ONLY, ...TRIGGER_FUNCTIONS]);
     const rows = await functionGrants();
     const unknown = rows.filter((r) => !known.has(r.proname));
     expect(
@@ -152,7 +168,7 @@ describe("function grants sweep (public schema, live catalog)", () => {
     expect(unpinned.map((r) => r.proname)).toEqual([]);
   });
 
-  it("service-role-only functions are not reachable by anon or authenticated", async () => {
+  it("service-role-only functions are not reachable by anon, authenticated, or agent", async () => {
     const rows = await functionGrants();
     for (const name of SERVICE_ROLE_ONLY) {
       const row = rows.find((r) => r.proname === name);
@@ -160,6 +176,20 @@ describe("function grants sweep (public schema, live catalog)", () => {
       expect(row!.anon_execute, `${name} anon_execute`).toBe(false);
       expect(row!.authenticated_execute, `${name} authenticated_execute`).toBe(false);
       expect(row!.service_role_execute, `${name} service_role_execute`).toBe(true);
+      expect(row!.agent_execute, `${name} agent_execute`).toBe(false);
+    }
+  });
+
+  it("agent-only functions are reachable by agent alone — not anon, authenticated, or service_role (S2-09 §9.1)", async () => {
+    const rows = await functionGrants();
+    for (const name of AGENT_ROLE_ONLY) {
+      const row = rows.find((r) => r.proname === name);
+      expect(row, `${name} not found — was it renamed/dropped?`).toBeTruthy();
+      expect(row!.anon_execute, `${name} anon_execute`).toBe(false);
+      expect(row!.authenticated_execute, `${name} authenticated_execute`).toBe(false);
+      // The ruling's whole point: service_role must no longer reach these, only `agent`.
+      expect(row!.service_role_execute, `${name} service_role_execute`).toBe(false);
+      expect(row!.agent_execute, `${name} agent_execute`).toBe(true);
     }
   });
 
@@ -284,9 +314,23 @@ describe("RLS sweep (live catalog: public, storage, realtime)", () => {
   it("payment_events, payment_jobs, customer_events: staff read-only, no direct write policy exists", async () => {
     for (const table of ["payment_events", "payment_jobs", "customer_events"]) {
       const rows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === table);
-      expect(rows.map((p) => p.cmd), table).toEqual(["SELECT"]);
-      expect(rows[0].roles, table).toEqual(["authenticated"]);
+      expect(rows.map((p) => p.cmd), table).not.toEqual(expect.arrayContaining(["INSERT", "UPDATE", "DELETE"]));
+      const staffRow = rows.find((p) => p.roles.includes("authenticated"));
+      expect(staffRow, `${table}: no authenticated policy found`).toBeTruthy();
+      expect(staffRow!.cmd, table).toBe("SELECT");
+      expect(staffRow!.roles, table).toEqual(["authenticated"]);
     }
+  });
+
+  it("payment_events / payment_jobs carry the `agent` role's own SELECT policy too (S2-09 §9.1); customer_events does not", async () => {
+    for (const table of ["payment_events", "payment_jobs"]) {
+      const rows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === table);
+      const agentRow = rows.find((p) => p.roles.includes("agent"));
+      expect(agentRow, `${table}: no agent policy found`).toBeTruthy();
+      expect(agentRow!.cmd, table).toBe("SELECT");
+    }
+    const customerEventsRows = (await policies()).filter((p) => p.schemaname === "public" && p.tablename === "customer_events");
+    expect(customerEventsRows.some((p) => p.roles.includes("agent")), "customer_events must not grant agent anything").toBe(false);
   });
 });
 

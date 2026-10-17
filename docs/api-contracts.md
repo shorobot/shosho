@@ -133,7 +133,8 @@ stays empty and the funnel's attempt figures read 0** — see §6.10.
 | `authenticated` staff `operator`/`owner` | all | all; `promo_codes` all | owner: all; operator: read |
 | `kitchen` | select (same as anon) | select orders; `preparing`/`ready` only via `set_order_status` (no direct UPDATE) | own `staff` row only |
 | `driver` | select (same as anon) | select own orders (`driver_id = auth.uid()`); `delivered` via `set_order_status` | own `staff` row only |
-| `service_role` (automation, S5) | all | all | all |
+| `service_role` | all (bypasses RLS, as always) | all | all |
+| `agent` (automation, D-020) — see §8.8a | **not** "all"; this row originally said `service_role` would be automation's access, written before D-020 existed | narrow, enumerated `SELECT` only (Accounting/Grow's current reads), no write | **none** |
 
 S2-03 additions (§6.9 rows 1, 2 and 5):
 - `settings` now has **three** key sets. `settings_public_keys()` (business, opening_hours, site,
@@ -630,3 +631,154 @@ operator continue to see `draft` on the rows their own row policies already admi
 `banners.draft` needs no equivalent column-grant narrowing: the base `banners` table has **no**
 `anon` policy or grant at all (§8.6), so there is nothing on that table for `anon` to reach regardless
 of column; `banners_live`'s explicit column list is the only surface, and it never selects `draft`.
+
+### 8.8 Agent runtime — registry, task queue, runs, logs, the `agent` role, the approval state — S2-08, S2-09
+
+D-020's automation layer: the tables the (not-yet-written) `apps/automation` orchestrator runs on
+and the (not-yet-written) back-office agent dashboards read. This is schema and contract only —
+no runner, no agent, no sending. **Not** the marketing automations of §8.4: that pair is kept
+exactly as it is (see "marketing runner" below) rather than folded into this.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `agents` | `key text` **unique, not an enum** (`sales`/`accounting`/`warehouse`/`grow`/`quality` seeded, inactive), `active`, `config jsonb`, `last_run_at` | Registry, one row per agent. `key` is text rather than an enum (contrast `automation_kind`) because D-020's agent set is expected to grow — a new agent must not need a migration to add its enum value. owner/operator CRUD directly (`agents_staff_all`), same shape as `automations_staff_all`. |
+| `agent_tasks` | `agent_id`, `customer_id null`, `payload jsonb`, `status agent_task_status` (queued/processing/done/failed), `attempts`, `last_error`, `started_at` | The claimable queue — one row per unit of work, not per customer and not per run. `payload` shape is S5's vocabulary, not specified here. `customer_id` nullable, `on delete set null` — most agents (accounting, warehouse) are not about a customer at all. |
+| `agent_runs` | `task_id null`, `agent_id`, `customer_id null`, `started_at`, `finished_at`, `conclusion text`, `error`, `input_tokens`, `output_tokens`, `cost_usd numeric(12,6)`, `result jsonb` | One row **per invocation**, not per customer (contrast `automation_runs`) — created the moment a task is claimed. `conclusion` is free text, S5's vocabulary, same choice as `automation_runs.outcome`. Cost is first-class: every finished run records `input_tokens`/`output_tokens`/`cost_usd`, so a runaway agent is visible in the dashboard and in a report. **No spend ceiling is built here** — a rate limiter / cap in front of the agent loop is S7's call at `plan.md` C2, same posture D-016 took with SMS pumping. |
+| `agent_run_logs` | `run_id`, `seq bigserial`, `at`, `level text`, `message text` | Log lines attached to a run, ordered by `seq` (not `at` — concurrent writers can share a millisecond). |
+
+**Role matrix**, identical across all four tables (stated explicitly so S5/S4 do not each infer a
+different one): `owner`/`operator` — `agents` full CRUD, the other three **read-only** (no
+insert/update/delete policy for anyone, except `agent`'s own narrow grants — §8.8a). `kitchen`/
+`driver` — nothing; `is_staff('owner','operator')` is the only predicate on every policy, never
+the unconditional role-only shape S7-02 found on `orders_kitchen_read`. `anon` — table grant
+revoked outright on all four, not left to RLS alone (closing the other S7-02 finding: a row policy
+alone is not sufficient when a column grant can leak around it, as `settings.draft` did — not this
+schema's shape, since there is no anon-reachable surface here at all, but the revoke costs
+nothing). `service_role` — **as of S2-09/migration 34, no longer anything special here.** It keeps
+its usual blanket `BYPASSRLS`, but its one and only connection to this section, `EXECUTE` on
+`claim_agent_tasks`/`finish_agent_run`, was revoked and moved to the dedicated `agent` role (§8.8a)
+— the orchestrator was always the only intended caller, and that caller is now `agent` by name.
+
+Agent runs and logs can contain model prompts and outputs, so they may carry customer data and
+operational detail — hence the same owner/operator-only posture as `payment_events`/
+`customer_events`, not the wider staff visibility `settings.ops` or the reports get.
+
+```ts
+rpc('claim_agent_tasks', { p_limit: 10 })  // the `agent` role only, as of S2-09 (§8.8a) — never service_role
+→ { run_id, task_id, agent_id, customer_id, payload, attempts }[]
+```
+Claims up to `p_limit` queued (or stale-`processing`, >10 min since `started_at`) tasks with
+`for update skip locked` — the same locking `claim_payment_jobs`/`claim_campaign_recipients` use,
+so concurrent pollers never claim the same row. The **status shape** follows `payment_jobs`
+(an enum with a `processing` state + `started_at`), not `campaign_recipients`' `claimed_at`-only
+shape, because a task can run for a while (an LLM call, not a queue hop) and the dashboard needs
+"in flight" visibly distinct from "waiting". Claiming a task **starts its run** in the same
+transaction — the two are never a claimed task with no run to log against. `EXECUTE` is revoked
+from `anon` and `authenticated` explicitly, the exact shape S7-01/S1 found wrong in
+`payment-worker`.
+
+```ts
+rpc('finish_agent_run', {
+  p_run_id, p_ok, p_conclusion?, p_error?, p_input_tokens?, p_output_tokens?, p_cost_usd?, p_result?, p_final?
+})  // the `agent` role only, as of S2-09 (§8.8a) — never service_role
+→ agent_runs row
+```
+Closes a run (`finished_at`, `conclusion`, cost columns, `result`) and reconciles its task in the
+same call: `p_ok = true` → task `done`; `p_ok = false` → task `queued` again (retry) unless
+`attempts >= 5` or `p_final = true`, in which case `failed` — the exact threshold and shape
+`finish_payment_job` already uses. `EXECUTE` is revoked from `anon`/`authenticated` the same way.
+
+**Realtime**: `agent_tasks`, `agent_runs` and `agent_run_logs` are added to the `supabase_realtime`
+publication — plain `postgres_changes` table replication, not broadcast-from-DB. The dashboard
+reads these as a staff session with a real per-user JWT, so `is_staff()` RLS applies exactly as it
+does to `orders`/`order_items`/`order_events`/`customer_events` — none of the reasons guest order
+tracking (§3) needed broadcast (a shared anon JWT, no header-scoped RLS) apply to a staff login.
+**Not** added: `agents` — the registry mutates rarely and, like `automations`/`campaigns` (neither
+of which is in the publication either), a refetch after save is enough.
+
+**Marketing-runner ruling**: `automations`/`automation_runs` (§8.4) stay exactly as they are and
+do **not** become an agent under these tables. Reasons: it already has a working config surface and
+a UI (S4-04's Marketing screen) that reads its specific shape (`automation_kind`, per-customer
+`automation_runs` rows); folding it in would mean either teaching this generic runtime to also
+model "one row per customer considered" (which most agents have no use for) or rewriting a UI that
+already works for no functional gain. The cost is two runtimes to observe instead of one — the
+back-office dashboard must show both, clearly labelled as separate systems rather than presented as
+though they were the same thing, which is a small, bounded UI concern for S4-04/S4 rather than a
+schema one.
+
+**What is not here yet.** No orchestrator, no agent, no FastAPI code (C3, S5). No spend ceiling —
+cost is recorded, not capped (above); enforced in the orchestrator's own dispatch loop per
+`docs/security.md` §9.3, not the database. No task-payload vocabulary — `agent_tasks.payload` and
+`agent_runs.result`/`conclusion` are deliberately unshaped jsonb/text; each agent defines its own
+when S5 writes it. No scrubbing of customer PII that might appear inside `result` or a log
+`message` (model prompts/outputs are unbounded free text) — only the `customer_id` columns carry
+the GDPR nullable/`on delete set null` shape `automation_runs` established, on `agent_tasks` and
+`agent_runs`.
+
+### 8.8a The `agent` Postgres role — S2-09, `docs/security.md` §9 (S7-03's ruling)
+
+`apps/automation` connects to Postgres **directly** (`AUTOMATION_DATABASE_URL`), never through
+PostgREST and never as `service_role` — a dedicated, non-`BYPASSRLS` role named `agent`. Because
+the connection carries no JWT, `auth.uid()` is null and **`is_staff()` is false for `agent` no
+matter what** (`auth_role()` is a lookup keyed on `auth.uid()`) — every grant below is a new
+policy keyed on `current_user = 'agent'`, never layered on an `is_staff()` check. One shared role
+serves every D-020 agent (sales/accounting/warehouse/grow/quality); the database does not
+distinguish which agent is connected — that separation is the orchestrator's own code (S5), not a
+DB-level one. **No password is set by any migration** — `ALTER ROLE agent WITH PASSWORD` is an
+out-of-band step for S1/the owner at plan.md step C5; see `/memory/log.md`'s S2-09 entry for the
+exact command.
+
+| Table / function | `agent` gets | Notes |
+|---|---|---|
+| `agents` (registry) | `SELECT` only | No `UPDATE` anywhere — an agent that could raise its own spend ceiling or flip its own `active` flag would defeat the ceiling by construction. |
+| `agent_tasks` | nothing directly | Reached only through `claim_agent_tasks` below (security definer) — a second, unaudited table-level path to the same rows was judged not worth adding. |
+| `agent_runs` | `SELECT`; `INSERT` (`task_id`, `agent_id`, `customer_id`); `UPDATE` of `conclusion`, `error`, `input_tokens`, `output_tokens`, `cost_usd`, `result`, scoped by RLS to its own row **while `finished_at is null`** | `INSERT` lets a run open without a queued task (`task_id` is nullable — e.g. a scheduled run). `SELECT` exists so `INSERT … RETURNING id` works at all (Postgres requires `SELECT` on a returned column, not just `INSERT` on the written ones) — reading its own rows back is not a capability this boundary withholds. `finished_at` is never in the `UPDATE` column grant: only `finish_agent_run` closes a run, so its task-reconciliation can never be skipped by a bare `UPDATE`. Once `finished_at` is set, the row no longer matches the `UPDATE` policy — a rewrite attempt affects zero rows, not an error. |
+| `agent_run_logs` | `SELECT`; `INSERT` (`run_id`, `level`, `message`) only | Never `UPDATE`/`DELETE` — an append-only log the writer can edit is not an audit trail; reading a line back (same `RETURNING` reason as above) is not the same capability as editing or deleting one. |
+| `agent_outputs` (new, §8.8b) | `SELECT`; `INSERT` (`run_id`, `agent_id`, `kind`, `payload`) only | `status`/`reviewer_id`/`reviewed_at`/`review_note` are excluded from the `INSERT` column grant — an `agent`-written row always lands `pending`, and an `INSERT` that names any of those columns is refused outright, even to set the value it would have defaulted to. `SELECT` is unrestricted (same `RETURNING` reason) — reading `status`/`reviewer_id` back is not the capability §8.8b withholds; only writing them is. |
+| `orders`, `order_items`, `payment_events`, `payment_jobs` | `SELECT` only (Accounting, agent #1) | No write anywhere in the live schema — Accounting's output is a report (`agent_outputs`), never a write to these. Money columns (`payment_status`, `payment_authorized_cents`, `payment_captured_at`, `payment_refunded_cents`, `total_cents`) have `UPDATE` explicitly revoked on top — an agent is a client too, same trust boundary §5's CRITICAL finding fixed for `place_order`. |
+| `settings` | `SELECT`, RLS-scoped to `key = 'business'` only | §9.1's "business/tax keys" — this schema has no separate tax settings key (VAT lives on `menu_items.vat_onsite_pct`); `business` is the closest real match (it carries `ust_id`, the VAT ID) and is anon-public already, so the grant adds no new exposure. `ops` and every other key stay out of reach. |
+| `campaigns`, `automations` | `SELECT` only (Grow, agent #2, not yet built) | Direct grant given now since the tables exist; the tables `report_*` reads (`menu_items`, `order_attempts`, `delivery_zones`, `customers`) are **not** granted — those RPCs are security definer and already read them under their own privileges. |
+| `staff` | nothing | No grant exists at all — a direct `SELECT` is a permission error, not an RLS-filtered empty result. |
+| `claim_agent_tasks(p_limit)` | `EXECUTE` | Moved from `service_role`: nothing in `apps/automation` exists yet and no other caller does either, so the service-role grant was revoked outright rather than kept as a second path to the same operation. |
+| `finish_agent_run(...)` | `EXECUTE` | Same move, same reasoning. |
+| `review_agent_output(...)` (§8.8b) | **nothing** | The §8.8b asymmetry: the role that produces an output must have no path to approve it. |
+
+Universal revokes regardless of table: no DDL privilege of any kind, no `DELETE` anywhere, no
+`SELECT` on `staff`.
+
+### 8.8b The approval state — `agent_outputs`, `review_agent_output()` — S2-09, `docs/security.md` §9.6
+
+`agent_runs`/`agent_run_logs` (§8.8) answer **what happened** during a run. They do not answer
+**whether the result is trusted** — a run can finish successfully and log a wrong total, and
+nothing distinguishes that from a run a human has actually reviewed. `agent_outputs` is that
+status, shipped now rather than deferred: C3's first agent is Accounting and its first output is
+Steuerberater-shaped, so deferring this would mean the very first thing any agent produces is a
+number nothing can tell apart from a reviewed one.
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `agent_outputs` | `run_id` (→ `agent_runs`), `agent_id`, `kind text` (free text — `'report'`/`'draft'`/`'stock_adjustment'`/…, same reasoning as `agents.key`), `payload jsonb`, `status agent_output_status` (`pending`/`approved`/`rejected`), `reviewer_id` (→ `staff`), `reviewed_at`, `review_note` | One shared table referencing the run that produced it, rather than a column trio repeated on every future output-shaped table. A future table (C8's stock adjustments, the Sales drafts table) adopts this by adding one nullable `agent_output_id uuid references agent_outputs(id)` column — not a rewrite. |
+
+```ts
+rpc('review_agent_output', { p_output_id, p_decision: 'approved' | 'rejected', p_note? })
+  // authenticated, owner/operator only
+→ agent_outputs row
+```
+The only path that can move `status` off `pending`. Security definer: writes `reviewer_id` from
+`auth.uid()` and `reviewed_at` itself (same shape `place_order`'s `payment_recorded_by_staff` note
+uses) rather than trusting a client-supplied reviewer. Refuses a non-owner/operator caller
+(`forbidden_for_role`), a decision of `pending` (`invalid_input`), and a row that is not currently
+`pending` (`output_not_found_or_already_reviewed` — re-reviewing is not allowed). **`agent` has no
+`EXECUTE` grant on this function at all** — the role that produces an output cannot be the one
+that approves it.
+
+**Role matrix**: owner/operator read all of `agent_outputs` (`agent_outputs_staff_read`, same
+`is_staff('owner','operator')` shape as the rest of §8.8); nobody but `review_agent_output` may
+change a row once inserted — not even owner/operator via a direct table `UPDATE`. `agent` inserts
+only, landing `pending` always. Added to `supabase_realtime` (plain `postgres_changes`, same
+reasoning as `agent_tasks`/`agent_runs`/`agent_run_logs`) so C4's dashboard can show pending
+approvals live.
+
+**The rule this exists to enforce, stated once rather than per-consumer:** nothing downstream — a
+Steuerberater export, a promoted Sales draft, a stock figure feeding a reorder — may treat an
+`agent_outputs` row as live before `status = 'approved'`.

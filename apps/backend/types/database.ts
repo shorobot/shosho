@@ -9,6 +9,277 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      agent_outputs: {
+        Row: {
+          agent_id: string
+          created_at: string
+          id: string
+          kind: string
+          payload: Json
+          review_note: string | null
+          reviewed_at: string | null
+          reviewer_id: string | null
+          run_id: string
+          status: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Insert: {
+          agent_id: string
+          created_at?: string
+          id?: string
+          kind: string
+          payload?: Json
+          review_note?: string | null
+          reviewed_at?: string | null
+          reviewer_id?: string | null
+          run_id: string
+          status?: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Update: {
+          agent_id?: string
+          created_at?: string
+          id?: string
+          kind?: string
+          payload?: Json
+          review_note?: string | null
+          reviewed_at?: string | null
+          reviewer_id?: string | null
+          run_id?: string
+          status?: Database["public"]["Enums"]["agent_output_status"]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_outputs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "staff_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_outputs_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "agent_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_run_logs: {
+        Row: {
+          at: string
+          id: string
+          level: string
+          message: string
+          run_id: string
+          seq: number
+        }
+        Insert: {
+          at?: string
+          id?: string
+          level?: string
+          message: string
+          run_id: string
+          seq?: number
+        }
+        Update: {
+          at?: string
+          id?: string
+          level?: string
+          message?: string
+          run_id?: string
+          seq?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_run_logs_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "agent_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_runs: {
+        Row: {
+          agent_id: string
+          conclusion: string | null
+          cost_usd: number | null
+          created_at: string
+          customer_id: string | null
+          error: string | null
+          finished_at: string | null
+          id: string
+          input_tokens: number | null
+          output_tokens: number | null
+          result: Json | null
+          started_at: string
+          task_id: string | null
+        }
+        Insert: {
+          agent_id: string
+          conclusion?: string | null
+          cost_usd?: number | null
+          created_at?: string
+          customer_id?: string | null
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          input_tokens?: number | null
+          output_tokens?: number | null
+          result?: Json | null
+          started_at?: string
+          task_id?: string | null
+        }
+        Update: {
+          agent_id?: string
+          conclusion?: string | null
+          cost_usd?: number | null
+          created_at?: string
+          customer_id?: string | null
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          input_tokens?: number | null
+          output_tokens?: number | null
+          result?: Json | null
+          started_at?: string
+          task_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_runs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "agent_runs_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_runs_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "agent_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_tasks: {
+        Row: {
+          agent_id: string
+          attempts: number
+          created_at: string
+          customer_id: string | null
+          id: string
+          last_error: string | null
+          payload: Json
+          started_at: string | null
+          status: Database["public"]["Enums"]["agent_task_status"]
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          attempts?: number
+          created_at?: string
+          customer_id?: string | null
+          id?: string
+          last_error?: string | null
+          payload?: Json
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["agent_task_status"]
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          attempts?: number
+          created_at?: string
+          customer_id?: string | null
+          id?: string
+          last_error?: string | null
+          payload?: Json
+          started_at?: string | null
+          status?: Database["public"]["Enums"]["agent_task_status"]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_tasks_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_tasks_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customer_stats"
+            referencedColumns: ["customer_id"]
+          },
+          {
+            foreignKeyName: "agent_tasks_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agents: {
+        Row: {
+          active: boolean
+          config: Json
+          created_at: string
+          id: string
+          key: string
+          last_run_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          key: string
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          config?: Json
+          created_at?: string
+          id?: string
+          key?: string
+          last_run_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       automation_runs: {
         Row: {
           at: string
@@ -1489,6 +1760,17 @@ export type Database = {
         Args: never
         Returns: Database["public"]["Enums"]["staff_role"]
       }
+      claim_agent_tasks: {
+        Args: { p_limit?: number }
+        Returns: {
+          agent_id: string
+          attempts: number
+          customer_id: string
+          payload: Json
+          run_id: string
+          task_id: string
+        }[]
+      }
       claim_campaign_recipients: {
         Args: { p_limit?: number }
         Returns: {
@@ -1545,6 +1827,40 @@ export type Database = {
       ensure_guest_realtime_policy: { Args: never; Returns: Json }
       ensure_menu_bucket_policies: { Args: never; Returns: boolean }
       ensure_site_bucket_policies: { Args: never; Returns: boolean }
+      finish_agent_run: {
+        Args: {
+          p_conclusion?: string
+          p_cost_usd?: number
+          p_error?: string
+          p_final?: boolean
+          p_input_tokens?: number
+          p_ok: boolean
+          p_output_tokens?: number
+          p_result?: Json
+          p_run_id: string
+        }
+        Returns: {
+          agent_id: string
+          conclusion: string | null
+          cost_usd: number | null
+          created_at: string
+          customer_id: string | null
+          error: string | null
+          finished_at: string | null
+          id: string
+          input_tokens: number | null
+          output_tokens: number | null
+          result: Json | null
+          started_at: string
+          task_id: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "agent_runs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       finish_payment_job: {
         Args: {
           p_error?: string
@@ -1700,6 +2016,31 @@ export type Database = {
           has_push_consent: boolean
         }[]
       }
+      review_agent_output: {
+        Args: {
+          p_decision: Database["public"]["Enums"]["agent_output_status"]
+          p_note?: string
+          p_output_id: string
+        }
+        Returns: {
+          agent_id: string
+          created_at: string
+          id: string
+          kind: string
+          payload: Json
+          review_note: string | null
+          reviewed_at: string | null
+          reviewer_id: string | null
+          run_id: string
+          status: Database["public"]["Enums"]["agent_output_status"]
+        }
+        SetofOptions: {
+          from: "*"
+          to: "agent_outputs"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       run_payment_worker: { Args: never; Returns: undefined }
       schedule_payment_worker: {
         Args: { p_anon_key: string; p_url: string }
@@ -1708,6 +2049,7 @@ export type Database = {
       security_audit_function_grants: {
         Args: never
         Returns: {
+          agent_execute: boolean
           anon_execute: boolean
           args: string
           authenticated_execute: boolean
@@ -1759,6 +2101,8 @@ export type Database = {
     }
     Enums: {
       actor_type: "customer" | "staff" | "system"
+      agent_output_status: "pending" | "approved" | "rejected"
+      agent_task_status: "queued" | "processing" | "done" | "failed"
       automation_kind:
         | "welcome"
         | "win_back_45d"
@@ -1926,6 +2270,8 @@ export const Constants = {
   public: {
     Enums: {
       actor_type: ["customer", "staff", "system"],
+      agent_output_status: ["pending", "approved", "rejected"],
+      agent_task_status: ["queued", "processing", "done", "failed"],
       automation_kind: [
         "welcome",
         "win_back_45d",

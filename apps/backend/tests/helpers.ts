@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { Pool, type PoolClient } from "pg";
+import { afterAll } from "vitest";
 
 // Tests use untyped clients on purpose: they exercise the live schema, the generated
 // types in ../types/database.ts are the contract for S3/S4.
@@ -78,6 +80,46 @@ export function ramenOrder(overrides: Record<string, unknown> = {}) {
 export async function rpc<T = any>(c: Db, fn: string, args: Record<string, unknown>) {
   const { data, error } = await (c as any).rpc(fn, args);
   return { data: data as T, error };
+}
+
+// [S2-09] §9.1: `agent` connects via a direct Postgres connection, never PostgREST, and has no
+// password — so it is not a role any supabase-js client above can ever authenticate as. The only
+// way to exercise its grants is a raw connection as the local superuser (`DB_URL`, the same
+// connection string ci.yml's "Seed is idempotent" step already uses via psql) that then
+// `SET ROLE agent`, which a superuser may always do regardless of the target role's own password.
+// Lazy + per-module-registry singleton: most test files never call asAgent/asSuperuser, so this
+// only opens a pool (and registers the one afterAll that closes it) the first time one actually
+// does, in that file's own suite — see freshPhone()'s comment on why each test file gets its own
+// module instance of this file.
+let _pgPool: Pool | undefined;
+function pgPool(): Pool {
+  if (!_pgPool) {
+    _pgPool = new Pool({ connectionString: process.env.DB_URL });
+    afterAll(() => _pgPool!.end());
+  }
+  return _pgPool;
+}
+
+/** Runs `fn` on a connection with `SET ROLE agent` active, then always resets the role before releasing. */
+export async function asAgent<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
+  const c = await pgPool().connect();
+  try {
+    await c.query("set role agent");
+    return await fn(c);
+  } finally {
+    await c.query("reset role");
+    c.release();
+  }
+}
+
+/** Runs `fn` on a plain superuser connection (no role switch) — for catalog/ground-truth checks. */
+export async function asSuperuser<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
+  const c = await pgPool().connect();
+  try {
+    return await fn(c);
+  } finally {
+    c.release();
+  }
 }
 
 /** Tests must not depend on the wall clock: open 24/7 while the suite runs. */
