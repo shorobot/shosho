@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useEnv, useSupabase } from "@/components/providers/EnvProvider";
 import { LangToggle } from "@/components/shell/LangToggle";
 import { Logo } from "@/components/shell/Logo";
@@ -39,6 +39,13 @@ function Form() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // S6-01 finding 3 (LOW): defence in depth, layered under the real fix (finding 0, lib/csp.ts's
+  // dev-only 'unsafe-eval' carve-out — filed separately). `hydrated` starts false, which SSR bakes
+  // into the submit control's `disabled` attribute in the markup the browser paints first — so a
+  // click landing in the window before React attaches hits a button the browser itself refuses to
+  // submit, with no JS required for that part. Once attached, the effect below flips it live.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => setHydrated(true), []);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -57,7 +64,11 @@ function Form() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="flex flex-col gap-3" data-env={env.supabaseUrl ? "ok" : "missing"}>
+    // method="post" action="#": a pre-hydration native submission (if the disabled button above
+    // somehow still fires — e.g. a very old browser ignoring the attribute) posts nowhere useful
+    // instead of falling through to a GET that puts the password in the URL (S6-01 finding 3,
+    // observed live in CI: /login?email=…&password=…).
+    <form onSubmit={onSubmit} method="post" action="#" className="flex flex-col gap-3" data-env={env.supabaseUrl ? "ok" : "missing"}>
       <label className="flex flex-col gap-1.5">
         <span className="label-caps">{t("login.email")}</span>
         <input className="field" type="email" name="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -71,7 +82,7 @@ function Form() {
           {error}
         </p>
       )}
-      <Pill type="submit" size="lg" className="mt-2 w-full" disabled={busy}>
+      <Pill type="submit" size="lg" className="mt-2 w-full" disabled={busy || !hydrated}>
         {busy ? t("action.working") : t("login.submit")}
       </Pill>
     </form>

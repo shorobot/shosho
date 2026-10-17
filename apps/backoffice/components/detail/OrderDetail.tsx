@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useSupabase } from "@/components/providers/EnvProvider";
 import { AllergyBanner, PaymentLine } from "@/components/orders/OrderCard";
 import { CancelDialog } from "@/components/orders/CancelDialog";
+import { CashDialog } from "@/components/orders/CashDialog";
 import { DriverDialog } from "@/components/orders/DriverDialog";
 import { RefundDialog } from "@/components/orders/RefundDialog";
 import { useOrderAction } from "@/components/orders/useOrderAction";
@@ -16,11 +17,11 @@ import { EmptyState, Spinner } from "@/components/ui/States";
 import { useI18n, type Key } from "@/lib/i18n";
 import { isCashUnpaid, payMethodKey, payStatusKey, statusKey, statusTone } from "@/lib/labels";
 import { euro, km } from "@/lib/money";
-import { actionsFor, addressOf, eta, timerFor } from "@/lib/orders";
+import { actionsFor, addressOf, cancelReasonLabel, effectiveVatPct, eta, timerFor } from "@/lib/orders";
 import { useOrders } from "@/lib/store";
 import { ddmmHHmm, hhmm } from "@/lib/time";
 import { Toasts } from "@/lib/toast";
-import type { OptionSnapshot, Order } from "@/lib/types";
+import type { OptionSnapshot, Order, OrderStatus } from "@/lib/types";
 
 const ACTION_KEY: Record<string, Key> = {
   accept: "action.accept",
@@ -39,7 +40,9 @@ export function OrderDetail({ id }: { id: string }) {
   const supabase = useSupabase();
   const { orders, me, staff, now, refetchOrder } = useOrders();
   const { run, busy } = useOrderAction();
-  const [dialog, setDialog] = useState<null | "driver" | "cancel" | "refund">(null);
+  const [dialog, setDialog] = useState<null | "driver" | "cancel" | "refund" | "cash">(null);
+  // the status the open dialog is completing to — "cash" is the only dialog that needs it
+  const [dialogTo, setDialogTo] = useState<OrderStatus>("delivered");
   const [nth, setNth] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -79,6 +82,7 @@ export function OrderDetail({ id }: { id: string }) {
   const driver = staff.find((s) => s.id === order.driver_id);
   const at = eta(order);
   const working = busy === order.id;
+  const vatPct = effectiveVatPct(order);
 
   return (
     <div className="screen-in mx-auto flex max-w-[860px] flex-col gap-4">
@@ -173,12 +177,12 @@ export function OrderDetail({ id }: { id: string }) {
           <span className="text-[20px] font-extrabold">{euro(order.total_cents, lang)}</span>
         </div>
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[11px] text-muted">{t("detail.vat", { v: euro(order.vat_cents, lang) })}</span>
+          <span className="text-[11px] text-muted">{vatPct == null ? t("detail.vatNoRate", { v: euro(order.vat_cents, lang) }) : t("detail.vat", { p: vatPct, v: euro(order.vat_cents, lang) })}</span>
           {/* the emphasised banner only where it adds something: failed payment or cash still to collect */}
           {(order.payment_status === "failed" || isCashUnpaid(order)) && <PaymentLine order={order} />}
         </div>
         <span className="text-[11px] text-muted">{t("detail.paymentRef", { s: t(payStatusKey(order.payment_status)), m: order.payment_ref || t(payMethodKey(order.payment_method)) })}</span>
-        {order.cancel_reason && <span className="text-[11px] font-extrabold text-alert">{order.cancel_reason}</span>}
+        {order.cancel_reason && <span className="text-[11px] font-extrabold text-alert">{cancelReasonLabel(order.cancel_reason, t)}</span>}
       </div>
 
       <div className="card p-4">
@@ -194,7 +198,11 @@ export function OrderDetail({ id }: { id: string }) {
               size="lg"
               className={act.primary ? "flex-1" : ""}
               disabled={working}
-              onClick={() => (act.dialog ? setDialog(act.dialog) : void run(order, act.to))}
+              onClick={() => {
+                if (!act.dialog) return void run(order, act.to);
+                setDialogTo(act.to);
+                setDialog(act.dialog);
+              }}
             >
               {t(ACTION_KEY[act.id] as Key)}
             </Pill>
@@ -204,6 +212,7 @@ export function OrderDetail({ id }: { id: string }) {
 
       <Bon order={order as Order} />
       <DriverDialog order={order} open={dialog === "driver"} onClose={() => setDialog(null)} />
+      <CashDialog order={order} to={dialogTo} open={dialog === "cash"} onClose={() => setDialog(null)} />
       <CancelDialog order={order} open={dialog === "cancel"} onClose={() => setDialog(null)} />
       <RefundDialog order={order} open={dialog === "refund"} onClose={() => setDialog(null)} />
       <Toasts />
