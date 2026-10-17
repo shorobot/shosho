@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { admin, anon, openAllDay, signIn, type Db } from "./helpers";
+import { admin, anon, asAgent, openAllDay, signIn, type Db } from "./helpers";
 
 beforeAll(openAllDay);
 
@@ -7,6 +7,34 @@ async function agentId(key: string): Promise<string> {
   const { data, error } = await admin().from("agents").select("id").eq("key", key).single();
   if (error) throw error;
   return data!.id as string;
+}
+
+// [S2-09] `claim_agent_tasks`/`finish_agent_run` moved from service_role to the dedicated `agent`
+// Postgres role (migration 34, §9.1) — `agent` has no password and connects directly, never
+// through PostgREST, so these two helpers call the live functions the same way the orchestrator
+// will: `SET ROLE agent` on a raw connection (see helpers.ts `asAgent`), not `admin().rpc(...)`.
+type ClaimedTask = { run_id: string; task_id: string; agent_id: string; customer_id: string | null; payload: unknown; attempts: number };
+async function claimAgentTasks(limit = 10): Promise<ClaimedTask[]> {
+  return asAgent(async (c) => {
+    const { rows } = await c.query("select * from claim_agent_tasks($1)", [limit]);
+    return rows as ClaimedTask[];
+  });
+}
+
+type FinishArgs = {
+  p_run_id: string; p_ok: boolean; p_conclusion?: string | null; p_error?: string | null;
+  p_input_tokens?: number | null; p_output_tokens?: number | null; p_cost_usd?: number | null;
+  p_result?: unknown; p_final?: boolean;
+};
+async function finishAgentRun(a: FinishArgs) {
+  return asAgent(async (c) => {
+    const { rows } = await c.query(
+      "select * from finish_agent_run($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [a.p_run_id, a.p_ok, a.p_conclusion ?? null, a.p_error ?? null, a.p_input_tokens ?? null,
+       a.p_output_tokens ?? null, a.p_cost_usd ?? null, a.p_result ? JSON.stringify(a.p_result) : null, a.p_final ?? false],
+    );
+    return rows[0];
+  });
 }
 
 /**
@@ -61,12 +89,13 @@ describe("agents registry (§8.8)", () => {
 });
 
 /**
- * §8.8 `claim_agent_tasks` — unreachable with anon or any authenticated (non-service) JWT, exactly
- * the shape S7-01/S1 found wrong in payment-worker and claim_campaign_recipients/claim_payment_jobs
- * already assert for their own queues.
+ * §8.8/§9.1 `claim_agent_tasks` — unreachable via PostgREST at all (anon, any authenticated role,
+ * and now service_role too — S2-09 moved its EXECUTE grant to the dedicated `agent` Postgres role,
+ * reachable only via a direct connection, never PostgREST). Functional behaviour is exercised with
+ * `SET ROLE agent` (`claimAgentTasks`, helpers.ts `asAgent`), the same path the orchestrator uses.
  */
-describe("claim_agent_tasks (§8.8)", () => {
-  it("is unreachable with anon or any authenticated role", async () => {
+describe("claim_agent_tasks (§8.8, §9.1)", () => {
+  it("is unreachable with anon, any authenticated role, or service_role — only `agent` may call it", async () => {
     const { error: anonErr } = await anon().rpc("claim_agent_tasks", { p_limit: 10 });
     expect(anonErr).not.toBeNull();
     for (const role of ["owner", "operator", "kitchen", "driver"] as const) {
@@ -74,6 +103,9 @@ describe("claim_agent_tasks (§8.8)", () => {
       const { error } = await (c as Db).rpc("claim_agent_tasks", { p_limit: 10 });
       expect(error, role).not.toBeNull();
     }
+    // the ruling's whole point (migration 34): service_role no longer reaches this either.
+    const { error: serviceErr } = await admin().rpc("claim_agent_tasks", { p_limit: 10 });
+    expect(serviceErr).not.toBeNull();
   });
 
   it("claims queued and stale-processing tasks, skips a fresh in-flight one and a done one, and opens one run per claim", async () => {
@@ -93,9 +125,7 @@ describe("claim_agent_tasks (§8.8)", () => {
     const idOf = (kind: string) => (tasks as { id: string; payload: { kind: string } }[]).find((t) => t.payload.kind === kind)!.id;
     const qId = idOf("queued"), staleId = idOf("stale"), freshId = idOf("fresh_in_flight"), doneId = idOf("already_done");
 
-    const { data, error: claimErr } = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    if (claimErr) throw claimErr;
-    const claimed = data as { run_id: string; task_id: string; agent_id: string; payload: { kind: string }; attempts: number }[];
+    const claimed = await claimAgentTasks(50);
     const claimedTaskIds = claimed.map((r) => r.task_id);
 
     expect(claimedTaskIds).toEqual(expect.arrayContaining([qId, staleId]));
@@ -126,13 +156,11 @@ describe("claim_agent_tasks (§8.8)", () => {
     const { data: task } = await a.from("agent_tasks")
       .insert({ agent_id: accountingId, payload: { kind: "reclaim_check" } } as never)
       .select("id").single();
-    const first = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    const firstIds = (first.data as { task_id: string }[]).map((r) => r.task_id);
-    expect(firstIds).toContain(task!.id);
+    const first = await claimAgentTasks(50);
+    expect(first.map((r) => r.task_id)).toContain(task!.id);
 
-    const second = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    const secondIds = (second.data as { task_id: string }[]).map((r) => r.task_id);
-    expect(secondIds).not.toContain(task!.id); // claimed moments ago — inside the 10-minute window
+    const second = await claimAgentTasks(50);
+    expect(second.map((r) => r.task_id)).not.toContain(task!.id); // claimed moments ago — inside the 10-minute window
   });
 });
 
@@ -141,12 +169,11 @@ describe("claim_agent_tasks (§8.8)", () => {
  * the finish_payment_job threshold (5) or the caller says p_final, in which case it is `failed`.
  * Cost lands in the same statement as the conclusion.
  */
-describe("finish_agent_run (§8.8)", () => {
+describe("finish_agent_run (§8.8, §9.1)", () => {
   async function claimOne(agent_id: string, payload: Record<string, unknown> = {}) {
     const a = admin();
     const { data: task } = await a.from("agent_tasks").insert({ agent_id, payload } as never).select("id").single();
-    const { data } = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    const row = (data as { run_id: string; task_id: string }[]).find((r) => r.task_id === task!.id)!;
+    const [row] = await claimAgentTasks(50).then((rows) => rows.filter((r) => r.task_id === task!.id));
     return { taskId: task!.id as string, runId: row.run_id as string };
   }
 
@@ -155,11 +182,10 @@ describe("finish_agent_run (§8.8)", () => {
     const growId = await agentId("grow");
     const { taskId, runId } = await claimOne(growId, { kind: "success_path" });
 
-    const { data: run, error } = await a.rpc("finish_agent_run", {
+    const run = await finishAgentRun({
       p_run_id: runId, p_ok: true, p_input_tokens: 120, p_output_tokens: 340, p_cost_usd: 0.0042,
       p_result: { wrote: 3 },
     });
-    expect(error).toBeNull();
     const r = run as { conclusion: string; finished_at: string; cost_usd: number; input_tokens: number };
     expect(r.conclusion).toBe("success");
     expect(r.finished_at).not.toBeNull();
@@ -176,8 +202,7 @@ describe("finish_agent_run (§8.8)", () => {
     const salesId = await agentId("sales");
     const { taskId, runId } = await claimOne(salesId, { kind: "retry_path" });
 
-    const { error } = await a.rpc("finish_agent_run", { p_run_id: runId, p_ok: false, p_error: "rate_limited" });
-    expect(error).toBeNull();
+    await finishAgentRun({ p_run_id: runId, p_ok: false, p_error: "rate_limited" });
 
     const { data: task } = await a.from("agent_tasks").select("status, attempts, last_error").eq("id", taskId).single();
     expect(task!.status).toBe("queued"); // requeued — attempts (1) < 5
@@ -189,20 +214,20 @@ describe("finish_agent_run (§8.8)", () => {
     const warehouseId = await agentId("warehouse");
     const { taskId, runId } = await claimOne(warehouseId, { kind: "final_failure_path" });
 
-    const { error } = await a.rpc("finish_agent_run", { p_run_id: runId, p_ok: false, p_error: "unrecoverable", p_final: true });
-    expect(error).toBeNull();
+    await finishAgentRun({ p_run_id: runId, p_ok: false, p_error: "unrecoverable", p_final: true });
 
     const { data: task } = await a.from("agent_tasks").select("status").eq("id", taskId).single();
     expect(task!.status).toBe("failed");
   });
 
-  it("is unreachable with anon or any authenticated role", async () => {
-    const a = admin();
+  it("is unreachable with anon, any authenticated role, or service_role", async () => {
     const accountingId = await agentId("accounting");
     const { runId } = await claimOne(accountingId, { kind: "rpc_access_check" });
 
     const { error: anonErr } = await anon().rpc("finish_agent_run", { p_run_id: runId, p_ok: true });
     expect(anonErr).not.toBeNull();
+    const { error: serviceErr } = await admin().rpc("finish_agent_run", { p_run_id: runId, p_ok: true });
+    expect(serviceErr).not.toBeNull(); // the ruling's whole point (migration 34)
     for (const role of ["owner", "operator", "kitchen", "driver"] as const) {
       const c = await signIn(role);
       const { error } = await (c as Db).rpc("finish_agent_run", { p_run_id: runId, p_ok: true });
@@ -222,8 +247,8 @@ describe("agent_runs / agent_run_logs access (§8.8)", () => {
     const a = admin();
     const accountingId = await agentId("accounting");
     const { data: task } = await a.from("agent_tasks").insert({ agent_id: accountingId, payload: { kind: "log_check" } } as never).select("id").single();
-    const { data: claimed } = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    runId = (claimed as { run_id: string; task_id: string }[]).find((r) => r.task_id === task!.id)!.run_id;
+    const claimed = await claimAgentTasks(50);
+    runId = claimed.find((r) => r.task_id === task!.id)!.run_id;
     await a.from("agent_run_logs").insert([
       { run_id: runId, level: "info", message: "started" },
       { run_id: runId, level: "info", message: "fetched ledger" },
@@ -270,7 +295,7 @@ describe("agent_runs / agent_run_logs access (§8.8)", () => {
     expect(anonLogsErr ? [] : anonLogs).toEqual([]);
   });
 
-  it("no insert/update/delete policy exists for owner/operator either — writes are service-role only", async () => {
+  it("no insert/update/delete policy exists for owner/operator either — writes are agent-only (§9.1, see agent_role.test.ts)", async () => {
     const owner = await signIn("owner");
     const { error } = await owner.from("agent_run_logs").insert({ run_id: runId, message: "operator wrote this" } as never);
     expect(error).not.toBeNull();
@@ -294,8 +319,8 @@ describe("customer_id nullability on agent_tasks / agent_runs (§8.8)", () => {
       .insert({ agent_id: salesId, customer_id: cust!.id, payload: { kind: "gdpr_check" } } as never)
       .select("id").single();
     if (taskErr) throw taskErr;
-    const { data: claimed } = await a.rpc("claim_agent_tasks", { p_limit: 50 });
-    const runId = (claimed as { run_id: string; task_id: string }[]).find((r) => r.task_id === task!.id)!.run_id;
+    const claimed = await claimAgentTasks(50);
+    const runId = claimed.find((r) => r.task_id === task!.id)!.run_id;
 
     const { data: runBefore } = await a.from("agent_runs").select("customer_id").eq("id", runId).single();
     expect(runBefore!.customer_id).toBe(cust!.id);
