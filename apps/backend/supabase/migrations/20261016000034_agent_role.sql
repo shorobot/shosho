@@ -107,6 +107,10 @@ create policy agent_run_logs_agent_read on public.agent_run_logs
   for select to agent using (current_user = 'agent');
 create policy agent_run_logs_agent_insert on public.agent_run_logs
   for insert to agent with check (current_user = 'agent');
+-- `seq bigserial`'s implicit sequence fires its `nextval()` as whichever role performs the INSERT
+-- (this is a plain INSERT by `agent`, not a security-definer function) — USAGE is needed even
+-- though `seq` itself is never in agent's column grant above.
+grant usage on sequence public.agent_run_logs_seq_seq to agent;
 
 ---------------------------------------------------------------- claim_agent_tasks / finish_agent_run — §9.1 task 4
 -- RULING (S0's reading, adopted): revoke from service_role, grant to agent only. The only intended

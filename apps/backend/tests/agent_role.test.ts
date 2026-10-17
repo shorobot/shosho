@@ -132,8 +132,11 @@ describe("agent refusals — a finished run can never be rewritten (§9.1, §9.6
     );
     expect(midRun.rowCount).toBe(1);
 
-    // only finish_agent_run may close a run (service definer, no direct grant needed for finished_at)
-    await asAgent((c) => c.query("select * from finish_agent_run($1, true)", [runId]));
+    // only finish_agent_run may close a run (service definer, no direct grant needed for finished_at).
+    // finish_agent_run unconditionally writes cost_usd = p_cost_usd (not a coalesce — pre-existing
+    // behaviour from migration 33, unrelated to this boot) — pass the same figure explicitly rather
+    // than relying on the mid-run write surviving a call that would otherwise null it back out.
+    await asAgent((c) => c.query("select * from finish_agent_run($1, true, null, null, null, null, $2)", [runId, 0.001]));
 
     // row-scoped RLS (`finished_at is null`) now excludes it — the update matches zero rows, not an error
     const rewrite = await asAgent((c) =>
