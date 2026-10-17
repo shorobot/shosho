@@ -5,7 +5,7 @@ and standing rules are in `decisions.md`; this file is only *what is left, in wh
 Status: `[ ]` not started · `[~]` in flight · `[x]` done · `[!]` blocked on someone outside the session ·
 `[—]` deliberately not doing.
 
-Last moved: 2026-10-16 (S0 — owner declined D10 and chose Option A, basic-auth with two holders; D7 is now the whole critical path; S7-03 ruled, #95 open)
+Last moved: 2026-10-16 (S0 — owner chose A2, per-device gate entry: all four roles live, which promotes B4 and B5 to real exposure; D10 declined, D7 is the whole critical path; S7-03 ruled, #95 open)
 
 ---
 
@@ -29,8 +29,8 @@ The staging deploy chain was dead 2026-10-12 → 2026-10-15 and is now **live ag
 | `[x]` | Back-office CSP dev carve-out | S4 | done in #89 — `csp.ts:139`, prod byte-identical |
 | `[ ]` | **Guest-site CSP dev carve-out** — `apps/web/lib/csp.ts` still greps 0 for `unsafe-eval` | **S3** | S6 finding 0, HIGH. `apps/web` is 100% non-interactive under `pnpm dev`. Spec: `proposed/S6-finding-0-csp-dev-carveout.md` |
 | `[ ]` | **Remove the dead `vat_onsite_pct` control** (`ItemEditor.tsx:319`) | **S4** | D-019. Backend reads it nowhere; an operator sets it and nothing happens |
-| `[ ]` | **`orders_kitchen_read` is unbounded** — bind by status, not time | **S2** | S7-02 finding. Kitchen currently reads every order ever placed |
-| `[ ]` | **`settings.draft` leaks to kitchen/driver** | **S2** | S7-02 finding, **verified by S0**: migration 32 line 23–24 revokes and re-grants columns for `anon` only, so `authenticated` keeps `draft` via `settings_staff_common_read` |
+| `[ ]` | **`orders_kitchen_read` is unbounded** — bind by status, not time | **S2** | S7-02 finding. **Raised 2026-10-16 by the owner's A2 choice**: a kitchen tablet with a live session can read every order ever placed. Do before the tablets go out |
+| `[ ]` | **`settings.draft` leaks to kitchen/driver** | **S2** | S7-02 finding, **verified by S0**: migration 32 line 23–24 revokes and re-grants columns for `anon` only, so `authenticated` keeps `draft` via `settings_staff_common_read`. **Raised by A2** — unpublished site content readable from the kitchen tablet |
 | `[ ]` | The two tests titled "non-staff" only exercise `anon()` — the real regression test does not exist | **S7/S6** | S7-02 finding. A named test that does not test the named thing is worse than no test |
 | `[ ]` | **The live-RLS-sweep CI test silently skips every view** | **S7/S6** | S7-02 finding. A green test that exercises nothing — same class as the one above, and it is the sweep that is supposed to catch Finding-A regressions |
 | `[ ]` | HTTP-layer tests for the Edge Functions | **S2/S6** | the only open item of S7's payment proposal (task 6) — a coverage suggestion, never a defect |
@@ -43,7 +43,8 @@ QA and Security are **not** steps here; they are section F, continuous. Only thi
 
 | | # | What | Who | Blocked by |
 |---|---|---|---|---|
-| `[~]` | **1** | Agent runtime schema: registry, runs, claimable queue, logs, realtime, cost | **S2** | **issued as `S2-08-agent-runtime-schema.md`** — not greenfield: `automations`/`automation_runs` (migration 28) already cover the *marketing* half, so S2 extends rather than duplicates |
+| `[x]` | **1** | Agent runtime schema — shipped as migration 33 (#96/#97). S0 review: no defect found | **S2** | done 2026-10-16 |
+| `[~]` | **1b** | **`agent` role + grants + the approval state C1 left out** | **S2** | **issued as `S2-09-agent-role-and-approval-state.md`.** Migration 33 grants the claim/finish functions to `service_role` (lines 208, 263) and S7-03 ruled the orchestrator must never be `service_role` — so **C3 is blocked on this and nothing else** |
 | `[~]` | **2** | Privilege boundary for `apps/automation` | **S7** | **issued as `S7-03-automation-privilege-boundary.md`** — design-only ruling, parallel to 1 |
 | `[ ]` | 3 | Orchestrator skeleton + **Accounting agent** (#1) | S5 | 1 and 2 |
 | `[ ]` | 4 | Agent dashboards in the back-office (status/queue/logs, realtime) | S4 | 1 |
@@ -86,7 +87,9 @@ while the code that needs them is still being written.
 
 This does **not** force distributing the pair. Basic-auth is device-bound in practice: the browser caches it. So the owner enters the pair **once** on the kitchen tablet and on the driver's phone, and those people then use their own staff logins inside the app. Four roles work; two people know the secret. Known costs: the cache is lost to a site-data clear, a private window, and sometimes a browser update — each time the owner must re-enter it; and a lost device is a leaked pair, so it means rotation.
 
-**Owner has not yet confirmed which they want** — staged rollout (owner/operator only for now, kitchen and driver screens dormant) or the per-device setup above. S0 should not assume.
+**Owner chose A2 on 2026-10-16: per-device setup.** The owner enters the pair once on the kitchen tablet and the driver's phone; those people then use their own staff logins inside. Four roles work, two people know the secret.
+
+**This promotes B4 and B5 from theoretical to live exposure, and that is the main consequence of the choice.** While kitchen could not pass the outer gate at all, their reach was academic. Under A2 a kitchen tablet holds a working kitchen session, sits in a kitchen, is probably shared between shifts and probably stays logged in — so what a kitchen login can reach is now a real question with two known-wrong answers: `orders_kitchen_read` is unbounded (**every order ever placed**, readable from the kitchen tablet) and `settings.draft` leaks to kitchen/driver (**unpublished website content**, same place). Neither is catastrophic; both are now worth fixing before the tablets go out rather than after.
 
 ## E. Never started, and not in section C
 
