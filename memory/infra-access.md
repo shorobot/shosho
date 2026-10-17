@@ -22,6 +22,23 @@ Owner of this file: S0. S1 DevOps reads it before any server work. **No secrets 
 - Until something listens on :8200 the vhost returns 502 (expected).
 - Known issue: CF zone is SSL "Full", so CF hits origin :443 where the default vhost is hellfire-apex; our vhost is on :80. `https://shos.hellfiresol.com/` may currently serve the hellfire site. Fix is on the CF zone (owner) or a 443 block on origin (TETA+PI). Raised with owner by TETA+PI. Does not affect ssh / local dev.
 
+## Gated surfaces — index (usernames and locations only; NEVER a secret value)
+This section exists because the owner lost time on 2026-10-16 locked out of the back-office, trying
+`owner`, `operator` and `owner@shosho.test`. The username was correct nowhere we look day to day — it
+existed only in a commit message on TETA+PI's side. A username is not a secret; **not writing it down
+cost more than writing it down ever could.** The standing rule above is unchanged and absolute: no
+secret *values* in this file, ever.
+
+| Surface | Host | Username | Where the secret lives | Rotation |
+|---|---|---|---|---|
+| Back-office outer gate (nginx basic-auth) | `bo-shos.hellfiresol.com` | **`shos-bo`** | The owner's own key store — `0600`, written 2026-10-10, per TETA+PI. On the server only as a root-owned hash: `/etc/nginx/.htpasswd-shos-bo`, `0640 root:www-data`, unreadable by our `shos` user and not reversible | TETA+PI, on the owner's word. D-010 Option A (2026-10-16): basic-auth stays, pair held by two people |
+| Back-office staff logins (inside the app) | same | the four staff e-mails | `apps/backend/.staff-credentials.local` on the owner's machine — mode `600`, gitignored | `apps/backend/scripts/rotate-staging-passwords.mjs`; last run 2026-10-09 |
+
+Source: TETA+PI (`TTPI · 5 · devops`, session 5.19, `teta-pi/infra` PR #154) volunteered the username on
+2026-10-16 after the lockout, explicitly withholding the password. They now keep the same index on their
+side in `teta-pi/infra docs/access.md`. **Two people holding the pair is the owner's A2 choice** — the
+owner enters it per device (kitchen tablet, driver phone) so the other staff never learn it.
+
 ## Do NOT touch
 `/opt/tetapi`, `/etc/nginx`, `/var/www`, other homes, ports `127.0.0.1:5432 / 6379 / 8000–8099 / 8090 / 5433`. Attempts are logged.
 
