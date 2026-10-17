@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  actionsFor, applyFilters, avgPrepMinutes, cashToCollect, groupOrders, inProgressStats, isPreorderPending, kitchenLoad, kpis,
-  matchesSearch, timerFor, transitionAllowed, upsertOrder,
+  actionsFor, applyFilters, avgPrepMinutes, cancelReasonLabel, cashToCollect, effectiveVatPct, groupOrders, inProgressStats,
+  isPreorderPending, kitchenLoad, kpis, matchesSearch, needsCashConfirm, timerFor, transitionAllowed, upsertOrder,
 } from "@/lib/orders";
 import type { Order, OrderStatus } from "@/lib/types";
 import { dayKey, elapsedLabel, startOfDay, scheduleLabel } from "@/lib/time";
@@ -243,6 +243,76 @@ describe("status machine", () => {
   });
 });
 
+// S6-01 finding 2 (MED/HIGH): the operator board must ask before completing a cash order, and must
+// never default the answer — a silent "no" strands real revenue as pending forever, a silent "yes"
+// asserts revenue that may not exist. api-contracts §6.8.
+describe("cash confirmation (S6-01 finding 2)", () => {
+  it("needsCashConfirm is true only for an unsettled cash order reaching a terminal status", () => {
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "pending" }), "delivered")).toBe(true);
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "pending" }), "picked_up")).toBe(true);
+    // not a completion transition
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "pending" }), "preparing")).toBe(false);
+    // not cash
+    expect(needsCashConfirm(order({ payment_method: "card", payment_status: "pending" }), "delivered")).toBe(false);
+    // already settled — counter cash recorded at entry (§6.8 payment_recorded_by_staff), or refunded
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "paid" }), "delivered")).toBe(false);
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "authorized" }), "delivered")).toBe(false);
+    expect(needsCashConfirm(order({ payment_method: "cash", payment_status: "refunded" }), "delivered")).toBe(false);
+  });
+
+  it("the board's generic button carries a 'cash' dialog for a cash pickup, the only path a pickup has", () => {
+    const pickup = order({ status: "ready", type: "pickup", payment_method: "cash", payment_status: "pending" });
+    const actions = actionsFor(pickup, "operator");
+    expect(actions.map((a) => a.id)).toEqual(["handed_out", "cancel"]);
+    expect(actions.find((a) => a.id === "handed_out")?.dialog).toBe("cash");
+  });
+
+  it("a non-cash order never grows the cash dialog", () => {
+    const pickup = order({ status: "ready", type: "pickup", payment_method: "card", payment_status: "authorized" });
+    expect(actionsFor(pickup, "operator").find((a) => a.id === "handed_out")?.dialog).toBeUndefined();
+
+    const delivery = order({ status: "out_for_delivery", type: "delivery", payment_method: "card", payment_status: "authorized" });
+    expect(actionsFor(delivery, "operator").find((a) => a.id === "delivered")?.dialog).toBeUndefined();
+  });
+
+  it("a cash delivery marked 'delivered' by the operator (the driver's own path is correct already) also gets the dialog", () => {
+    const delivery = order({ status: "out_for_delivery", type: "delivery", payment_method: "cash", payment_status: "pending" });
+    expect(actionsFor(delivery, "operator").find((a) => a.id === "delivered")?.dialog).toBe("cash");
+  });
+});
+
+// S6-01 finding 3 (MEDIUM): the VAT label must show the rate the order was actually charged at —
+// 7% delivery vs 19% on-site (menu_items.vat_delivery_pct/vat_onsite_pct) — not a hardcoded 7%.
+describe("effectiveVatPct (S6-01 finding 3)", () => {
+  it("derives 7% for a standard delivery order (the fixture's own numbers)", () => {
+    // fixture: subtotal 3450, discount 0, vat 226 → 226 / (3450-226) = 7.009…% → snaps to 7
+    expect(effectiveVatPct(order())).toBe(7);
+  });
+
+  it("derives 19% for a pickup order's own numbers", () => {
+    // 19% inclusive on a 2000-cent net base: vat = round(2000 * 0.19) = 380, gross = 2380
+    const o = order({ subtotal_cents: 2380, discount_cents: 0, vat_cents: 380 });
+    expect(effectiveVatPct(o)).toBe(19);
+  });
+
+  it("accounts for a discount sitting inside the VAT base", () => {
+    // 1000 gross @ 19% incl → net 840.34, vat 159.66; a 200-cent discount scales the vat
+    // proportionally in quote_order's formula: vat' = vat * (subtotal-discount)/subtotal
+    const subtotal = 1000;
+    const discount = 200;
+    const vat = Math.round((((subtotal * 19) / 119) * (subtotal - discount)) / subtotal);
+    const o = order({ subtotal_cents: subtotal, discount_cents: discount, vat_cents: vat });
+    expect(effectiveVatPct(o)).toBe(19);
+  });
+
+  it("returns null rather than a fabricated rate when there is nothing to invert", () => {
+    expect(effectiveVatPct(order({ subtotal_cents: 1000, discount_cents: 0, vat_cents: 0 }))).toBeNull();
+    expect(effectiveVatPct(order({ subtotal_cents: 1000, discount_cents: 1000, vat_cents: 0 }))).toBeNull();
+    // discount wipes out the whole base but vat_cents (stale/corrupt) is still positive
+    expect(effectiveVatPct(order({ subtotal_cents: 500, discount_cents: 500, vat_cents: 10 }))).toBeNull();
+  });
+});
+
 describe("misc", () => {
   it("cash to collect only for unpaid cash", () => {
     expect(cashToCollect(order({ payment_method: "cash", payment_status: "pending", total_cents: 2740 }))).toBe(2740);
@@ -276,5 +346,29 @@ describe("misc", () => {
     const s = toCsv([["Nr", "Kunde"], [2418, 'Anna "W"; Weber']]);
     expect(s.startsWith("﻿")).toBe(true);
     expect(s).toContain('2418;"Anna ""W""; Weber"');
+  });
+});
+
+// S6-01 finding 5 (LOW/INFO): cancel_reason stores a stable code now, translated at render — not
+// the label `CancelDialog.tsx` used to send with `t(reason)`, which froze whichever language the
+// operator's UI happened to be in forever into a column every surface renders verbatim.
+describe("cancelReasonLabel (S6-01 finding 5)", () => {
+  const de = (k: string) => ({ "cancel.reason.customer": "Kunde hat storniert", "cancel.reason.other": "Sonstiges" })[k] ?? k;
+  const en = (k: string) => ({ "cancel.reason.customer": "Customer cancelled", "cancel.reason.other": "Other" })[k] ?? k;
+
+  it("renders a stored code in whichever language the viewer is in", () => {
+    expect(cancelReasonLabel("customer", de)).toBe("Kunde hat storniert");
+    expect(cancelReasonLabel("customer", en)).toBe("Customer cancelled");
+  });
+
+  it("passes a legacy pre-fix row (an already-translated sentence) through unchanged, not through t()", () => {
+    const legacy = "Kunde hat storniert"; // written by the old CancelDialog, not a code
+    expect(cancelReasonLabel(legacy, de)).toBe(legacy);
+    expect(cancelReasonLabel(legacy, en)).toBe(legacy); // still German — it was never a code to translate
+  });
+
+  it("null/undefined stay null", () => {
+    expect(cancelReasonLabel(null, de)).toBeNull();
+    expect(cancelReasonLabel(undefined, de)).toBeNull();
   });
 });
