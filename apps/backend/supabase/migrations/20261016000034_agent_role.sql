@@ -79,9 +79,17 @@ revoke all on public.agent_tasks from agent;
 -- `finished_at` itself is deliberately NOT in the column grant: only `finish_agent_run` (security
 -- definer, below) closes a run, so the run-to-task reconciliation it performs can never be skipped
 -- by a direct UPDATE that sets `finished_at` without also touching `agent_tasks`.
+-- SELECT is also granted: `INSERT ... RETURNING id` (how the orchestrator learns the id of the run
+-- it just opened, to log and finish against) needs SELECT on the returned columns, not just INSERT
+-- on the written ones — a plain `INSERT` grant alone is not sufficient for that pattern. Scoped by
+-- RLS the same way as every other `agent` policy (`current_user = 'agent'`); since one shared role
+-- serves every D-020 agent, this is "all of `agent`'s own rows", same posture as the registry.
 revoke all on public.agent_runs from agent;
+grant select on public.agent_runs to agent;
 grant insert (task_id, agent_id, customer_id) on public.agent_runs to agent;
 grant update (conclusion, error, input_tokens, output_tokens, cost_usd, result) on public.agent_runs to agent;
+create policy agent_runs_agent_read on public.agent_runs
+  for select to agent using (current_user = 'agent');
 create policy agent_runs_agent_insert on public.agent_runs
   for insert to agent with check (current_user = 'agent');
 create policy agent_runs_agent_update on public.agent_runs
@@ -89,9 +97,14 @@ create policy agent_runs_agent_update on public.agent_runs
 
 ---------------------------------------------------------------- agent_run_logs — §9.1, §9.4
 -- INSERT only, ever. "An append-only log the writer can edit is not an audit trail" (§9.1) — no
--- UPDATE/DELETE grant exists for `agent` here or anywhere else in this file.
+-- UPDATE/DELETE grant exists for `agent` here or anywhere else in this file. SELECT is granted for
+-- the same `INSERT ... RETURNING` reason as agent_runs above — it does not weaken "append-only":
+-- reading a log line back is not the same capability as editing or deleting one.
 revoke all on public.agent_run_logs from agent;
+grant select on public.agent_run_logs to agent;
 grant insert (run_id, level, message) on public.agent_run_logs to agent;
+create policy agent_run_logs_agent_read on public.agent_run_logs
+  for select to agent using (current_user = 'agent');
 create policy agent_run_logs_agent_insert on public.agent_run_logs
   for insert to agent with check (current_user = 'agent');
 
@@ -211,8 +224,14 @@ create policy agent_outputs_staff_read on public.agent_outputs
 
 -- Column grant excludes status/reviewer_id/reviewed_at/review_note on purpose: an INSERT that
 -- tries to name any of them is refused by Postgres at the column-privilege check, before RLS is
--- even evaluated, so `agent` cannot land its own output pre-approved.
+-- even evaluated, so `agent` cannot land its own output pre-approved. SELECT is granted in full
+-- (not column-restricted): `INSERT ... RETURNING` needs it on whatever it returns, and reading
+-- `status`/`reviewer_id` back — e.g. to notice an earlier output was rejected — is not the
+-- capability §9.6 withholds; only writing those columns is.
+grant select on public.agent_outputs to agent;
 grant insert (run_id, agent_id, kind, payload) on public.agent_outputs to agent;
+create policy agent_outputs_agent_read on public.agent_outputs
+  for select to agent using (current_user = 'agent');
 create policy agent_outputs_agent_insert on public.agent_outputs
   for insert to agent with check (current_user = 'agent');
 
