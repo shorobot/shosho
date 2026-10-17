@@ -33,7 +33,8 @@ function timeline(o: TrackedOrder): Step[] {
 
 const PAY: Record<string, string> = { card: "Card", apple_pay: "Apple Pay", google_pay: "Google Pay", paypal: "PayPal", bitcoin: "Bitcoin", cash: "Cash on delivery" };
 
-// /order/[token] — rpc('get_order_by_token'), polled every 15 s until a final status.
+// /order/[token] — rpc('get_order_by_token'), kept live by a realtime broadcast on order:<token>
+// (api-contracts §3/§5.6) with a 15 s poll as the documented fallback, until a final status.
 export function TrackingClient({ token }: { token: string }) {
   const { settings } = useCatalog();
   const [order, setOrder] = useState<TrackedOrder | null | undefined>(undefined);
@@ -56,6 +57,35 @@ export function TrackingClient({ token }: { token: string }) {
     void load();
   }, [load]);
 
+  // Realtime (api-contracts §3/§5.6): the DB broadcasts on order:<token> on every meaningful change;
+  // re-fetch on each message rather than trusting the payload. Subscribed once per token/mount —
+  // deliberately NOT depending on `order`, which would tear the channel down and rejoin it on every
+  // single poll tick or broadcast-triggered reload. `getApi()` itself isn't a dependency either: it
+  // is a plain top-level function, so its identity never changes across renders.
+  useEffect(() => {
+    let disposed = false;
+    let unsubscribe: (() => void) | null = null;
+    void getApi().then((api) => {
+      if (disposed) return;
+      unsubscribe = api.subscribeToOrder(token, () => void load());
+    });
+    // A background tab's timers (including the poll below) can be throttled far past 15 s by the
+    // browser — the realtime socket itself usually survives or reconnects on its own, but this
+    // forces an immediate catch-up the moment the guest actually looks at the page again, which is
+    // the scenario this boot's "left open for hours" concern is really about.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe?.();
+    };
+  }, [token, load]);
+
+  // 15 s poll — the documented fallback (§3), not the primary path. Kept running regardless of the
+  // realtime channel's own state: a dropped or never-connecting socket degrades quietly to this.
   useEffect(() => {
     if (!order || FINAL.includes(order.status)) return;
     const t = setInterval(() => void load(), POLL_MS);
@@ -170,7 +200,7 @@ export function TrackingClient({ token }: { token: string }) {
         </div>
       </div>
       {error && <p className="text-center text-[12px] text-muted" role="status">Connection hiccup — showing the last known status.</p>}
-      {!final && <p className="text-center text-[12px] text-muted">This page refreshes every 15 seconds.</p>}
+      {!final && <p className="text-center text-[12px] text-muted">This page updates automatically — no need to refresh.</p>}
     </div>
   );
 }

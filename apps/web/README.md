@@ -9,14 +9,14 @@ DE legal pages. Next.js 15 (App Router, TypeScript strict), Tailwind v4 with the
 apps/web/
 ├── app/                    routes: / · menu/[slug] · checkout · order · order/[token] · about · impressum · agb · datenschutz · widerruf
 ├── components/ui/          design system: Pill (the only button), CategoryChip, ProductCard, QtyStepper, Logo (+ 1.3 s animation), EmptyState, Decor
-├── components/site/        Header, Footer (DE), CartPanel, CartLines/Totals, PromoField, StatusBanners, MobileBar, CookieBanner, Maintenance
+├── components/site/        Header, Footer (DE), CartPanel, CartLines/Totals, PromoField, StatusBanners, BannerSlot, MobileBar, CookieBanner, Maintenance
 ├── components/home|product|checkout|order|legal
 ├── middleware.ts           security headers on every response (CSP with a nonce, HSTS, …) — see lib/csp.ts
-├── lib/api.ts              the seam: ShoshoApi (getCatalog · quoteOrder · placeOrder · getOrderByToken · recordOrderAttempt)
+├── lib/api.ts              the seam: ShoshoApi (getCatalog · quoteOrder · placeOrder · getOrderByToken · subscribeToOrder · recordOrderAttempt)
 ├── lib/api-supabase.ts     real implementation (default)
 ├── lib/api-mock.ts         in-memory seed + faithful quote/place/track (NEXT_PUBLIC_API=mock)
 ├── lib/cart.tsx            cart state (localStorage) + debounced quote_order — totals are always the server's
-├── lib/photos.ts           menu photos: bucket path → public URL (see "Photos" below)
+├── lib/photos.ts           menu photos + banner images: bucket path → public URL (see "Photos" below)
 ├── lib/attempts.ts         record_order_attempt: session id, dedupe, payload (see "Funnel" below)
 ├── lib/csp.ts              the Content-Security-Policy and the other security headers
 ├── lib/hours.ts            opening hours → open/closed, next opening, pre-order slots (Europe/Berlin)
@@ -80,6 +80,78 @@ If the project is unreachable, unconfigured, or the tables don't exist yet, `get
   the SKU suffix (`menu_items` has no slug column).
 - Payment: v1 has no provider — every method submits `payment_status: 'pending'`; "Payment is captured
   on delivery confirmation" is shown as in the design.
+
+## Tracking (`/order/<token>`) — realtime + poll (S3-03, api-contracts §3 / §5.6)
+
+Until S3-03, `components/order/TrackingClient.tsx` only polled `get_order_by_token` every 15 s — the
+DB side (migration 16, S2-02) had been broadcasting on `order:<token>` since September and nothing on
+this side ever subscribed (QA finding, `memory/boots/proposed/S6-02-S3-guest-tracking-realtime.md`).
+Both paths run together now:
+
+```
+orders row changes (status, payment_status, promised_minutes, scheduled_for, total_cents, driver_id)
+  → trigger orders_broadcast_tracking() → realtime.send(..., 'order_updated', 'order:<token>', true)
+  → ShoshoApi.subscribeToOrder(token, onUpdate)   [lib/api-supabase.ts — real]
+       sb.channel(`order:${token}`, { config: { private: true } })
+         .on('broadcast', { event: 'order_updated' }, onUpdate)
+  → onUpdate re-fetches get_order_by_token (the broadcast payload itself carries no PII)
+```
+
+- **The 15 s poll is still there, unconditionally** — it does not turn off when the realtime channel
+  connects. §3's own words: "a dropped socket must not freeze the page." A `CHANNEL_ERROR`/`TIMED_OUT`
+  on the channel is logged (`console.warn`) and otherwise ignored — **never** shown to the guest, since
+  `@supabase/realtime-js` retries with its own stepped backoff and rejoins on its own; nothing here
+  needs to force that. Verified: the anon client authorises the join with the anon key alone (no
+  signed-in session — `_getAccessToken()` falls back to `supabaseKey`, so migration 16's
+  `realtime.messages` policy for `anon`/`authenticated` on `order:%` topics covers a guest exactly as
+  designed), and stayed `joined`/connected for 45 s straight against staging in this boot's testing.
+- **Token-scoped only.** The channel name is always `order:${token}` for *this* order — never a
+  table-wide or wildcard subscription. That is the whole security property of the design (§3): the
+  token is the capability, same as `get_order_by_token` itself.
+- **Long-open tabs.** A backgrounded tab's timers (poll included) can be throttled by the browser far
+  past 15 s; a `visibilitychange` listener forces an immediate re-fetch the moment the guest looks at
+  the tab again, independent of whatever state the realtime channel is in.
+- Unsubscribed on unmount (`removeChannel`) and subscribed exactly once per token — the effect's
+  dependency is `[token, load]`, not `[order, ...]`, so a broadcast-triggered re-render does not tear
+  down and rejoin the channel on every update.
+- The mock layer (`NEXT_PUBLIC_API=mock`) has no realtime; `subscribeToOrder` is a no-op there and the
+  poll alone drives the tracking demo.
+- Footer copy changed from "This page refreshes every 15 seconds" (stated as the design) to "This page
+  updates automatically — no need to refresh" (true after this boot, and true regardless of which path
+  is currently doing the work).
+
+## Banners (`banners_live`, api-contracts §8.6)
+
+Four slots — `home_hero`, `home_strip`, `product`, `checkout` — all served from one query in
+`getCatalog()` (`Catalog.banners`), sorted by slot then `sort`. The storefront **never** queries the
+`banners` base table: `anon`'s grant on it is revoked outright, and `banners_live`'s own column list
+never includes `draft`/`active`/`valid_from`/`valid_to` — there is nothing to leak even by mistake.
+
+- `components/site/BannerSlot.tsx` renders `home_strip` / `product` / `checkout`: a flat list of cards
+  (image optional, title/subtitle/CTA), sorted defensively by `sort` again on the client (it does not
+  trust the upstream order to survive the per-slot filter) — and renders **nothing** for an empty slot.
+  Zero banners is the normal case (a brand-new site, or between campaigns), not an error state.
+- `components/home/Hero.tsx` is different on purpose: `home_hero` **keeps the original static hero**
+  as its fallback rather than rendering a gap, because the hero is the first thing on the page and
+  "nothing" there reads as broken, not deliberate. A `home_hero` banner (lowest `sort` if more than one
+  is somehow active) replaces the copy/image/CTA; the live "from … €" price stays either way.
+- **English only today.** `title_de`/`subtitle_de`/`cta_label_de` are read into `Banner` and carried all
+  the way to the components — nothing is discarded — but the storefront has no language toggle yet
+  (a separate, later boot; D-016/D-017 territory), and every other string on the site is English, so
+  the EN fields are what renders. The DE fields are ready for that toggle on the data side.
+- **Images.** `image_path` is resolved to an absolute URL once, in the data layer
+  (`lib/photos.ts`'s `resolveBannerImage`, bucket `site`), the same convention as `MenuItem.photos`
+  (bucket `menu`) — no component touches storage or env. `next.config.ts`'s `remotePatterns` already
+  covers `/storage/v1/object/public/**` on any `*.supabase.co` host (and is inert anyway while
+  `images.unoptimized` is on — see "Photos" below), so the only real lever is CSP `img-src`, and that
+  is **already origin-scoped**, not path-scoped: `lib/csp.ts` allows the whole Supabase project origin
+  for both `menu` and `site`, since both buckets live under the same origin's `/storage/v1/...` path.
+  No CSP change was needed for banners — `tests/csp.test.tsx` already asserts origin-level coverage.
+- Not verified end to end against staging: no banner existed on staging to test against at write time
+  (it needs the owner to create one via `/website` in the back-office — S4-04 shipped that screen).
+  Covered instead by `tests/banners.test.tsx` (slot filtering, `sort`, the DE/EN choice, the CTA
+  label+href pairing, and the home_hero fallback) plus the live `banners_live`/`banners` RLS probe
+  against staging (anon: `[]` 200 from `banners_live`, `42501` from `banners` itself).
 
 ## Photos
 
@@ -160,7 +232,8 @@ curl -sI https://shos.hellfiresol.com/ | grep -iE 'content-security-policy|stric
 ## Tests
 
 - `pnpm test` — vitest (jsdom): mock quote semantics, cart reducer, hours/slots, slug, problem copy,
-  the photo URL resolver, the attempt-reporting trigger logic, and the security headers.
+  the photo/banner URL resolvers, the attempt-reporting trigger logic, the banner slot/sort/fallback
+  rendering, and the security headers.
 - `pnpm test:integration` — the same contract through `lib/api-supabase.ts` against a running Supabase
   (`NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY` set; writes a test order — never against production).
 - `pnpm exec playwright install chromium && pnpm test:e2e` — smoke flow menu → product → checkout →

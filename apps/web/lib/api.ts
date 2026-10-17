@@ -12,6 +12,14 @@ export interface ShoshoApi {
   placeOrder(payload: PlaceOrderPayload): Promise<PlaceOrderResult>;
   /** `rpc('get_order_by_token')` — null for an unknown token. */
   getOrderByToken(token: string): Promise<TrackedOrder | null>;
+  /**
+   * Realtime broadcast on `order:<token>` (api-contracts §3/§5.6) — fires `onUpdate` on every
+   * meaningful change so the caller can re-fetch. The caller keeps polling as the documented
+   * fallback; this is the fast path, not a replacement. Returns an unsubscribe function. The mock
+   * layer has no realtime, so it is a no-op there — the poll alone drives tracking under
+   * NEXT_PUBLIC_API=mock.
+   */
+  subscribeToOrder(token: string, onUpdate: () => void): () => void;
   /** `rpc('record_order_attempt')` — funnel telemetry (§1.7). Never throws: a lost row is not the guest's problem. */
   recordOrderAttempt(payload: OrderAttemptPayload): Promise<void>;
 }

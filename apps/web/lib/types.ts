@@ -106,6 +106,20 @@ export type PublicSettings = {
   kitchen_status: KitchenStatus | null;
 };
 
+export type BannerSlot = Enums["banner_slot"];
+
+/**
+ * Public banner surface (view `banners_live`, api-contracts §8.6) — active, in-window rows only;
+ * `draft`, `active`, `valid_from`/`valid_to` are never selected by anon, so they are not here either.
+ * `image_path` arrives already resolved to an absolute URL (or null — a banner may have no image),
+ * same convention as `MenuItem.photos`: the data layer resolves it once (lib/photos.ts), so no
+ * component needs storage or env access.
+ */
+export type Banner = Pick<
+  Tables["banners"]["Row"],
+  "id" | "slot" | "title_de" | "title_en" | "subtitle_de" | "subtitle_en" | "cta_label_de" | "cta_label_en" | "cta_href" | "sort"
+> & { image_path: string | null };
+
 /** Everything the storefront needs to render — one server round-trip, cached. */
 export type Catalog = {
   categories: MenuCategory[];
@@ -113,6 +127,8 @@ export type Catalog = {
   itemOptionGroups: ItemOptionGroups[];
   zones: DeliveryZone[];
   settings: PublicSettings;
+  /** `banners_live`, sorted by slot then sort (api-contracts §8.6) — empty is the normal case. */
+  banners: Banner[];
   /** true when the data layer answered; false = unconfigured / unreachable → render empty states. */
   online: boolean;
 };
