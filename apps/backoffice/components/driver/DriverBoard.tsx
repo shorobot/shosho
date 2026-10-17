@@ -1,13 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { ConnectionBanner } from "@/components/orders/Banners";
+import { CashDialog } from "@/components/orders/CashDialog";
 import { useOrderAction } from "@/components/orders/useOrderAction";
 import { Badge } from "@/components/ui/Badge";
 import { Pill } from "@/components/ui/Pill";
 import { EmptyState, Spinner } from "@/components/ui/States";
 import { useI18n, type Key } from "@/lib/i18n";
 import { euro } from "@/lib/money";
-import { addressOf, cashToCollect, eta } from "@/lib/orders";
+import { addressOf, cashToCollect, eta, needsCashConfirm } from "@/lib/orders";
 import { useOrders } from "@/lib/store";
 import { hhmm } from "@/lib/time";
 import { Toasts } from "@/lib/toast";
@@ -57,11 +59,13 @@ export function DriverBoard({ me }: { me: Staff }) {
 function DriverCard({ order, lang }: { order: Order; lang: "de" | "en" }) {
   const { t } = useI18n();
   const { run, busy } = useOrderAction();
+  const [cashOpen, setCashOpen] = useState(false);
   const a = addressOf(order);
   const address = [a.street, a.postal_code, a.city].filter(Boolean).join(", ");
   const cash = cashToCollect(order);
   const at = eta(order);
   const canDeliver = order.status === "out_for_delivery";
+  const askCash = needsCashConfirm(order, "delivered");
 
   return (
     <article className="card flex flex-col gap-3 border-l-[5px] border-ok p-4">
@@ -99,10 +103,16 @@ function DriverCard({ order, lang }: { order: Order; lang: "de" | "en" }) {
         {cash ? t("driver.collect", { v: euro(cash, lang) }) : t("driver.paidAlready")}
       </div>
       {canDeliver && (
-        <Pill size="xl" className="w-full" disabled={busy === order.id} onClick={() => void run(order, "delivered", { cash_received: order.payment_method === "cash" })}>
+        <Pill
+          size="xl"
+          className="w-full"
+          disabled={busy === order.id}
+          onClick={() => (askCash ? setCashOpen(true) : void run(order, "delivered"))}
+        >
           {cash ? t("driver.deliveredCash") : t("action.delivered")}
         </Pill>
       )}
+      <CashDialog order={order} to="delivered" open={cashOpen} onClose={() => setCashOpen(false)} />
     </article>
   );
 }

@@ -1,7 +1,40 @@
 // Pure board logic: grouping into the design's four columns, search/filter chips, timers and the
 // transition → button mapping. No I/O here — everything is unit-tested in tests/orders.test.ts.
+import type { Key } from "@/lib/i18n";
 import type { Address, Order, OrderStatus, OrderType, PaymentStatus, StaffRole } from "@/lib/types";
 import { dayKey, minutesBetween } from "@/lib/time";
+
+/**
+ * `orders.cancel_reason` stable codes (S6-01 finding 5). `CancelDialog.tsx` used to send `t(reason)`
+ * — the label **already translated in whichever language the operator's UI is in** — so a DE
+ * cancellation wrote a German sentence into a column the EN-toggled detail view, the CSV export and
+ * every future report render verbatim, forever, in whatever language it happened to be cancelled in.
+ * The code travels; the label is looked up at render time with the viewer's own language.
+ */
+export const CANCEL_REASON_CODES = ["customer", "unreachable", "soldout", "out_of_zone", "payment", "other"] as const;
+export type CancelReasonCode = (typeof CANCEL_REASON_CODES)[number];
+
+export const CANCEL_REASON_KEY: Record<CancelReasonCode, Key> = {
+  customer: "cancel.reason.customer",
+  unreachable: "cancel.reason.unreachable",
+  soldout: "cancel.reason.soldout",
+  out_of_zone: "cancel.reason.outOfZone",
+  payment: "cancel.reason.payment",
+  other: "cancel.reason.other",
+};
+
+/**
+ * `orders.cancel_reason` → display text. Rows written before this fix hold an already-translated
+ * sentence rather than a code (no migration — nothing in the column shape changed, and backfilling
+ * a free-text sentence back into one of six codes would be a guess); such a value doesn't match any
+ * key and is shown as-is, which is exactly what it already was. A row written after the fix matches
+ * a key and renders in the viewer's own language regardless of which language cancelled it.
+ */
+export function cancelReasonLabel(code: string | null | undefined, t: (k: Key) => string): string | null {
+  if (!code) return null;
+  const key = (CANCEL_REASON_KEY as Record<string, Key>)[code];
+  return key ? t(key) : code;
+}
 
 export const ACTIVE: OrderStatus[] = ["new", "accepted", "preparing", "ready", "out_for_delivery"];
 export const DONE: OrderStatus[] = ["delivered", "picked_up", "cancelled", "refunded"];
@@ -221,12 +254,32 @@ export type Action = {
   to: OrderStatus;
   /** primary = the orange/ink pill; secondary = the soft pill */
   primary: boolean;
-  /** needs a dialog before the RPC (driver pick / cancel reason / refund confirm) */
-  dialog?: "driver" | "cancel" | "refund";
+  /** needs a dialog before the RPC (driver pick / cancel reason / refund confirm / cash in hand?) */
+  dialog?: "driver" | "cancel" | "refund" | "cash";
 };
 
+/**
+ * Completing a **cash** order has to ask whether the money is actually in hand, because the server
+ * reads `coalesce((payload->>'cash_received')::boolean, false)` — "absent" settles as **no**, leaving
+ * a genuinely-collected order `pending` forever (S6-01 finding 2; api-contracts §6.8 promises "the
+ * driver *or the operator on their behalf* confirms"). Pickup has no driver role at all, so the
+ * board's button is the only path to complete one.
+ *
+ * It must be a question, not a default, in **either** direction: defaulting to `false` loses real
+ * revenue silently, and defaulting to `true` asserts revenue that may not exist — the worse of the
+ * two, because it reconciles against nothing. Non-cash orders are not asked: the server's cash
+ * branch is `elsif o.payment_method = 'cash'`, so the flag is never read for them and a dialog there
+ * would be a click that changes nothing.
+ */
+export function needsCashConfirm(o: Pick<Order, "payment_method" | "payment_status">, to: OrderStatus): boolean {
+  if (to !== "delivered" && to !== "picked_up") return false;
+  if (o.payment_method !== "cash") return false;
+  // Already settled (counter cash recorded at entry, §6.8 `payment_recorded_by_staff`) — nothing to ask.
+  return !isPaid(o.payment_status) && o.payment_status !== "refunded";
+}
+
 /** Which buttons a role sees on a card in this status (api-contracts §6.1 + role gates in set_order_status). */
-export function actionsFor(o: Pick<Order, "status" | "type" | "payment_status" | "driver_id">, role: StaffRole, uid?: string): Action[] {
+export function actionsFor(o: Pick<Order, "status" | "type" | "payment_status" | "payment_method" | "driver_id">, role: StaffRole, uid?: string): Action[] {
   const all: Action[] = [];
   const s = o.status;
   if (s === "new") {
@@ -237,9 +290,9 @@ export function actionsFor(o: Pick<Order, "status" | "type" | "payment_status" |
     all.push({ id: "ready", to: "ready", primary: true });
   } else if (s === "ready") {
     if (o.type === "delivery") all.push({ id: "hand_to_driver", to: "out_for_delivery", primary: true, dialog: "driver" });
-    else all.push({ id: "handed_out", to: "picked_up", primary: true });
+    else all.push({ id: "handed_out", to: "picked_up", primary: true, dialog: needsCashConfirm(o, "picked_up") ? "cash" : undefined });
   } else if (s === "out_for_delivery") {
-    all.push({ id: "delivered", to: "delivered", primary: true });
+    all.push({ id: "delivered", to: "delivered", primary: true, dialog: needsCashConfirm(o, "delivered") ? "cash" : undefined });
   } else if ((s === "delivered" || s === "picked_up") && o.payment_status === "paid") {
     all.push({ id: "refund", to: "refunded", primary: false, dialog: "refund" });
   }
@@ -285,6 +338,33 @@ export function cashToCollect(o: Pick<Order, "payment_method" | "payment_status"
   if (o.payment_method !== "cash") return null;
   if (o.payment_status === "paid" || o.payment_status === "refunded") return null;
   return o.total_cents;
+}
+
+/**
+ * The VAT rate **this order was actually charged at**, derived from its own money columns.
+ *
+ * Not read from `menu_items`: the rate that matters is the one the server already baked into
+ * `orders.vat_cents`, and `order_items` carries no rate snapshot, so a lookup could disagree with
+ * the number rendered next to it (and fails outright for a since-deleted item). Deriving from the
+ * money is the one source that cannot contradict the figure on screen.
+ *
+ * The base is `subtotal − discount`: `quote_order` computes
+ * `round(Σ line_total × p/(100+p) × (subtotal−discount)/subtotal)`, so the delivery fee and the tip
+ * sit outside the VAT base. Inverting a single-rate order gives `p = 100 × vat / (base − vat)`.
+ *
+ * Returns `null` when there is nothing honest to say (no VAT, or a base that cannot be inverted) —
+ * the caller then shows the amount with no rate rather than a made-up one.
+ */
+export function effectiveVatPct(o: Pick<Order, "subtotal_cents" | "discount_cents" | "vat_cents">): number | null {
+  const gross = o.subtotal_cents - o.discount_cents;
+  const net = gross - o.vat_cents;
+  if (o.vat_cents <= 0 || gross <= 0 || net <= 0) return null;
+  const pct = (100 * o.vat_cents) / net;
+  // One `round()` over the whole order leaves sub-cent noise in the inversion, and German rates are
+  // whole numbers — so snap when we are plainly on one, and keep a decimal when a genuinely
+  // mixed-rate basket lands between two (items carry their own `vat_delivery_pct`).
+  const nearest = Math.round(pct);
+  return Math.abs(pct - nearest) <= 0.25 ? nearest : Math.round(pct * 10) / 10;
 }
 
 /** Merge a freshly fetched row into the list (or drop it when it's gone). */

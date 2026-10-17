@@ -125,6 +125,20 @@ export function supabaseSources(): { http: string; ws: string } {
   return { http: origin, ws: origin.replace(/^https:/, "wss:") };
 }
 
+/**
+ * S6-01 finding 0 (HIGH, filed to S4 in `S6-02-S4-cash-confirmation-vat-label-login-hardening.md`):
+ * `next dev`'s webpack HMR runtime evaluates chunks via `eval()`, which a CSP with no `'unsafe-eval'`
+ * blocks outright — not as a timing race, as total: the server-rendered HTML paints normally, but no
+ * client JavaScript executes at all, anywhere on the page. `next build`/`next start` (what
+ * `shosho-staging` actually runs) never calls `eval()`, so this is completely invisible in
+ * production — confirmed live on the deployed site in the same report. The carve-out is therefore
+ * scoped to non-production only; the production CSP below is byte-for-byte unchanged.
+ */
+function scriptSrc(nonce: string): string {
+  const base = `'self' 'nonce-${nonce}' 'strict-dynamic'`;
+  return process.env.NODE_ENV === "production" ? `script-src ${base}` : `script-src ${base} 'unsafe-eval'`;
+}
+
 export function contentSecurityPolicy(nonce: string, sb: { http: string; ws: string }, opts: { upgradeInsecure: boolean }): string {
   const directives = [
     "default-src 'self'",
@@ -134,7 +148,7 @@ export function contentSecurityPolicy(nonce: string, sb: { http: string; ws: str
     "frame-ancestors 'none'",
     "frame-src 'none'",
     "form-action 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
+    scriptSrc(nonce),
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self'",
     `img-src 'self' data: blob: ${sb.http}`,
