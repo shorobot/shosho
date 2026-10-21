@@ -5,7 +5,7 @@ and standing rules are in `decisions.md`; this file is only *what is left, in wh
 Status: `[ ]` not started · `[~]` in flight · `[x]` done · `[!]` blocked on someone outside the session ·
 `[—]` deliberately not doing.
 
-Last moved: 2026-10-17 (S0 — merge queue drained to zero; C1/C1b/C2 landed so **C3 and C4 are unblocked**; strict branch policy switched off to drain and MUST be switched back on)
+Last moved: 2026-10-21 (S0 — **C3 and C4 issued** as S5-01 and S4-06; strict branch policy confirmed back on; B4 re-verified still open; restart snapshot written into `state.md`)
 
 ---
 
@@ -21,8 +21,7 @@ Zero open PRs. `main` at `acddb39`. Merged in this pass: **#87** S3-03 · **#89*
   actions with a ~3 minute gap.
 - The ruleset's `strict_required_status_checks_policy` (require branches up to date) turns a queue of
   N memory-touching PRs into N sequential update→wait→merge cycles, because **every merge invalidates
-  every other PR.** It was switched off deliberately to drain this queue. **→ OWNER ACTION: switch it
-  back on** at https://github.com/shorobot/shosho/settings/rules/23652140 — Rules → `main-protection` →
+  every other PR.** It was switched off deliberately to drain this queue. **The owner switched it back on — confirmed `true` 2026-10-21.** Originally: at https://github.com/shorobot/shosho/settings/rules/23652140 — Rules → `main-protection` →
   Require status checks to pass → tick "Require branches to be up to date before merging". The queue is
   drained, so the reason for having it off is gone.
 - Conflict resolution across sibling reports is **not** one blanket rule. `memory/log.md` is append-only
@@ -39,7 +38,7 @@ Zero open PRs. `main` at `acddb39`. Merged in this pass: **#87** S3-03 · **#89*
 | `[x]` | Back-office CSP dev carve-out | S4 | done in #89 — `csp.ts:139`, prod byte-identical |
 | `[ ]` | **Guest-site CSP dev carve-out** — `apps/web/lib/csp.ts` still greps **0** for `unsafe-eval` on `main`, re-measured 2026-10-17 | **S3 or S4** | S6 finding 0, HIGH. `apps/web` is 100% non-interactive under `pnpm dev`; invisible in production. **S0 authorised S3 to add it inside #87 and S3 never returned, so #87 merged without it** — that was S0's call, taken because the realtime/banner work was complete and holding it hostage to a one-liner was worse. First item of whichever boot next touches `apps/web`. Spec: `proposed/S6-finding-0-csp-dev-carveout.md` |
 | `[ ]` | **Remove the dead `vat_onsite_pct` control** (`ItemEditor.tsx`) | **S4** | D-019. Backend reads it nowhere; an operator sets it and nothing happens. Still present on `main`, re-measured 2026-10-17 — **D-019 was ruled after S4-05's boot was issued, so S4 never knew about it** |
-| `[ ]` | **`orders_kitchen_read` is unbounded** — bind by status, not time | **S2** | S7-02 finding. **Raised 2026-10-16 by the owner's A2 choice**: a kitchen tablet with a live session can read every order ever placed. Do before the tablets go out |
+| `[ ]` | **`orders_kitchen_read` is unbounded** — bind by status, not time | **S2** | S7-02 finding, **re-verified open 2026-10-21**: still `using (public.is_staff('kitchen'))` with no row restriction, from migration 9, never superseded. **Raised by A2** — a kitchen tablet with a live session reads every order ever placed. Do before the tablets go out |
 | `[ ]` | **`settings.draft` leaks to kitchen/driver** | **S2** | S7-02 finding, **verified by S0**: migration 32 line 23–24 revokes and re-grants columns for `anon` only, so `authenticated` keeps `draft` via `settings_staff_common_read`. **Raised by A2** — unpublished site content readable from the kitchen tablet |
 | `[ ]` | The two tests titled "non-staff" only exercise `anon()` — the real regression test does not exist | **S7/S6** | S7-02 finding. A named test that does not test the named thing is worse than no test |
 | `[ ]` | **The live-RLS-sweep CI test silently skips every view** | **S7/S6** | S7-02 finding. A green test that exercises nothing — same class as the one above, and it is the sweep that is supposed to catch Finding-A regressions |
@@ -56,8 +55,8 @@ QA and Security are **not** steps here; they are section F, continuous. Only thi
 | `[x]` | **1** | Agent runtime schema — shipped as migration 33 (#96/#97). S0 review: no defect found | **S2** | done 2026-10-16 |
 | `[x]` | **1b** | `agent` role + grants + approval state — migration 34 (#101). S0 review: `nobypassrls nosuperuser nocreatedb nocreaterole noinherit`, no password in the repo, `service_role` **revoked** from both functions with the reasoning recorded, `agent_outputs` with `pending/approved/rejected` | **S2** | **issued as `S2-09-agent-role-and-approval-state.md`.** Migration 33 grants the claim/finish functions to `service_role` (lines 208, 263) and S7-03 ruled the orchestrator must never be `service_role` — so **C3 is blocked on this and nothing else** |
 | `[~]` | **2** | Privilege boundary for `apps/automation` | **S7** | **issued as `S7-03-automation-privilege-boundary.md`** — design-only ruling, parallel to 1 |
-| `[ ]` | **3** | Orchestrator skeleton + **Accounting agent** (#1) | **S5** | 🟢 **UNBLOCKED 2026-10-17** — C1, C1b and C2 all landed. Boundaries do not overlap C4, so it can run in parallel |
-| `[ ]` | **4** | Agent dashboards in the back-office (status/queue/logs, realtime) | **S4** | 🟢 **UNBLOCKED 2026-10-17** — migration 33 already added `agent_tasks`/`agent_runs`/`agent_run_logs` to the realtime publication (and deliberately not `agents`). Fold in B3, and B2 if the owner assigns it here |
+| `[~]` | **3** | Orchestrator skeleton + **Accounting agent** (#1) | **S5** | **ISSUED 2026-10-21 as `S5-01-orchestrator-accounting-agent.md`** — S5's first session ever. Verifies against a **local** stack only: the `agent` role has no password until C5, which waits on D3 |
+| `[~]` | **4** | Agent dashboards + **the human approval screen** | **S4** | **ISSUED 2026-10-21 as `S4-06-agent-dashboards.md`**, parallel to C3. Carries **B3**. `agent_outputs` and the three run tables are already in the realtime publication; `agents` deliberately is not. **B2 stays with S3** — `apps/web` is not S4's boundary |
 | `[!]` | 5 | Deploy surface: container, the two secrets, CI lane | S1 | 2 · **owner: Anthropic key** |
 | `[ ]` | 6 | **Grow agent** (#2) | S5 | 3 |
 | `[!]` | 7 | FastAPI endpoints for Lieferando / Wolt | S5 | 3 · **owner: platform API access** |
