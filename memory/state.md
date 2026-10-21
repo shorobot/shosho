@@ -1,28 +1,68 @@
 # STATE — current project state
 
 Maintained by S0 Orchestrator. Child sessions update ONLY their own row. Roster and ID format — `/memory/sessions.md`.
-Last update: 2026-10-15 (S0 — all four boots ran; #87/#88/#89 open and awaiting review; **the staging deploy chain is still skipping** → S1-09; S6's finding 0 still unfixed → re-filed as a proposal)
+Last update: 2026-10-21 (S0 — restart snapshot; S5-01 and S4-06 issued; `plan.md` is the authoritative open-items list)
 
-## SNAPSHOT — 2026-10-12, taken before a session restart
-Read this first; everything below it is the detail. Nothing here is a claim S0 has not measured.
+## SNAPSHOT — 2026-10-21, taken for a session restart
+Read this first; everything below it is detail, and some of that detail is older than this block.
+**Nothing here is a claim S0 has not measured.** `main` = `acddb39`. Authoritative companion:
+**`/memory/plan.md`** — the single tracked plan, with every open item and who owns it.
 
-**Live on staging.** Guest site `https://shos.hellfiresol.com/` (menu, cart, 3-step checkout, tracking). Back-office `https://bo-shos.hellfiresol.com/` — all **ten** sections now exist after S4-04: board, detail, history, kitchen, driver, Speisekarte (+items, options), Kunden, Profil, **Website CMS**, **Marketing**. Backend: 32 migrations, RLS, the order RPCs, payments, reports, campaigns/banners/publish.
+**Live on staging.** Guest site `https://shos.hellfiresol.com/` — menu, cart, 3-step checkout, tracking
+that now **subscribes to realtime** (S3-03) with the 15 s poll kept as fallback, plus `banners_live`
+rendered in all four slots. Back-office `https://bo-shos.hellfiresol.com/` — **all ten sections**:
+board, detail, history, kitchen, driver, Speisekarte, Kunden, Profil, Website CMS, Marketing, plus
+**Berichte and Einstellungen** (S4-05). Backend: **34 migrations**, RLS, order RPCs, payments, reports,
+campaigns/banners/publish, and the **agent runtime** (33) + the **`agent` role and approval state** (34).
+Deploy chain verified working end to end (S1-09, after S0 broke it — see below).
 
-**Access to the back-office, exactly.** URL works; `http`→`https` redirect scoped to that host; gate challenges; app healthy behind it; **all four rotated staff logins verified working by the owner 2026-10-11**. The one missing piece is **TETA+PI's basic-auth plaintext** — on the server only as a root-owned hash (`/etc/nginx/.htpasswd-shos-bo`, `0640 root:www-data`), unreadable by our `shos` user and not reversible. **Only TETA+PI can supply it** → S1-08.
+**Back-office access: SOLVED.** Username **`shos-bo`** (recorded in `memory/infra-access.md`'s
+gated-surfaces index; no password there, ever). The pair was rotated twice on 2026-10-16 by TETA+PI —
+once for staleness, once because they exposed the replacement in their own transcript and rotated on
+noticing — and the current pair is live, verified, and **held by the owner**. The owner chose **Option A**
+(basic-auth stays, two holders) over Cloudflare Access, and **A2** for rollout: they enter the pair
+**per device** (kitchen tablet, driver phone), so all four roles work while two people know the secret.
 
-**Never started.** S5 Automation (`apps/automation` is an empty directory, so campaigns can be *created* and nothing can *send* them) · push transport (no `push_subscriptions`, no VAPID, no service worker) · customer accounts / cabinet / bonuses (queued under D-016/D-017) · **any production environment** — `deploy-prod.yml` exists but there is no host, no prod Supabase project, no `PROD_*` secrets.
+**Automation: schema and boundary done, nothing runs yet.** `apps/automation` still holds only
+`.env.example` and `.gitkeep`. S2-08 built the runtime (`agents`, `agent_tasks`, `agent_runs`,
+`agent_run_logs`, `claim_agent_tasks`, `finish_agent_run`, realtime on the three live tables). S7-03 ruled
+the privilege boundary (`docs/security.md` §9): a dedicated **non-`BYPASSRLS` `agent` role, never
+`service_role`**, connecting via `AUTOMATION_DATABASE_URL` with no JWT — so `is_staff()` is structurally
+false for it and every policy it needs is keyed on `current_user`. S2-09 implemented that role, **revoked
+`service_role`** from both functions, and added `agent_outputs` + `review_agent_output()` so an agent
+produces a **candidate, never a fact**. **S5-01 (orchestrator + Accounting agent) and S4-06 (dashboards +
+the human approval screen) were issued 2026-10-21 and are the first two things to run.**
 
-**Unfixed and unrouted: S6's finding 0, HIGH.** Both apps' CSP (`apps/web/lib/csp.ts:53`, `apps/backoffice/lib/csp.ts:137`) emit `script-src` with no `'unsafe-eval'` and no `NODE_ENV` branch, so under `pnpm dev` **no client JavaScript executes in either app** — HTML paints, nothing hydrates, a click does nothing, no console error. Invisible under `next build`, which is what staging runs. S6 filed it first in both routing files; **S0's boots put it in both sessions' reading and neither's task list**, so both sessions ran without it (verified 10-15: zero `unsafe-eval` on `main`, `s3-03`, `s4-05`). Re-filed as `proposed/S6-finding-0-csp-dev-carveout.md` — one line each, S3 owns the web file, S4 the back-office one. **It bit the two boots that could least afford it:** a click-driven cash dialog and a realtime subscription, both pure client JS — so any "verified locally" claim about interactive behaviour in #87 or #89 was made against a page whose JS never ran.
+**Never started.** Push transport (no `push_subscriptions`, no VAPID, no service worker) · customer
+accounts / cabinet / bonuses (D-016/D-017) · **any production environment** — `deploy-prod.yml` exists,
+there is no host, no prod Supabase project, no `PROD_*` secrets · Sales, Warehouse, Grow and Quality
+agents · the Lieferando/Wolt FastAPI surface.
 
-**Broken right now, and it is S0's doing — this gates the other PRs.** Merging #77 put an intentionally-failing `e2e` job *inside* the `CI` workflow. S6 kept it out of the `ci` gate's `needs`, so PRs stay mergeable — but `Migrate staging` gates on `workflow_run.conclusion == 'success'`, and a **run's** conclusion counts every job, not the gate job. Measured: `CI 38227747259` FAILURE → `Migrate 38229595996` SKIPPED → `Deploy 38229602837` SKIPPED (10-12 09:23Z), against `CI → Migrate → Deploy` all green the night before (`38180213644 / 38180402557 / 38180450228`). Still the live state on 2026-10-15 — nothing has pushed to `main` since. **It will not heal:** S6's last four runs held at 15 passed / 16 failed and only four of those are routed. **Consequence for sequencing: merging #87 or #89 now lands their code on `main` and deploys nothing**, so S3-03's required staging verification and S4-05's real-order cash proof both remain impossible. Fix first — **S1-09**, move `e2e` to its own workflow file, explicitly *not* `continue-on-error`, which would report green over 16 real failures.
+**Built, never exercised.** The whole Stripe path. **No live card payment has ever run.** `report_payments`
+is non-zero only from **cash** orders left by sessions' staging walk-throughs — the earlier flat claim
+"no live payment has ever run" was imprecise and is corrected here.
 
-**Built, never exercised.** The whole Stripe path. **No live payment has ever run**, so `report_payments` reads zero until owner actions 2–3.
+**Open and owned, measured 2026-10-21 (full list in `plan.md`).** **B2** — `apps/web/lib/csp.ts` greps **0**
+for `unsafe-eval`, so the guest site is 100 % non-interactive under `pnpm dev`; S0 authorised S3 to fix it
+inside #87, S3 never returned, and S0 merged without it. **B3** — the dead `vat_onsite_pct` control is
+still in the menu editor; it is in S4-06. **B4** — `orders_kitchen_read` is still
+`using (public.is_staff('kitchen'))`, unconditional since migration 9, so a kitchen tablet can read every
+order ever placed. **B5** — `settings.draft` reaches kitchen/driver because migration 32 narrowed only
+`anon`. **B4 and B5 stopped being theoretical when the owner chose A2**, because a kitchen tablet now
+holds a live kitchen session in a kitchen. Both are S2's.
 
-**Sessions.** All four issued boots ran. **Three PRs open since 2026-10-12, all `MERGEABLE/UNSTABLE`** (unstable = the advisory `e2e`, by design): **#89** S4-05 (+3152/-44, 47 files) · **#88** S1-08 (+16/-1) · **#87** S3-03 (+650/-23, 18 files). **S7-02** has branch `s7-02` and no PR. **#77 merged 09:05Z 2026-10-12** (`2bef358`, true merge commit) — all 21 `apps/e2e` files on `main`. Both S4-05 and S3-03 branched *before* that merge, so neither could read the spec its boot named as its oracle; review their work against the specs, not against their reports. **S1-09 issued 2026-10-15** (unbreak the deploy chain). S2 idle, no longer blocked by #77 (D-018). S5 never started.
+**Owner's open actions, by lead time (not by importance).** **D1 Meta app + Business verification +
+Messaging permissions** — the longest lead time in the whole plan and its code is last, so it should start
+first. **D2 Lieferando/Wolt API access.** **D3 Anthropic API key** — gates S1's deploy surface (C5), which
+gates nothing else, so S5 can build without it. **D4 SMTP** (D-017). **D5/D6 the two Stripe secrets.**
+**D13** — give TETA+PI the word on `proxy_set_header X-Forwarded-For $remote_addr;`: nothing is
+exploitable today (measured: zero `x-forwarded-for`/`x-real-ip` in the repo, zero IP columns in 34
+migrations), but D-018's accepted `place_order` throttle is the most likely future consumer.
 
-**Owner-only, in priority order.** (0) choose an SMTP provider — D-017, email OTP is unusable without it; (1b) get the basic-auth plaintext from TETA+PI; (2–3) the two Stripe secrets + webhook; (6b) Cloudflare Access, which would retire 1b permanently; then the low/cosmetic ones.
-
-**Four open product findings from S6-01**, routed and detailed below: the tracking page never subscribes to realtime (S3-03), the operator board never confirms cash so a collected cash order stays `pending` forever (S4-05, **the one to fix first**), a hardcoded 7% VAT label, and a hydration race that put a password in a URL.
+**Sessions.** S1 · S2 · S3 · S4 · S6 · S7 have all run and reported; **S5 has never run** and S5-01 is its
+first boot. **S5-01 and S4-06 issued 2026-10-21, not yet launched.** Open PRs: **#103** and **#104**, both
+S0's, both green. `strict_required_status_checks_policy` is back **on** after being switched off to drain
+a six-deep queue on 2026-10-17.
 
 ## Phase
 Phase 3 — hardening and integration. All four layers are on staging. **The back-office is finished except for one credential:** the hostname, origin certificate, scoped https redirect and app security headers are all done and independently verified, and all four rotated staff logins were confirmed working by the owner on 2026-10-11 — but the outer gate's password exists only as a root-owned hash on the server, so **nobody can get in yet**. That one item is S1-08. **Running:** S4-04 (Website CMS + Marketing) ‖ S6-01 (PR #77 open, **not mergeable** — its `e2e` job failed its first run on Docker Hub rate limits and its findings are unwritten) ‖ S7-02 (kitchen's reach + RLS sweep, audit-only) ‖ S1-08 (the gate credential). **Idle on purpose:** S2 and S3 — S2's throttling (D-018) lands in `place_order` and S3's guest-site work lands in checkout/tracking, both exactly where S6's specs point, so they wait for #77. S5 has never started. **Queued:** S4-05 (Einstellungen + Berichte), S2-07 (customer accounts, blocked on the owner's SMTP choice per D-017 and on the one unconfirmed clause of D-016), S3-03 (payments UI, needs the Stripe keys), S5-01 (automation — nothing can send a campaign until it exists), `proposed/S1-prod-target.md` and `proposed/S1-explicit-secrets-map.md`. **Rewritten 2026-10-11:** this paragraph had accumulated three contradictory statements about S6-01 and still listed merged work as queued — history belongs in `log.md`, this line is for what is true now.
