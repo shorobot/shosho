@@ -235,7 +235,7 @@ Both go-live preconditions are met: the seed passwords are rotated (owner, 2026-
 | 6 | ~~Force https for the back-office hostname~~ | **✅ done 2026-10-09–10 by the owner**, verified independently by S0 2026-10-10 (8 probes below) | the last hardening item before staff use |
 | 6b | Cloudflare Zero Trust → Access → self-hosted app for `bo-shos.hellfiresol.com`, policy Allow → Emails (free ≤ 50 users) | after 6 | handing the back-office to staff |
 | 7 | Revoke the Supabase personal access token created 2026-09-20 (the 2026-09-26 one is in use) | open, low | — |
-| 8 | Replace the generated placeholder image on `RL-014 Philadelphia Deluxe` with a real photograph | open, cosmetic | — |
+| 8 | ~~Replace the generated placeholder image on `RL-014 Philadelphia Deluxe` with a real photograph~~ | **CLOSED 2026-10-23 (D12)** — owner did it; S0 verified by fetching the live page and opening the image (`2.webp`, real photo), and confirmed the old `1.png` is `400` | — |
 
 Done and verified: the zone is already on **Full** and the origin serves our names on `:443`, so the Cloudflare↔origin hop is encrypted — the step once described as "switch to Full" needs no action.
 

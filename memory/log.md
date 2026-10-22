@@ -3050,3 +3050,46 @@ only the non-row sections — verified both survived rather than assuming. Pushe
 
 **`plan.md` section A said "DRAINED — zero open PRs" while four were open.** Refreshed; the drain is
 serial because `strict_required_status_checks_policy` is on.
+
+## 2026-10-23 — S0 Orchestrator — closed D12 on evidence; ruled against launching the S3-04 boot as written
+
+**D12 closed, verified rather than relayed.** The owner said the `RL-014 Philadelphia Deluxe` photo had
+been replaced long ago and asked me to check before closing. The image lives in Supabase storage, not the
+repo, so the only honest check was the live site: `RL-014` is
+`30000000-0000-4000-8000-000000000001`; `https://shos.hellfiresol.com/` serves
+`menu/30000000-0000-4000-8000-000000000001/2.webp` (`200`, 500×500, 17.5 KB) and **I opened the image** —
+a real photograph of salmon Philadelphia rolls, not the generated placeholder. The old `.../1.png` from
+`log.md` 1027 now returns **400**, so it is gone from storage rather than merely unreferenced. Closed in
+`plan.md` D12 and `state.md`'s open-items row 8.
+
+**Ruled against launching the proposed `S3-04` boot as written, because its task 1 already exists in an
+open PR.** #110 (`s3-csp-dev-eval`, open since 2026-10-22) implements the carve-out **exactly** as the
+boot specifies — the same `scriptSrc(nonce)` helper, the production branch byte-identical, the comment
+carried across, mirroring `apps/backoffice/lib/csp.ts:137-140` — plus 42 lines of tests. Launching the
+boot would have S3 write the same three lines a second time on a second branch, which **the boot itself
+forbids** ("Do not invent a second way to do this").
+
+**And #110 already beat the boot's own evidence bar.** The boot demands the production `script-src` be
+proven byte-identical by printing both strings rather than asserting it in a test — "an assertion you
+wrote passes because you wrote it". #110 did better: it ran **real servers**, `next start` on :3911 and
+`next dev` on :3912, and curled the actual headers. That is the measurement the boot asks for, already
+taken.
+
+**What the boot has that #110 does not is task 2, and it is the valuable half.** #110's log entry covers
+the fix, the test changes and a staging re-check; it says nothing about re-running the suite or sorting
+the failures. So the re-scoped boot is the classification only.
+
+**Verified the boot's load-bearing claims before planning to re-issue any of it:**
+- **Its central premise holds.** `apps/e2e/playwright.config.ts:31` really does run
+  `next dev` for `apps/web`, so the CSP that blocks `eval()` is the one every spec runs against. Had it
+  been `next start`, the whole theory would have collapsed — production CSP has no eval problem.
+- **The mechanism explains the evidence it cites.** `expect: { timeout: 25_000 }` matches the quoted
+  "54 × locator resolved to `<button disabled>` across 25 s", and the reasoning that a **pickup** order
+  resolves no delivery zone — so "debounced `quote_order` is slow" cannot explain it — is sound.
+- **Its statistics have aged and must be corrected before reuse.** Measured today: **74** e2e runs since
+  2026-10-15, not 65; **46** failures, not 38; cancellations exactly **27**; and the headline claim is
+  confirmed precisely — there is **no `success` conclusion at all** in that window.
+- **One stale cross-reference caused by my own edit:** the boot points at "`plan.md` section B, row 2
+  (B2)", but I inserted the D-022 VAT-snapshot row at the top of section B yesterday, so that row has
+  moved. A boot that names a row by position breaks whenever the table is edited — name the item, not
+  the index.
