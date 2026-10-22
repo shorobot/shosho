@@ -19,6 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import type { BannerRow, PublicationRow, SettingsRow, ZoneRow } from "@/lib/site";
 import type { AutomationRow, CampaignRow, MarketingOrder, PromoRow } from "@/lib/marketing";
+import type { AgentOutputRow, AgentRow, AgentRunRow, AgentTaskRow } from "@/lib/automation";
 import type { Staff } from "@/lib/types";
 
 /* ---------------------------------------------------------------- mocks */
@@ -64,6 +65,16 @@ const settingsData = vi.hoisted(() => ({ current: null as unknown }));
 vi.mock("@/lib/settingsStore", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   useSettings: () => settingsData.current,
+}));
+
+const automationData = vi.hoisted(() => ({ current: null as unknown }));
+
+vi.mock("@/lib/automationStore", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  useAutomation: () => automationData.current,
+  // RunLogDrawer's hook — closed by default in every fixture below (no `openRun`), so this never
+  // needs real data, only a shape that does not throw if a future change opens it during SSR.
+  useRunLogs: () => ({ logs: [], loading: false }),
 }));
 
 // The one browser dependency NotificationsPanel has — lib/sound.ts reads/writes localStorage.
@@ -196,6 +207,39 @@ function settings(over: Record<string, unknown> = {}) {
     me: ME, canEdit: true, settingsByKey: SETTINGS_SETTINGS,
     business: { impressum: "Shosho Sushi GmbH · Torstraße 000 · Berlin", ust_id: "DE000000000" },
     team: TEAM, loading: false, error: null, reload: async () => {}, writeKey: async () => true,
+    ...over,
+  };
+}
+
+/* ---------------------------------------------------------------- Automation (S4-06) */
+
+const AGENTS: AgentRow[] = (["accounting", "grow", "warehouse", "sales", "quality"] as const).map(
+  (key, i) => ({ id: `ag${i}`, key, active: key === "accounting", config: {}, last_run_at: null, created_at: "", updated_at: "" }) as AgentRow,
+);
+
+const TASK: AgentTaskRow = {
+  id: "tk1", agent_id: "ag0", customer_id: null, payload: {}, status: "queued", attempts: 0,
+  last_error: null, started_at: null, created_at: "2026-10-20T10:00:00Z", updated_at: "2026-10-20T10:00:00Z",
+} as AgentTaskRow;
+
+const RUN: AgentRunRow = {
+  id: "rn1", task_id: "tk1", agent_id: "ag0", customer_id: null, started_at: "2026-10-20T10:00:00Z",
+  finished_at: "2026-10-20T10:00:05Z", conclusion: "success", error: null, input_tokens: 500,
+  output_tokens: 120, cost_usd: 0.0314, result: { total_cents: 123400 }, created_at: "2026-10-20T10:00:00Z",
+} as AgentRunRow;
+
+const OUTPUT: AgentOutputRow = {
+  id: "op1", run_id: "rn1", agent_id: "ag0", kind: "report", payload: { total_cents: 123400 },
+  status: "pending", reviewer_id: null, reviewed_at: null, review_note: null, created_at: "2026-10-20T10:00:05Z",
+} as AgentOutputRow;
+
+function automation(over: Record<string, unknown> = {}) {
+  return {
+    me: ME, canWrite: true, agents: AGENTS, tasks: [] as AgentTaskRow[], runs: [] as AgentRunRow[],
+    outputs: [] as AgentOutputRow[], staffDirectory: [{ id: "u1", name: "K. Sato", role: "owner", active: true }],
+    loading: false, error: null, connection: "live" as const, now: NOW,
+    reload: async () => {}, reconnect: () => {}, reviewOutput: async () => null,
+    setAgentActive: async () => true, saveAgentConfig: async () => true,
     ...over,
   };
 }
@@ -582,5 +626,82 @@ describe("BO · Einstellungen renders", () => {
     const out = html(<DangerZonePanel />);
     expect(out).toContain("projektweiten Reset gibt es nicht");
     expect(out).toContain("DSGVO");
+  });
+});
+
+/* ================================================================ Automation (S4-06) */
+
+describe("BO · Automation renders", () => {
+  it("the whole screen with content", async () => {
+    automationData.current = automation({ tasks: [TASK], runs: [RUN], outputs: [OUTPUT] });
+    const { AutomationScreen } = await import("@/components/automation/AutomationScreen");
+    const out = html(<AutomationScreen />);
+    expect(out).toContain("Automation");
+    expect(out).toContain("Buchhaltung"); // accounting's DE label
+    expect(out).toContain("report");
+  });
+
+  it("EMPTY STATE — no task ever queued (task 1: the zero-row case is a designed state)", async () => {
+    automationData.current = automation();
+    const { QueuePanel } = await import("@/components/automation/QueuePanel");
+    const out = html(<QueuePanel />);
+    expect(out).toContain("Noch keine Aufgaben");
+  });
+
+  it("EMPTY STATE — no run yet", async () => {
+    automationData.current = automation();
+    const { RunsPanel } = await import("@/components/automation/RunsPanel");
+    const out = html(<RunsPanel />);
+    expect(out).toContain("Noch kein Durchlauf");
+  });
+
+  it("EMPTY STATE — nothing pending approval", async () => {
+    automationData.current = automation();
+    const { ApprovalsPanel } = await import("@/components/automation/ApprovalsPanel");
+    const out = html(<ApprovalsPanel />);
+    expect(out).toContain("Nichts zur Freigabe");
+  });
+
+  it("a pending output renders its payload and both decision buttons", async () => {
+    automationData.current = automation({ outputs: [OUTPUT] });
+    const { ApprovalsPanel } = await import("@/components/automation/ApprovalsPanel");
+    const out = html(<ApprovalsPanel />);
+    expect(out).toContain("123400");
+    expect(out).toContain("Freigeben");
+    expect(out).toContain("Ablehnen");
+  });
+
+  it("spend: a day with no finished run reads 'no run yet today', never 0,00 $ (task 1/4)", async () => {
+    automationData.current = automation();
+    const { SpendPanel } = await import("@/components/automation/SpendPanel");
+    const out = html(<SpendPanel />);
+    expect(out).toContain("noch kein Durchlauf heute");
+    expect(out).not.toContain("0,00");
+  });
+
+  it("spend: a configured ceiling and a finished run together show the ratio", async () => {
+    const ceiled = AGENTS.map((a) => (a.key === "accounting" ? { ...a, config: { ceiling_usd_per_day: 20 } } : a));
+    automationData.current = automation({ agents: ceiled, runs: [RUN] });
+    const { SpendPanel } = await import("@/components/automation/SpendPanel");
+    const out = html(<SpendPanel />);
+    expect(out).toContain("$20.00");
+  });
+
+  it("spend: with no ceiling configured, says so rather than implying no spend", async () => {
+    automationData.current = automation({ runs: [RUN] });
+    const { SpendPanel } = await import("@/components/automation/SpendPanel");
+    const out = html(<SpendPanel />);
+    expect(out).toContain("keine Obergrenze konfiguriert");
+  });
+
+  it("registry: honest that only Accounting is implemented (task 5)", async () => {
+    automationData.current = automation();
+    const { RegistryPanel } = await import("@/components/automation/RegistryPanel");
+    const out = html(<RegistryPanel />);
+    expect(out).toContain("Buchhaltung");
+    expect(out).toContain("Sales");
+    // "not implemented yet" appears for the four agents with no orchestrator behind them.
+    expect(out.match(/noch nicht implementiert/g)?.length).toBe(4);
+    expect(out).toContain("noch nie gelaufen");
   });
 });
