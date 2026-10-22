@@ -2937,3 +2937,49 @@ branch before acting rather than trusting the number, and the action turned out 
 **Two stale facts corrected in the SNAPSHOT block that advertises itself as measured:** `main` was recorded as
 `acddb39` (now `e769061`) and "Open PRs: #103 and #104, both green" (now **zero** open — #103/#104/#105 all
 merged). A block whose first line claims nothing in it is unmeasured has to be re-measured to keep saying so.
+
+## 2026-10-23 — S3 Frontend — guest-site CSP dev carve-out (S6-01 finding 0, HIGH, closed)
+
+**Resumed after a long gap and re-oriented before touching anything.** My last local state was a
+days-old, uncommitted merge-in-progress of `origin/main` into `s3-03` (from before PR #87 merged) —
+`origin/s3-03` had since moved 71 commits ahead of my local branch. Checked, not assumed: `gh pr view
+87` showed `MERGED` (2026-10-17T11:33:56Z, merge commit `acddb39`), and `plan.md`'s own tracked item
+confirmed what happened — **S0 authorised me to add this fix inside #87, I never returned (the session
+had gone idle), and S0 merged #87 without it rather than hold complete, verified work hostage to a
+one-liner.** `git merge --abort`'d the stale state, branched a fresh `s3-csp-dev-eval` off current
+`origin/main` rather than reuse `s3-03` (already merged, no reason to touch it again).
+
+**The fix itself, pre-approved in substance by S0 in `plan.md` 2026-10-22** before I ever got to it:
+mirror `apps/backoffice/lib/csp.ts`'s already-shipped `scriptSrc(nonce)` (PR #89, S4-05) exactly —
+`'unsafe-eval'` added to `script-src` only when `process.env.NODE_ENV !== "production"`. Read S4's
+actual shipped code (`origin/s4-05` at the time, now irrelevant since #89 also merged) rather than the
+original proposal's prose, since a sibling implementation that already works is a better spec than a
+description of one that doesn't exist yet. Matched it line for line, including the doc comment and the
+decision not to also touch the top-of-file header comment (the proposal asked for that; S4's shipped
+version didn't do it, and consistency between the two files' comments mattered more than satisfying an
+unexecuted proposal's wish list).
+
+**Verified with real servers, not just asserted — the exact mistake this whole finding is about.**
+`next start` (production) on port 3911: `curl -sI /` shows `script-src 'self' 'nonce-…'
+'strict-dynamic'` — no `'unsafe-eval'`, byte-identical to before this change. `next dev` on port 3912:
+same header carries `'unsafe-eval'`. Both servers killed after. `tests/csp.test.tsx`'s pre-existing
+"never allows eval or inline script" test would have started failing under the suite's own default
+`NODE_ENV` once `scriptSrc` branched on it — caught before it became a surprise: that whole describe
+block's `csp` constant is now built under an explicit `vi.stubEnv("NODE_ENV", "production")` (matching
+what the assertions always meant — "the deployed shape"), and a new sibling describe block
+(mirroring `apps/backoffice/tests/csp.test.ts` byte for byte) pins both the production and dev shapes
+plus "every other directive is untouched by the branch." `tsc`/`eslint`/`vitest` (92/92, 3 new) clean;
+`next build` still all routes `ƒ (Dynamic)`.
+
+**Staging, re-checked after the gap rather than assumed stale.** Order #1005 (placed 2026-10-11, the
+realtime probe from the original S3-03 report) is now `status: picked_up` — final. That isn't the live
+"watch the page update" check I originally asked the owner for (it already happened, I can't rewind
+it), but it does confirm two things: `S1-09`'s deploy-chain fix means staging is genuinely running the
+merged `#87` code (the tracking page's `{!final && …}` footer line is correctly absent now, which only
+happens post-merge), and the order completed through the ordinary operational flow without incident.
+**Still no banner on `banners_live`** (`[]`, re-checked) — that half of the original ask is still open
+and I'm not chasing it further; it needs the owner's five minutes in `/website`, not more code.
+
+**Boundary.** Touched only `apps/web/lib/csp.ts` and `apps/web/tests/csp.test.tsx` — the back-office's
+identical bug is S4's own file and already fixed by S4 in #89; not mine to touch a second time.
+`plan.md`'s B2 row closed. PR: see state.md's S3 row for the number once opened.
