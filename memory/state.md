@@ -74,7 +74,12 @@ is on `infra-access.md`'s do-not-touch list and attempts are logged), so this is
 apply, never work we announce or perform.
 
 **Sessions.** S1 · S2 · S3 · S4 · S6 · S7 have all run and reported; **S5 has never run** and S5-01 is its
-first boot. **S5-01 and S4-06 issued 2026-10-21, not yet launched.** **No open PRs** — #103, #104 and #105
+first boot. **S5-01 and S4-06 issued 2026-10-21; S2-07 issued 2026-10-22 — none launched yet.**
+**D-016's last open clause was confirmed by the owner on 2026-10-22** (accounts optional, guest checkout
+survives), which unblocked S2-07; it is channel-agnostic, so **D4/SMTP does not gate it** — D4 and the two
+newly-tracked owner actions (**D14** MessageBird, **D15** Turnstile + dashboard rate limits) gate **phase B**,
+the login UI. D-021 rules on the email half of the linking rule, because `customers.email` is nullable and
+**non-unique** while `phone` is unique. **No open PRs** — #103, #104 and #105
 all merged; re-measured 2026-10-21 via `gh pr list`, correcting this block's own earlier claim that #103
 and #104 were still open. `strict_required_status_checks_policy` is back **on** after being switched off to drain
 a six-deep queue on 2026-10-17.

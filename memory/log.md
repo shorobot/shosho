@@ -2937,3 +2937,57 @@ branch before acting rather than trusting the number, and the action turned out 
 **Two stale facts corrected in the SNAPSHOT block that advertises itself as measured:** `main` was recorded as
 `acddb39` (now `e769061`) and "Open PRs: #103 and #104, both green" (now **zero** open — #103/#104/#105 all
 merged). A block whose first line claims nothing in it is unmeasured has to be re-measured to keep saying so.
+
+## 2026-10-22 — S0 Orchestrator — merged #107; D-016's last clause confirmed, S2-07 issued, two untracked owner actions found
+
+**Merged #107** (`7b18ac8`) after asserting title and branch were mine rather than trusting the number.
+`CI` gate plus every required job passed; `e2e` red, which is the advisory job excluded from the gate's
+`needs` by design and cannot be caused by a memory-only PR.
+
+**The owner confirmed D-016's last open clause: accounts are optional and guest checkout survives.** That
+clause had been S0's inference from "name and address can be added later", and both D-016 and the ROADMAP
+said in as many words that phase A was not issuable until it was answered out loud. Recorded in D-016 as a
+confirmation, with the inference kept as history.
+
+**Ruled that D4 does not block phase A, and issued it.** The owner's note said S2-07 "also depends on D4".
+Measured against the decision records instead of accepting it: **D-017's own consequence** says "either SMTP
+lands first, **or the first release is SMS-only**", so SMTP was never an unconditional gate — and phase A's
+scope (identity column, linking rule, self-service RPCs, RLS, the customer-JWT regression test) touches no
+channel at all. So **A is channel-agnostic and was issued as `S2-07-account-foundation.md`**; what D4 and the
+SMS preconditions actually gate is **phase B**, the login UI, which cannot ship without a live channel.
+
+**Two owner actions were on the critical path and tracked nowhere — the worse find of the day.**
+`plan.md` had **zero** references to MessageBird or to Turnstile/rate-limiting, though D-016 has named
+MessageBird since 10-06 and makes rate limiting a *hard precondition of shipping phone OTP*, and D-017 makes
+Turnstile load-bearing. Added as **D14** (MessageBird account + a real DE quote; DE SMS onboarding has lead
+time, so it belongs with D1–D3) and **D15** (Turnstile site key + the dashboard rate-limit values; worst-case
+unthrottled spend **€684.72/month**). This is the same failure as the CRITICAL that sat on the open list: a
+decision recorded in `decisions.md` with no corresponding row in the plan is a decision nobody will act on.
+
+**D-021 — specified the email half of the linking rule, because the schema is asymmetric.** Finding 5 says
+link when "the verified identifier matches the customer row's identifier", which is well-defined for
+`phone` (`text not null unique`) and ambiguous for `email`, which is **nullable with no unique constraint
+anywhere in the 34 migrations** — checked repo-wide. So an email match can return many rows and "the
+matching row" becomes whichever the planner returns first. Ruling: link only on an unambiguous single
+candidate; two or more → fresh row; `NULL` email matches nothing; `anonymised_at` rows are never candidates.
+**The reason this is a safety ruling and not a privacy one** is `kitchen_note`'s own column comment —
+"Allergy / kitchen note — copied to orders.allergy_note on every order" — so a wrong link copies a
+stranger's allergy note onto every future order of a different person. A refusal is recoverable; a silent
+wrong link is not.
+
+**Also ruled in the boot:** `link_my_account()` as an explicit RPC rather than a trigger on `auth.users`,
+because the rule must be able to *refuse* and report "staff merge required" (a trigger cannot signal that)
+and because a trigger cannot be tested with a real customer JWT — which is the coverage this phase exists to
+add. S2 may overturn it with reasons.
+
+**Phase C renumbered S7-03 → S7-04.** The ROADMAP's dependency diagram and section C both name `S7-03` for
+the auth-surface audit, but that ID was spent on "Rule the automation privilege boundary" (#95, merged
+10-16). Same ID, two different phases. Fixed in the ROADMAP and in the plan row.
+
+**Corrected in the ROADMAP while there:** its line "Email OTP has no such constraint and can ship in A ahead
+of the SMS half" has been false since D-017 the next day — the built-in relay caps email at 2/hour
+project-wide. Struck through with the supersession named, rather than deleted.
+
+**Two schema facts measured so the boot would not repeat known misreadings:** `customer_addresses` **already
+exists** (migration 4, full shape), so "address CRUD" is CRUD and RLS over an existing table, not a new one;
+and `customers.auth_user_id` does not exist anywhere, so migration 35 adds it.
