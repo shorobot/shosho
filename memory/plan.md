@@ -9,9 +9,16 @@ Last moved: 2026-10-21 (S0 — **C3 and C4 issued** as S5-01 and S4-06; strict b
 
 ---
 
-## A. Merge queue — DRAINED 2026-10-17
+## A. Merge queue — REFILLED, 4 deep as of 2026-10-23
 
-Zero open PRs. `main` at `acddb39`. Merged in this pass: **#87** S3-03 · **#89** S4-05 · **#92** S7-02 ·
+`main` at `7b18ac8`. **Open: #106** (S4-06 dashboards) · **#108** (S5-01 automation — S0 resolved its
+`memory/log.md` conflict under D-009 and pushed the merge to `s5-01`; CI re-running) · **#109** (S0
+bookkeeping) · **#110** (S3's B2 CSP dev carve-out, which S0 pre-approved on substance). With
+`strict_required_status_checks_policy` **on**, each merge makes the rest out-of-date, so this drains
+**serially** — and the `&&` lesson below is the one that costs time if forgotten.
+
+### Historical: DRAINED 2026-10-17
+Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87** S3-03 · **#89** S4-05 · **#92** S7-02 ·
 **#98** S2-09 boot · **#100** gate username · **#101** S2-09 work. Earlier the same day: #91/#93 S1-09,
 #96/#97 S2-08, #99 S1-08 addendum.
 
@@ -31,10 +38,14 @@ Zero open PRs. `main` at `acddb39`. Merged in this pass: **#87** S3-03 · **#89*
   `docs/security.md` needed opposite calls in two hunks of the same file: one side was a stale finding the
   PR existed to correct (take the PR's), the other was two unrelated pieces of S7 work (take both).
 
-## B. Small, named, unblocked — each is one file
+## B. Small, named, unblocked — all but the first are one file
 
 | | What | Who | Why it exists |
 |---|---|---|---|
+| `[ ]` | **Snapshot the VAT rate on `order_items` at write time** (+ the delivery fee's own rate on `orders`) — migration + `place_order`/`update_order_items` | **S2** | **D-022, and the one time-boxed item in this plan.** Nothing anywhere records the rate an order actually used: `order_items` snapshots `name`/`unit_price_cents`/`line_total_cents` but not the rate, which lives only on `menu_items.vat_delivery_pct` and is read **live** (`rpc.sql:237`). **The moment D9 sets the real rates, every existing order's true rate is lost irrecoverably** — so this lands **before D9**. No backfill: pre-migration rows take `null` and reports state the split unavailable, because joining today's rates would reprice a filed period. Not one file; listed here because it is unblocked and cannot wait |
+| `[ ]` | **`python (automation)` runs no type check** — add a `mypy .` step to the job, then delete `apps/automation/tests/test_typecheck.py` | **S1** | Reported by S5-01, not made: `apps/automation` is typed `strict` and the gate currently lives *inside pytest* so the existing job enforces it without S5 touching S1's workflow. That is a deliberate stopgap, not the intended shape — the test exists only because the step does not |
+| `[ ]` | **`apps/automation/requirements.txt` is a one-line `-e .`** — add `cache-dependency-path` to the workflow's `setup-python`, then delete the file | **S1** | Reported by S5-01, not made: the file exists purely as insurance for `cache: pip`'s requirements-glob lookup. Real dependencies live in `pyproject.toml`; a second file that looks like a dependency list and is not will mislead someone |
+| `[ ]` | **The delivery fee's VAT rate is hardcoded in SQL** — `v_fee * 19.0 / 119.0` at `rpc.sql:359`, readable from no table | **S2** | D-022. The fee's tax component is not derivable, and unlike the per-item rates **D9 cannot change it at all** — it needs a code change. Smaller than the `order_items` snapshot but the same defect |
 | `[x]` | Back-office CSP dev carve-out | S4 | done in #89 — `csp.ts:139`, prod byte-identical |
 | `[ ]` | **Guest-site CSP dev carve-out** — `apps/web/lib/csp.ts` still greps **0** for `unsafe-eval` on `main`, re-measured 2026-10-22 | **S3** (narrowed from "S3 or S4" — see below) | S6 finding 0, HIGH. `apps/web` is 100% non-interactive under `pnpm dev`; invisible in production. **S0 authorised S3 to add it inside #87 and S3 never returned, so #87 merged without it** — that was S0's call, taken because the realtime/banner work was complete and holding it hostage to a one-liner was worse. First item of whichever boot next touches `apps/web`. Spec: `proposed/S6-finding-0-csp-dev-carveout.md`. **Ownership narrowed 2026-10-21 (`log.md`) and this cell was left stale until 2026-10-22:** it is **S3's**, not "S3 or S4" — `apps/web` is not S4's boundary, and boundary discipline beats saving one launch on a one-liner. **Substance pre-approved by S0 2026-10-22**, verified against the sibling implementation: extract `scriptSrc(nonce)` exactly as `apps/backoffice/lib/csp.ts:137-140` does, guard on `process.env.NODE_ENV === "production"`; the production branch is then byte-identical to today's `apps/web/lib/csp.ts:53`. A session whose boot does not name `apps/web` must not take it |
 | `[ ]` | **Remove the dead `vat_onsite_pct` control** (`ItemEditor.tsx`) | **S4** | D-019. Backend reads it nowhere; an operator sets it and nothing happens. Still present on `main`, re-measured 2026-10-17 — **D-019 was ruled after S4-05's boot was issued, so S4 never knew about it** |
@@ -88,7 +99,7 @@ while the code that needs them is still being written.
 | `[ ]` | D6 | **Stripe webhook endpoint + `STRIPE_WEBHOOK_SECRET`** | as above |
 | `[x]` | D7 | **CLOSED 2026-10-17 — the pair is with the owner, verified live.** Username **`shos-bo`**. **Correction to what S0 told the owner:** I sent them hunting for a `0600` file written **2026-10-10**; TETA+PI then reported the pair was rotated **twice on 2026-10-16** — once because the stored value had gone stale, once because they exposed the replacement in their own session transcript and rotated immediately on noticing. **So the 10-10 file is superseded and searching for it was wrong advice.** The current pair is live, verified, and held by the owner. Nothing for a session to do |
 | `[ ]` | D8 | Verify the four rotated passwords actually authenticate (one command, owner-only) | knowing the credentials in hand work before staff see them |
-| `[ ]` | D9 | **Set the real 7/19 VAT rate per menu item**, with the Steuerberater | D-019. The control already exists; the values are a tax judgement |
+| `[ ]` | D9 | **Set the real 7/19 VAT rate per menu item**, with the Steuerberater. **BLOCKED BY D-022 (2026-10-23): the `order_items` rate snapshot must land first.** Nothing records the rate an order actually used, so the moment these values change, every existing order's true rate is lost irrecoverably. Also worth asking the Steuerberater about: a German invoice is normally expected to show the tax amount **per rate**, which is exactly what is not derivable today | D-019. The control already exists; the values are a tax judgement |
 | `[—]` | D10 | **DECLINED by the owner 2026-10-16 — Option A: basic-auth stays, the pair is held by 2 people.** Told to TETA+PI directly. S0 had recommended Access; the owner's reason removes the main objection, which was that a shared secret spreads across four-plus people and one departure forces rotating everyone — at two it barely applies. Option A also avoids the risk Access carried: basic-auth covers **both** the Cloudflare path and the direct-origin path, so there is no half-change window and no origin IP restriction needed. Accepted cost: no per-person audit of who opened the gate, and rotation on any departure. **S1-08's tasks 3-5 are now moot** — they existed only to verify Access and then retire basic-auth. Revisit only if the holder count grows |
 | `[ ]` | D11 | Revoke the 2026-09-20 Supabase personal access token | low |
 | `[ ]` | D12 | Replace the placeholder image on `RL-014 Philadelphia Deluxe` | cosmetic |

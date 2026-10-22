@@ -2991,3 +2991,62 @@ project-wide. Struck through with the supersession named, rather than deleted.
 **Two schema facts measured so the boot would not repeat known misreadings:** `customer_addresses` **already
 exists** (migration 4, full shape), so "address CRUD" is CRUD and RLS over an existing table, not a new one;
 and `customers.auth_user_id` does not exist anywhere, so migration 35 adds it.
+
+## 2026-10-23 — S0 Orchestrator — verified S5-01 claim by claim, ruled D-022, unblocked #108
+
+**Re-measured every load-bearing claim in S5-01's report rather than recording it. All of them held** —
+which is worth writing down, because it is the first report in this project where that was true without
+qualification.
+
+- **28 files / ~3,000 lines** → 28 files changed, **3,059 insertions**.
+- **The structural spend ceiling** → holds, and is **stronger than claimed**. `llm.py` is the only holder
+  of an Anthropic client, `_client` is private, and `complete()` calls `check_before_call()` before the
+  client is even *constructed* (it is lazy, from a factory) — so a refused call does not merely skip the
+  request, it never builds a client. `orchestrator.py` passes a factory, not a client; the only other
+  mentions of "anthropic" in the package are the key in `config.py` and a message string.
+- **Model ids and pricing** → correct, checked against the authoritative model table rather than memory:
+  `claude-opus-5` $5/$25, `claude-sonnet-5` $2/$10, `claude-haiku-4-5` $1/$5, all exact. `estimate_cost`
+  prices output at the full `max_output_tokens`, i.e. deliberately pessimistic — the safe direction for a
+  ceiling. **And a near-miss on my side worth recording:** I was about to flag
+  `thinking={"type": "adaptive"}` as the stale `budget_tokens` shape. It is the opposite — `adaptive` is
+  current and `budget_tokens` is what is now rejected. I checked the reference before writing the finding,
+  which is the only reason it did not become a false correction sent to a session that was right.
+- **`.env.example`'s service-role key** → gone. A grep still matched `service_role` twice, which looked
+  like a contradiction; the two lines are the **comment explaining the removal**. The grep was the
+  hypothesis, the lines were the measurement — my own recurring error mode, caught on myself this time.
+- **63 tests** → exactly 63 `def test_` across 9 files. The stated split ("47 unit plus 16 privilege") is
+  off by one against the files (46 + 17); the total is right and the discrepancy is immaterial.
+
+**The VAT finding is correct on all three legs, and I ruled on it as D-022.** Measured: `order_items` has
+no rate column (migration 5); the rate exists only as `menu_items.vat_delivery_pct` (`numeric(4,2) default
+7`) and is read **live** at `rpc.sql:237` / `update_order_items.sql:119`; `menu_items` carries no grant to
+`agent`. S5 was also right that a grant is not the fix — joining today's rates to a past order reprices a
+filed period.
+
+**What I added to their finding, and it is the sharp half:** `order_items` already snapshots `name`,
+`unit_price_cents` and `line_total_cents` off the menu item, precisely because menu values drift and a
+filed order must not move — `item_id` is even `on delete set null` so a deleted item leaves the line
+intact. **The rate drifts identically and is the one thing not copied.** So this is an existing principle
+applied inconsistently, not a new one, which makes it much harder to argue against. And the sequencing
+nobody had stated: **every order placed before the snapshot column exists loses its true rate the moment
+D9 runs**, irrecoverably. So D-022 lands **before D9**, and D9's row now says so. No backfill — pre-migration
+rows take `null` and the split is stated unavailable, because backfilling from today's `menu_items` is the
+exact repricing error the decision exists to prevent.
+
+**Third note confirmed and filed separately:** the delivery fee's VAT is the literal `v_fee * 19.0 / 119.0`
+at `rpc.sql:359`, readable from no table — so the fee's tax component is not derivable **and D9 cannot
+change it at all**; it needs a code change. Filed to S2 in section B.
+
+**Filed S5's two S1 items** (a real `mypy .` step so the gate can leave pytest; `cache-dependency-path` so
+the one-line `requirements.txt` can go) as section-B rows. Both were reported-not-made, correctly — they
+are S1's workflow.
+
+**Unblocked #108 myself under D-009.** It was `CONFLICTING`/`DIRTY` — the report did not mention that. The
+overlap was exactly `memory/log.md` and `memory/state.md`, both mine, and `apps/automation` did not
+conflict at all. `log.md` is append-only chronology → genuine keep-both, S5's entry first (PR opened
+10:43), mine second (#107 merged 18:21). `state.md` auto-merged because S5 touched only their own row and I
+only the non-row sections — verified both survived rather than assuming. Pushed as a fast-forward of
+`s5-01`, not a force-push.
+
+**`plan.md` section A said "DRAINED — zero open PRs" while four were open.** Refreshed; the drain is
+serial because `strict_required_status_checks_policy` is on.
