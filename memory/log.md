@@ -2883,3 +2883,57 @@ Next: C3 (S5's orchestrator) and C5 (S1's deploy surface, the credential step ab
 **Re-measured, not recalled, for the snapshot.** 34 migrations · ten back-office sections · `apps/automation` empty · B2 still `0` occurrences of `unsafe-eval` · B3 control still present · **B4 re-verified open** (`orders_kitchen_read` is still `using (public.is_staff('kitchen'))` from migration 9, never superseded, so a kitchen tablet reads every order ever placed — and A2 means those tablets are real now) · `deploy-prod.yml` exists with no host behind it.
 
 **Rewrote `state.md`'s SNAPSHOT and `boots/S0-00-orchestrator.md`.** The boot's "Current position" is now a **pointer**, not a paragraph, and says why: it rotted twice, and the restart snapshot I wrote on 10-12 was wrong on three counts within the hour. The lessons section gained eight entries from this stretch, the sharpest being that **a headings grep is not the file — that error mode has now cost me three times** (the deploy log, the rate-limit log, and S7's proposal whose heading said CRITICAL while its first line said RESOLVED), and that **a boot amendment not committed before the session runs does not exist.**
+
+## 2026-10-22 — S0 Orchestrator — corrected my own D13 reasoning, approved the TETA+PI reply, ruled on two stale reports
+
+**Refused my own draft reply to TETA+PI and found four defects in it, three of which were mine.** The owner
+drafted a reply and asked for a go-ahead. Re-measured before giving one, and did not give it as written.
+
+1. **The load-bearing sentence was false.** The draft told them a forged `cf-connecting-ip` is "exactly the
+   header `csp.ts:101` does `split(",")[0]` on". It is not. `cf-connecting-ip` occurs **once** in the repo —
+   `apps/backoffice/lib/csp.ts:100`, a **presence test**; its value is never parsed. The `.split(",")[0]` on
+   :101 is on **`x-forwarded-proto`**. The 10-17 boot had it right ("on *a* forwarded header"); the draft
+   sharpened a correct vague statement into an incorrect precise one. Worth remembering as a failure mode:
+   precision added without re-measuring is not precision.
+2. **The urgency was wrong on our own decision record — my error, written into three files.** The 10-17 boot,
+   `plan.md` D13 and `state.md` all claimed "a per-IP throttle is the most likely future consumer of a client
+   address". **D-018, which I accepted, keys the `place_order` throttle on phone and/or guest session id,
+   explicitly not on IP, and defers Option B.** And measured: `apps/web` has **zero** route handlers;
+   `place_order` is `rpc('place_order')` from `components/checkout/CheckoutClient.tsx`, a client component —
+   the guest order goes **browser → Supabase and never traverses TETA+PI's nginx at all**. So no consumer
+   exists and D-018 will never be one; only Option B's trigger creates one. All three files corrected.
+3. **The draft offered work we cannot do.** "We sanitise… this is a reload on your live vhosts… our deploy
+   will raise them into your repo." D-004: **no sudo, no nginx access**; `infra-access.md`: "We never edit
+   nginx"; `plan.md` D13: "theirs to apply". It had silently converted a request into an announcement of work
+   in another company's production.
+4. **One sentence would have been a confession.** "Verified on the box: nothing in all of `/etc/nginx`…" —
+   `/etc/nginx` is on `infra-access.md`'s do-not-touch list, **attempts are logged**, and revocation is
+   "instantly without notice". **I also did not go and measure it**, for the same reason: verifying that claim
+   required committing the breach it described. The same point was available legitimately from *their own*
+   10-17 statement, which is how the sent version sources it.
+
+**The sent reply asks for two headers, not one** (`$remote_addr` plus `CF-Connecting-IP`), as hygiene and
+explicitly not as a live hole, puts two questions back to them (their `real_ip_header` behaviour; whether
+`cf-ray` carries weight), leaves `cf-ray` alone pending the answer, and commits us only to an **outside**
+re-probe of our own two hostnames. D13 is now `[!]` — on TETA+PI, not on the owner. Recorded in the boot.
+
+**Ruled on `apps/web`'s CSP dev carve-out (B2) — approved on substance, corrected on provenance.** A session
+asked to add it, citing "the fix S0's log recorded as time-sensitive". **That phrase appears nowhere in
+`log.md`** — checked. The real note (10-21) is narrower and is about boundary: B2 is **S3's**, because
+`apps/web` is not S4's. Their other citation checks out: #89 shipped it at `apps/backoffice/lib/csp.ts:137-140`
+and the production branch is byte-identical to today's `apps/web/lib/csp.ts:53`, so the fix ports exactly.
+**Substance pre-approved; ownership is S3 or any boot naming `apps/web`.** `plan.md`'s B2 cell still said
+"S3 or S4" a day after I narrowed it in `log.md` — the same stale-in-one-file-only failure as the CRITICAL
+that sat on the open list; fixed.
+
+**Noticed in passing, not acted on (not my boundary, and orthogonal):** `apps/web/lib/csp.ts:60` emits
+`upgrade-insecure-requests` **unconditionally**, where `apps/backoffice` gates it on `isSecureContext()`.
+Harmless on localhost in practice; whoever does B2 is already in that file and should look.
+
+**S7-03's report is six days stale — nothing to merge.** It closed asking me to merge PR #95. `gh pr view 95`:
+**MERGED 2026-10-16T21:45:20Z**, branch `s7-03`, title matching, merge commit `b7d5ac2`. Asserted title and
+branch before acting rather than trusting the number, and the action turned out to be "none".
+
+**Two stale facts corrected in the SNAPSHOT block that advertises itself as measured:** `main` was recorded as
+`acddb39` (now `e769061`) and "Open PRs: #103 and #104, both green" (now **zero** open — #103/#104/#105 all
+merged). A block whose first line claims nothing in it is unmeasured has to be re-measured to keep saying so.

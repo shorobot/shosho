@@ -5,7 +5,8 @@ Last update: 2026-10-21 (S0 — restart snapshot; S5-01 and S4-06 issued; `plan.
 
 ## SNAPSHOT — 2026-10-21, taken for a session restart
 Read this first; everything below it is detail, and some of that detail is older than this block.
-**Nothing here is a claim S0 has not measured.** `main` = `acddb39`. Authoritative companion:
+**Nothing here is a claim S0 has not measured.** `main` = `e769061` (re-measured 2026-10-21; the
+snapshot was taken at `acddb39`, before #103/#104/#105 merged). Authoritative companion:
 **`/memory/plan.md`** — the single tracked plan, with every open item and who owns it.
 
 **Live on staging.** Guest site `https://shos.hellfiresol.com/` — menu, cart, 3-step checkout, tracking
@@ -55,13 +56,27 @@ holds a live kitchen session in a kitchen. Both are S2's.
 Messaging permissions** — the longest lead time in the whole plan and its code is last, so it should start
 first. **D2 Lieferando/Wolt API access.** **D3 Anthropic API key** — gates S1's deploy surface (C5), which
 gates nothing else, so S5 can build without it. **D4 SMTP** (D-017). **D5/D6 the two Stripe secrets.**
-**D13** — give TETA+PI the word on `proxy_set_header X-Forwarded-For $remote_addr;`: nothing is
+**D13 — SENT 2026-10-21, now `[!]` on TETA+PI, not on the owner.** The ask went out for **two** headers
+(the `$remote_addr` line plus `CF-Connecting-IP`), as hygiene, with two questions back to them (their
+`real_ip_header` behaviour, and whether `cf-ray` carries weight for them) and our commitment to re-probe
+both hostnames from outside once applied. Original framing, kept because the measurement is still the
+point: nothing is
 exploitable today (measured: zero `x-forwarded-for`/`x-real-ip` in the repo, zero IP columns in 34
-migrations), but D-018's accepted `place_order` throttle is the most likely future consumer.
+migrations), and **S0's stated reason for urgency was wrong — corrected 2026-10-21.** D-018 keys the
+`place_order` throttle on **phone and/or guest session id, explicitly not on IP**, and *defers* Option B
+(routing guest RPCs through our own origin). Measured: `apps/web` has **zero** route handlers and
+`place_order` is `rpc('place_order')` from `components/checkout/CheckoutClient.tsx`, a client component —
+so the guest order goes **browser → Supabase directly and never traverses TETA+PI's nginx**. There is no
+consumer of a client address today and D-018 will not become one; a consumer appears only if Option B's
+trigger fires. So D13 is **hygiene with a defined trigger, not a queued dependency** — ask, do not press.
+Scope note for whoever sends it: the vhosts are theirs (**D-004: no sudo, no nginx access**; `/etc/nginx`
+is on `infra-access.md`'s do-not-touch list and attempts are logged), so this is a request for them to
+apply, never work we announce or perform.
 
 **Sessions.** S1 · S2 · S3 · S4 · S6 · S7 have all run and reported; **S5 has never run** and S5-01 is its
-first boot. **S5-01 and S4-06 issued 2026-10-21, not yet launched.** Open PRs: **#103** and **#104**, both
-S0's, both green. `strict_required_status_checks_policy` is back **on** after being switched off to drain
+first boot. **S5-01 and S4-06 issued 2026-10-21, not yet launched.** **No open PRs** — #103, #104 and #105
+all merged; re-measured 2026-10-21 via `gh pr list`, correcting this block's own earlier claim that #103
+and #104 were still open. `strict_required_status_checks_policy` is back **on** after being switched off to drain
 a six-deep queue on 2026-10-17.
 
 ## Phase
