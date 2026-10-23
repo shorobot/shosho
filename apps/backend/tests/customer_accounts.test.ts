@@ -355,6 +355,42 @@ describe("the self-service surface is scoped to the caller", () => {
     expect(mine!.length, "every returned order belongs to the caller").toBe(ids.length);
   });
 
+  it("pagination is stable when orders share a created_at", async () => {
+    // `now()` is transaction-stable, so orders placed together tie on created_at. With only
+    // `order by created_at desc` the tie-break is whatever the plan produces, and a limit/offset
+    // page can then repeat a row or skip one. `number` is a unique sequence, so the order is total.
+    const c = await guestCustomer();
+    const acct = await newCustomerAuth({ phone: c.phone });
+    await rpc(acct.client, "link_my_account", {});
+    const sameInstant = new Date().toISOString();
+    for (const number of [90101, 90102, 90103]) {
+      await asAdmin().from("orders").insert({
+        number, tracking_token: `tok-${number}`, channel: "website", type: "pickup",
+        status: "new", payment_status: "pending", payment_method: "cash",
+        customer_id: c.id, contact_name: "Tie", contact_phone: c.phone,
+        subtotal_cents: 1000, discount_cents: 0, delivery_fee_cents: 0, tip_cents: 0,
+        total_cents: 1000, vat_cents: 70, created_at: sameInstant,
+      });
+    }
+    const pages: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const { data } = await rpc<any>(acct.client, "get_my_orders", { p_limit: 1, p_offset: i });
+      pages.push(String(data.orders[0].number));
+    }
+    expect(pages, "newest first, each row exactly once").toEqual(["90103", "90102", "90101"]);
+    expect(new Set(pages).size, "no row repeated across pages").toBe(3);
+  });
+
+  it("p_limit is clamped to 1..100", async () => {
+    const c = await guestCustomer();
+    const acct = await newCustomerAuth({ phone: c.phone });
+    await rpc(acct.client, "link_my_account", {});
+    for (const p_limit of [0, -5, 1000, null]) {
+      const { error } = await rpc(acct.client, "get_my_orders", { p_limit });
+      expect(error, `p_limit=${p_limit} must not error`).toBeNull();
+    }
+  });
+
   it("orders stay unreadable through the table — get_my_orders is the only path", async () => {
     const { data } = await alice.client.from("orders").select("id");
     expect(data ?? [], "no customer policy was added to `orders`").toEqual([]);

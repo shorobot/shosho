@@ -901,6 +901,11 @@ An **absent** key means "leave unchanged". An explicit **JSON `null`** clears `e
 `get_my_orders(p_limit integer default 20, p_offset integer default 0)` →
 `{total, orders[]}`, newest first, `p_limit` clamped to 1–100.
 
+Ordered by `created_at desc, number desc`. The second key is not decoration: `now()` is
+transaction-stable, so orders placed in one transaction tie on `created_at`, and with a single
+sort key a `limit`/`offset` page can repeat a row or skip one. `number` is a unique sequence, so
+the order is total and pagination is stable.
+
 Each order mirrors `get_order_by_token` (§5.4) so the tracking renderer is reusable, plus
 `order_id`, `tracking_token`, `allergy_note` (the caller's own) and the money columns.
 

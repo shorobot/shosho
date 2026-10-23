@@ -478,10 +478,14 @@ declare
   v_l  integer := least(greatest(coalesce(p_limit, 20), 1), 100);
   v_o  integer := greatest(coalesce(p_offset, 0), 0);
 begin
+  -- `created_at desc` alone is NOT a stable sort, and this function paginates: `now()` is
+  -- transaction-stable, so two orders placed in one transaction (or merely in the same instant)
+  -- tie, the tie-break is whatever the plan happens to produce, and a row can then appear on two
+  -- pages or on none. `number` is a unique sequence, so adding it makes the order total.
   return jsonb_build_object(
     'total', (select count(*) from public.orders o where o.customer_id = v_id),
     'orders', coalesce((
-      select jsonb_agg(row_to_json(x)::jsonb order by x.created_at desc)
+      select jsonb_agg(row_to_json(x)::jsonb order by x.created_at desc, x.number desc)
       from (
         select o.id as order_id, o.number, o.status, o.type, o.payment_status, o.payment_method,
                o.tracking_token, o.scheduled_for, o.promised_minutes, o.created_at, o.completed_at,
@@ -495,7 +499,7 @@ begin
                  from public.order_items i where i.order_id = o.id), '[]'::jsonb) as items
         from public.orders o
         where o.customer_id = v_id
-        order by o.created_at desc
+        order by o.created_at desc, o.number desc
         limit v_l offset v_o
       ) x), '[]'::jsonb)
   );

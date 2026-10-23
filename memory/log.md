@@ -3160,9 +3160,49 @@ same phone upserts onto the same row rather than duplicating it, `get_order_by_t
 and that same guest row then links cleanly later and the account sees its own prior orders and saved
 address — which is the entire point of the feature.
 
-**Boundaries kept:** no front-end, no `apps/e2e/` or `apps/backoffice/e2e/`, no other session's
-worktree, no bonuses, migrations 1–34 untouched, `docs/design/README.md` and the twelve-rule list
-untouched (D-016 puts that in phase B, with the login), and B4/B5 left alone.
+### Three defects I found in my own work after the first push, and what CI caught
+
+Recorded because the useful half of a report is the part that went wrong.
+
+**CI caught one thing I could not: `apps/backoffice/tests/crm.test.ts` builds a complete `Customer`
+object literal**, so migration 35's new column made it incomplete and the backoffice typecheck
+failed. One line (`auth_user_id: null`, the guest case that fixture already represents). I could not
+have found this locally — the backoffice's dependencies are not installed in this worktree — which
+is a concrete argument for not treating "my own app's typecheck passes" as "the monorepo's does".
+`apps/backoffice/tests/` is not on this boot's forbidden list (`apps/backoffice/e2e/` is, as S6's
+fence), and a fixture repair is the mechanical consequence of a schema change rather than front-end
+work, so I fixed it rather than leaving CI red.
+
+**`link_my_account()` had two races.** It is a login endpoint, so concurrent calls are normal — and
+`place_order` upserts customers **by phone** and is the busiest path in the system, so a guest order
+can create a row on the same phone between my eligibility check and my insert. Either race gave the
+loser a raw `23505` on a login screen. Fixed with `for update` on both candidate selects (so two
+calls cannot both evaluate one candidate as unlinked and both claim it) and a `unique_violation`
+handler on the fresh-row insert that returns `already_linked` if this uid now has a profile and
+otherwise `staff_merge_required` / `concurrent_conflict` — refusing rather than retrying into a row
+whose eligibility was never evaluated. **Stated honestly: the handler is reasoned and the locks are
+verified, but I did not actually produce the interleaving**, so that path is correct by construction
+rather than by test.
+
+**`get_my_orders` paginated on a non-total sort.** `order by created_at desc` alone, with
+`limit`/`offset` — and `now()` is transaction-stable, so orders placed in one transaction tie and
+the tie-break is whatever the plan produces: a page can repeat a row or skip one. Found by actually
+paging through three orders written in one transaction and seeing them come back in insertion order
+instead of newest-first. Now `created_at desc, number desc` (`number` is a unique sequence, so the
+order is total), with a test that writes three orders sharing a `created_at` and asserts each row
+appears on exactly one page.
+
+**And one documentation error in my own §9.3:** it claimed "clearing a field is not expressible in
+this phase". Measured, it is — an absent key leaves a field alone, an explicit JSON `null` clears
+`email` or `birthday`, and an empty `name` raises `invalid_input` because `customers.name` is
+`not null`. The behaviour is the right behaviour; the sentence was wrong. Corrected, with tests for
+all three.
+
+**Boundaries kept:** no front-end feature work, no `apps/e2e/` or `apps/backoffice/e2e/`, no other
+session's worktree, no bonuses, migrations 1–34 untouched, `docs/design/README.md` and the
+twelve-rule list untouched (D-016 puts that in phase B, with the login), and B4/B5 left alone. The
+one file I touched outside my fence is the backoffice test fixture above, and it is named here
+rather than buried in a diff.
 
 **Next:** phase **B (S3-04)** still blocked on the owner resolving a channel (D4/SMTP per D-017, or
 the SMS provider plus rate-limiting/Turnstile) — **and now also on finding 4 above.** Phase **C is
