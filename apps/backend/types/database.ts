@@ -1896,7 +1896,10 @@ export type Database = {
           isSetofReturn: false
         }
       }
-      get_my_orders: { Args: { p_limit?: number; p_offset?: number }; Returns: Json }
+      get_my_orders: {
+        Args: { p_limit?: number; p_offset?: number }
+        Returns: Json
+      }
       get_my_profile: { Args: never; Returns: Json }
       get_order_by_token: { Args: { token: string }; Returns: Json }
       is_service_request: { Args: never; Returns: boolean }
@@ -2121,7 +2124,10 @@ export type Database = {
       settings_public_keys: { Args: never; Returns: string[] }
       settings_staff_keys: { Args: never; Returns: string[] }
       shop_open_at: { Args: { ts: string }; Returns: boolean }
-      update_my_address: { Args: { p_id: string; payload: Json }; Returns: Json }
+      update_my_address: {
+        Args: { p_id: string; payload: Json }
+        Returns: Json
+      }
       update_my_profile: { Args: { payload: Json }; Returns: Json }
       update_order_items: {
         Args: { items: Json; order_id: string }

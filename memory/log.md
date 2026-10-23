@@ -3168,8 +3168,16 @@ the one that was written differently from its siblings.
   container. I matched the generator's observed conventions (alphabetical, `Returns: undefined` for
   `void`, `Relationships: []` for cross-schema FKs — the precedent is `staff.id` → `auth.users`) and
   verified the function set exactly: **57 non-trigger functions in the catalog, 57 in the file, zero
-  diff either way.** Formatting is unverified; **CI's `db:types` diff check is the authority** and
-  will say so if I got a line wrong.
+  diff either way.** Formatting was unverified, and I said CI's `db:types` check was the authority.
+  **It was, and the hand-edit was substantively right and cosmetically wrong:** all 12 functions,
+  all three `customers` blocks, the ordering, `Returns: undefined`, `Relationships: []` — correct.
+  The only two differences in the whole file were line wrapping, on `get_my_orders` and
+  `update_my_address`, where the generator breaks an entry across lines and I had kept it on one
+  (its width threshold is tighter than I estimated). **Resolved by taking CI's own uploaded
+  `backend-types` artefact verbatim**, which is the right way round: the generator is the authority,
+  not my reconstruction of it. Worth knowing for the next session on this host — the artefact exists
+  on every run of the `backend (supabase)` job, so a Docker-less session can still get the real file
+  instead of guessing.
 
 **One unverified deployment assumption, flagged rather than discovered later.**
 `my_verified_identifiers()` is the **first function in this schema to read `auth.users`** — migration
