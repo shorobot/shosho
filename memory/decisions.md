@@ -161,7 +161,19 @@ Consequences, in the order they bite:
 ## D-021 — The account-linking rule's email half: link only on an unambiguous single match, never on a non-unique identifier
 Status: accepted 2026-10-22 (S0, specifying what D-016's finding 5 left under-defined, at the moment S2-07 was issued)
 Decision: `link_my_account()` links a verified identifier to an existing `customers` row **only** on an unambiguous single candidate.
-- Verified **phone** → at most one candidate (the column is `unique`); link it **iff** it has no `auth_user_id`.
+- Verified **phone** → **AMENDED 2026-10-23, before this decision ever reached `main`.** The original
+clause read "at most one candidate (the column is `unique`); link it **iff** it has no `auth_user_id`."
+**S2-07 showed that is defective, and they are right.** A guest row is unlinked **by definition** —
+`place_order` creates it and no account has ever claimed it — so "has no other account attached" is
+satisfied by *exactly* the rows a recycled number lands on. The test excludes rows claimed by another
+*account*; it says nothing about rows belonging to another *person*. For the dominant case the rule
+therefore reduces to a phone match alone, which finding 5's own last sentence forbids. **The rule as
+written did not prevent the disaster it was written to prevent.** Ratified by S0 without catching it.
+- **Interim rule, ratified as S2-07 proposed it:** additionally require **`kitchen_note is null`** before
+auto-linking on a phone match. It is strictly tightening, it blocks the food-safety path specifically
+(`kitchen_note` is copied to `orders.allergy_note` on every order), and it needs no schema change.
+**Clearing the note on link is NOT the safe alternative** — if the link is correct, clearing destroys a
+real customer's allergy record. Refusing is recoverable; both wrong-link and wrong-clear are not.
 - Verified **email** → link **iff exactly one** non-anonymised row carries that email **and** it has no `auth_user_id`. Two or more candidates → **fresh customer row**, never a guess.
 - A `NULL` email matches nothing, guarded explicitly. A row with `anonymised_at` set is never a candidate.
 - Any non-link starts a fresh row and leaves a **deliberate staff merge** from the back-office, audited in `customer_events`.
@@ -189,4 +201,25 @@ Consequences:
 - **For the owner:** worth putting in front of the Steuerberater already engaged for D9, because a German invoice is normally expected to show the tax amount per rate — which is precisely what is not derivable today. S0 is not the authority on that; the Steuerberater is, and they are already in the loop.
 - Does not change D-019 (the rate is a per-item property; order type does not change it). It makes D-019 *auditable*, which it currently is not: nothing records which per-item rate an order actually used.
 - The misleading column name `vat_delivery_pct` — a per-item rate with "delivery" in it, used unconditionally — is noted for S2 to decide on. Renaming is cosmetic next to the snapshot and must not delay it.
+
+## D-023 — `agents.config` spend-ceiling keys are `run_ceiling_usd` / `day_ceiling_usd`
+Status: accepted 2026-10-23 (S0, settling S4-06's filed proposal against S5-01's shipped code)
+Decision: the keys are **`run_ceiling_usd`** and **`day_ceiling_usd`**, plain USD numbers, optional — absence means "no ceiling configured", never `0`.
+Why: S5-01 merged first and its ledger already reads exactly these (`apps/automation/.../ledger.py:157-158`). **The enforcer's names win**: the dashboard *displays and writes* a ceiling, but the orchestrator is what actually bounds spend, and an unknown key there is indistinguishable from "not set" — it silently falls back to the code default (`$0.50`/run, `$5.00`/day) while the screen reports a configured ceiling. A safety control that claims a property it does not have is worse than a visibly absent one.
+Consequences:
+- S0 renamed S4-06's keys in `s4-06` before merging it (19 lines, 5 files). S4 **filed the gap rather than guessing past it**, which is the only reason it was caught before shipping — their proposal called it "not urgent", which was true when written and stopped being true the moment S5-01 merged.
+- Any third agent reads these keys. `docs/api-contracts.md` §8.8 should name them rather than leaving "S5's vocabulary, not specified here".
+
+## D-024 — `settings.draft` is readable by ANY authenticated user, customers included; it blocks phase B
+Status: accepted 2026-10-23 (S0, confirming S2-07's finding by reading the migration)
+Decision: treat this as a **release blocker for phase B (the customer login)**, not as an open hygiene item, and route it to **S7** per D-012. It must be closed before any non-staff user can hold a JWT.
+Why, measured rather than taken on report:
+- Migration 32 narrowed the `draft` column by **column grant**, and only for one role: `revoke all on table public.settings from anon; grant select (key, value, created_at, updated_at) on public.settings to anon;` (lines 23-24). `authenticated` keeps the blanket table grant.
+- `settings_public_read` is `for select to anon, **authenticated** using (key = any (settings_public_keys()))` — it is the one `to authenticated` policy that carries **no** `is_staff(...)` predicate, because it is the public-read policy.
+- Together: any `authenticated` role can select `draft` on the publicly-readable rows. Today that is kitchen and driver (recorded as **B5**, understated). **After phase B it is every customer** — the shop's unpublished edits, readable by anyone who signs up.
+- **The migration's own comment states the assumption that fails:** "`authenticated` keeps its existing (unchanged) table-level grant, so owner/operator continue to…". It reasoned about `authenticated` as if it meant *staff*. That was true when written and phase B makes it false.
+Consequences:
+- **This is the one place the ROADMAP's "safe by construction against a second class of authenticated user" claim does not hold**, and S2-07 found it. The claim rested on "every `to authenticated` policy carries an explicit `is_staff(...)`" — `settings_public_read` is the exception, and column grants are where it bites. The invariant should be restated with the exception named rather than repeated.
+- Column grants cannot fix it alone (S2-07's words, confirmed): the fix is to revoke the blanket `authenticated` grant and re-grant the public columns, mirroring what was done for `anon` — S7 to rule, S2 to implement.
+- **B5 is upgraded** from "reaches kitchen/driver" to "reaches every authenticated user" and from an open item to a phase-B blocker.
 

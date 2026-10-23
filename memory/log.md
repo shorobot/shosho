@@ -3093,3 +3093,55 @@ the failures. So the re-scoped boot is the classification only.
   (B2)", but I inserted the D-022 VAT-snapshot row at the top of section B yesterday, so that row has
   moved. A boot that names a row by position breaks whenever the table is edited — name the item, not
   the index.
+
+## 2026-10-23 — S0 Orchestrator — S2-07 corrected me and was right; D-021 amended before it ever reached `main`
+
+**S2-07 reported four things needing me. All four hold, and two of them are my errors.**
+
+**1. Finding 5's rule does not prevent finding 5's disaster — accepted, and this is the serious one.**
+The rule I ratified in D-021 says link on a phone match when the row "has no other account attached".
+S2-07's objection: **a guest row is unlinked by definition** — `place_order` creates it and no account
+has ever claimed it — so that condition is satisfied by *exactly* the rows a recycled number lands on.
+The test excludes rows claimed by another **account**; it says nothing about rows belonging to another
+**person**. For the dominant case the rule collapses to a phone match alone, which finding 5's own last
+sentence forbids. So the rule did not prevent the disaster it was written to prevent, and I ratified it
+without catching that. **Amended D-021 in place, before it ever reached `main`** — it lives in the still
+-open #109, so there was no need to ship a known-defective decision and supersede it later.
+**Ratified their `kitchen_note is null` tightening** as the interim: strictly tightening, blocks the
+food-safety path specifically, needs no schema change. And recorded their warning that **clearing the
+note on link is not the safe alternative** — if the link is correct, clearing destroys a real allergy
+record. Refusing is recoverable; wrong-link and wrong-clear are not.
+
+**3. "Otherwise start a fresh customer row" is not implementable — accepted.** `customers.phone` is
+`not null unique`, so there cannot be a second row with that phone. Taken with point 1, the rule can
+neither safely link nor legally refuse. The premise underneath it — *a phone number identifies one
+person forever* — is simply false, and recycled numbers are what that falsity is called. Filed as its own
+plan item; it needs a decision before phase B, with the `kitchen_note is null` interim holding until then.
+
+**2. `settings.draft` is reachable by a customer JWT — confirmed by reading the migration, and it is
+worse than B5 recorded.** Migration 32 lines 23-24 are `revoke all on table public.settings from anon;
+grant select (key, value, created_at, updated_at) on public.settings to anon;` — **`anon` only**, so
+`authenticated` keeps the blanket table grant including `draft`. The admitting policy is
+**`settings_public_read`**, `for select to anon, authenticated using (key = any
+(settings_public_keys()))` — **the one `to authenticated` policy with no `is_staff(...)` predicate**,
+because it is the public-read policy. So any authenticated user reads `draft` on the public rows. B5
+recorded this as "leaks to kitchen/driver" and named a different policy; the real reach is **every
+authenticated user**, and phase B creates a whole new class of them. **The migration's own comment states
+the assumption that fails:** "`authenticated` keeps its existing table-level grant, so owner/operator
+continue to…" — it read `authenticated` as *staff*, which was true when written. Ruled as **D-024**: a
+phase-B release blocker, to S7 per D-012, B5 upgraded.
+
+**This is also the one place the ROADMAP's "safe by construction against a second class of authenticated
+user" claim fails** — it rested on "every `to authenticated` policy carries an explicit `is_staff(...)`",
+and `settings_public_read` is the exception. The invariant needs restating with its exception named.
+
+**4. "D-021 does not exist" — correct, and it is my sequencing error, repeated.** D-021 and D-016's
+confirmation live in **#109, still open**. I issued S2-07 telling it to read D-021 as task-2 input. My own
+log already carries the lesson from 10-21: *a boot amendment not committed before the session runs does
+not exist.* I did it again with a decision instead of an amendment. The fix is ordering, not wording:
+**merge the decision before issuing the boot that depends on it.**
+
+**Separately: ruled S4-06's spend-ceiling key as D-023** and renamed it in `s4-06` before merge —
+`run_ceiling_usd` / `day_ceiling_usd`, S5's names, because S5 is the enforcer and an unknown key there is
+indistinguishable from "not set", so the screen would have claimed a ceiling that was not in force. S4
+filed it rather than guessing past it, which is why it was caught. Resolved their proposal in place.
