@@ -377,9 +377,15 @@ security definer
 set search_path = public
 as $$
 declare
-  c public.customers;
+  -- `require_customer_id()` is resolved into a variable BEFORE the query, not called inline in it,
+  -- which is the same shape as every other function in this section. Inline, the planner evaluates
+  -- it while preparing the statement, so `supabase db lint`'s plpgsql_check trips on the
+  -- `no_customer_account` raise during static analysis — there is no JWT at lint time — and CI runs
+  -- `--fail-on warning`. Assigning first keeps the raise on the execution path where it belongs.
+  v_id uuid := public.require_customer_id();
+  c    public.customers;
 begin
-  select * into c from public.customers where id = public.require_customer_id();
+  select * into c from public.customers where id = v_id;
   return jsonb_build_object(
     'customer_id', c.id,
     'name', c.name,

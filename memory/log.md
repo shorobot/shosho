@@ -3130,9 +3130,25 @@ Neither fixed, per the boot.
 - **`supabase db push` against `shosho-staging` did not run.** There are no staging credentials on
   this host (no `.env`, only `.env.example` files) and the CLI needs Docker, which is not available
   (macOS 12, no container runtime). **This remains open and is the one done-when item I cannot
-  close.**
-- **The vitest suite did not run.** Same reason: it needs a live Supabase stack. `tsc --noEmit`
-  passes on `apps/backend`.
+  close locally** — though CI's `backend (supabase)` job now covers the thing that matters most about
+  it (see below).
+- **I could not run the vitest suite, `supabase db lint` or `supabase gen types` locally** — all
+  three need the Docker-based stack. `tsc --noEmit` passes on `apps/backend`.
+
+**What CI then proved, which I could not — and one thing it caught.** `supabase db reset` on the real
+stack **applied all 35 migrations and the committed seed with no error**, on PostgreSQL **17** rather
+than my local 16.2. That closes the gap I flagged about the version difference, and it is the first
+independent confirmation of the local result.
+
+It also caught something I had no way to see: **`supabase db lint` (plpgsql_check) failed on exactly
+one function, `get_my_profile`.** Not a defect in the SQL — plpgsql_check *plans* each SQL statement,
+`get_my_profile` called `require_customer_id()` **inline inside** its `select`, the planner evaluates
+a `stable` zero-argument function while preparing that statement, and the deliberate
+`no_customer_account` raise therefore fired during static analysis (there is no JWT at lint time).
+CI runs `--fail-on warning`, so it failed. The fix is to resolve the id into a variable before the
+query — **which is already what the other six functions in this section do**, and none of them was
+reported, so the pattern is proven by six examples rather than assumed. `get_my_profile` was simply
+the one that was written differently from its siblings.
 - **`types/database.ts` was hand-edited**, because `supabase gen types` shells out to a Docker
   container. I matched the generator's observed conventions (alphabetical, `Returns: undefined` for
   `void`, `Relationships: []` for cross-schema FKs — the precedent is `staff.id` → `auth.users`) and
