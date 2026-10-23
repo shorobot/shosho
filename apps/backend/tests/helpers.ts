@@ -133,3 +133,61 @@ export async function openAllDay() {
   if (error) throw error;
   await a.from("settings").upsert({ key: "kitchen", value: { paused: false, paused_by: null, paused_at: null, rush: false } });
 }
+
+// ------------------------------------------------------------------ [S2-07] customer JWTs
+//
+// Phase A is channel-agnostic on purpose (D-017 owns the channel), so these helpers must produce
+// a *verified identifier* without configuring one. Two deliberate choices:
+//
+//  * The auth user is created with email + password through the admin API and signed in with
+//    `signInWithPassword` — the same mechanism the staff helpers above already use, which needs no
+//    SMTP and no SMS provider. OTP is how a real customer will get here; it is not how the
+//    identifier becomes trustworthy, which is `*_confirmed_at` on `auth.users`.
+//  * A verified **phone** is stamped with raw SQL as the superuser rather than through the admin
+//    API, because `config.toml` has `auth.sms.enable_signup = false` and changing that is channel
+//    work this phase must not do.
+//
+// Everything downstream (link_my_account and the whole self-service surface) only ever reads
+// `auth.users.phone/email` + their confirmed_at stamps, so a JWT minted this way is
+// indistinguishable from one an OTP login would produce.
+export type CustomerAuth = { client: Db; uid: string; email: string; phone: string | null };
+
+let custSeq = 0;
+export async function newCustomerAuth(opts: {
+  phone?: string | null;
+  confirmPhone?: boolean;
+  email?: string;
+  confirmEmail?: boolean;
+} = {}): Promise<CustomerAuth> {
+  custSeq += 1;
+  const rand = Math.floor(Math.random() * 1_000_000).toString().padStart(6, "0");
+  const email = opts.email ?? `cust-${rand}-${custSeq}@customer.test`;
+  const a = admin();
+
+  const { data: created, error: cErr } = await a.auth.admin.createUser({
+    email,
+    password: PASSWORD,
+    email_confirm: opts.confirmEmail ?? true,
+  });
+  if (cErr) throw new Error(`createUser: ${cErr.message}`);
+  const uid = created.user!.id;
+
+  const phone = opts.phone === undefined ? null : opts.phone;
+  if (phone) {
+    await asSuperuser(async (c) => {
+      await c.query(
+        `update auth.users set phone = $2, phone_confirmed_at = case when $3 then now() else null end
+          where id = $1`,
+        [uid, phone, opts.confirmPhone ?? true],
+      );
+    });
+  }
+  if (opts.confirmEmail === false) {
+    await asSuperuser((c) => c.query(`update auth.users set email_confirmed_at = null where id = $1`, [uid]));
+  }
+
+  const client = anon();
+  const { error: sErr } = await client.auth.signInWithPassword({ email, password: PASSWORD });
+  if (sErr) throw new Error(`sign in customer: ${sErr.message}`);
+  return { client, uid, email, phone };
+}

@@ -1,5 +1,5 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { admin, anon, openAllDay, signIn, type Db } from "./helpers";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { admin, anon, freshPhone, newCustomerAuth, openAllDay, signIn, type Db } from "./helpers";
 
 beforeAll(openAllDay);
 
@@ -71,6 +71,21 @@ const AUTHENTICATED_ONLY = new Set([
   // only (inline guard inside the function); never anon, never the `agent` role itself (the §9.6
   // asymmetry — see AGENT_ROLE_ONLY's comment on claim_agent_tasks/finish_agent_run below).
   "review_agent_output",
+  // [S2-07] §9 — the customer self-service surface. `authenticated` only, never anon: each one
+  // resolves the caller through auth.uid() -> customers.auth_user_id and raises
+  // `no_customer_account` (42501) when there is no linked profile, so an anon-callable variant
+  // would be a function whose guard depends on a NULL uid.
+  "link_my_account",
+  "get_my_profile",
+  "update_my_profile",
+  "get_my_orders",
+  "add_my_address",
+  "update_my_address",
+  "set_my_default_address",
+  "delete_my_address",
+  // used by `customer_addresses_self_read`; a policy expression is evaluated as the querying role,
+  // so `authenticated` must hold EXECUTE on it or the policy errors instead of filtering.
+  "current_customer_id",
 ]);
 
 // service_role only (Edge Functions, cron, one-time bootstrap) — never anon, never authenticated.
@@ -98,6 +113,11 @@ const SERVICE_ROLE_ONLY = new Set([
   // S2-06 §8.6 — bucket `site` installer, service_role only (same shape as ensure_menu_bucket_policies,
   // but starting correct: revoked from anon AND authenticated directly, not just `public`).
   "ensure_site_bucket_policies",
+  // [S2-07] §9 internals — the raising variant of current_customer_id(), and the reader of the
+  // verified identifiers on auth.users. Both are called only from inside the security-definer RPCs
+  // above (which run as the function owner), never over PostgREST.
+  "require_customer_id",
+  "my_verified_identifiers",
 ]);
 
 // S2-09 — the `agent` Postgres role's own set (docs/security.md §9.1, S7-03's ruling): a dedicated,
@@ -110,6 +130,12 @@ const SERVICE_ROLE_ONLY = new Set([
 // instead. Still asserted below: neither anon nor authenticated can reach them (the PostgREST
 // surface), and service_role no longer can either (the ruling's whole point).
 const AGENT_ROLE_ONLY = new Set(["claim_agent_tasks", "finish_agent_run"]);
+
+// [S2-07] Reachable by NO role — not anon, not authenticated, not service_role, not agent. The
+// tightest category there is, and worth having its own list rather than being filed under
+// SERVICE_ROLE_ONLY (which asserts service_role CAN reach it). `log_account_link` writes the
+// account-link audit event and is only ever called from inside link_my_account().
+const NO_ROLE_INTERNAL = new Set(["log_account_link"]);
 
 // Trigger functions (`returns trigger`) cannot be invoked directly via RPC/PostgREST no matter what
 // their grants say — Postgres refuses to call them outside trigger context — so they are exempt
@@ -153,7 +179,7 @@ describe("function grants sweep (public schema, live catalog)", () => {
     // The real regression test: a *new* function — whether it's properly locked down or not —
     // must be added here on purpose. This is what actually catches "someone added a function and
     // forgot about grants" in CI, rather than relying on the author to also remember this file.
-    const known = new Set([...ANON_CALLABLE, ...AUTHENTICATED_ONLY, ...SERVICE_ROLE_ONLY, ...AGENT_ROLE_ONLY, ...TRIGGER_FUNCTIONS]);
+    const known = new Set([...ANON_CALLABLE, ...AUTHENTICATED_ONLY, ...SERVICE_ROLE_ONLY, ...AGENT_ROLE_ONLY, ...NO_ROLE_INTERNAL, ...TRIGGER_FUNCTIONS]);
     const rows = await functionGrants();
     const unknown = rows.filter((r) => !known.has(r.proname));
     expect(
@@ -190,6 +216,18 @@ describe("function grants sweep (public schema, live catalog)", () => {
       // The ruling's whole point: service_role must no longer reach these, only `agent`.
       expect(row!.service_role_execute, `${name} service_role_execute`).toBe(false);
       expect(row!.agent_execute, `${name} agent_execute`).toBe(true);
+    }
+  });
+
+  it("no-role internals are reachable by nothing — anon, authenticated, service_role and agent all refused (S2-07 §9)", async () => {
+    const rows = await functionGrants();
+    for (const name of NO_ROLE_INTERNAL) {
+      const row = rows.find((r) => r.proname === name);
+      expect(row, `${name} not found — was it renamed/dropped?`).toBeTruthy();
+      expect(row!.anon_execute, `${name} anon_execute`).toBe(false);
+      expect(row!.authenticated_execute, `${name} authenticated_execute`).toBe(false);
+      expect(row!.service_role_execute, `${name} service_role_execute`).toBe(false);
+      expect(row!.agent_execute, `${name} agent_execute`).toBe(false);
     }
   });
 
@@ -384,5 +422,272 @@ describe("authorisation matrix: kitchen / driver must not see staff-or-owner-onl
       const { error } = await c.rpc("security_audit_function_grants");
       expect(error).not.toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// [S2-07] task 5 — the row nobody has ever tested: a real, non-staff customer JWT.
+//
+// Until migration 35 no customer could hold a JWT at all, so every staff surface was safe against
+// one only as a *side effect*: `auth_role()` is `select role from public.staff where id =
+// auth.uid() and active` — a lookup, so a customer gets NULL and `is_staff()` coalesces to false.
+// That is a property worth a passing test precisely because nothing was defending it on purpose.
+//
+// The boot's suggestion was to re-run the `security_audit_*` matrix with a customer JWT "as a new
+// column". Measured, that cannot work and would prove nothing: those helpers report
+// `has_*_privilege('authenticated', …)`, which is a per-ROLE fact, and a customer and a staff
+// member are the SAME Postgres role (`authenticated`). The grant columns would be identical by
+// construction. What separates them is RLS predicates and the guards inside functions, so this has
+// to be a behavioural test — real calls with a real customer JWT. See S2-07's report.
+//
+// It also records WHICH KIND of refusal each surface gives, because this project keeps rediscovering
+// that they are not the same thing:
+//   * a function with an internal guard RAISES (42501) — the caller is told
+//   * a SELECT under RLS returns [] with no error — silent
+//   * an INSERT under RLS RAISES; an UPDATE/DELETE affects 0 rows with no error — silent
+// A test that only asserts "no rows came back" cannot tell a refusal from an empty table, so the
+// silent cases below assert the data is still there afterwards as well.
+// ---------------------------------------------------------------------------------------------
+describe("[S2-07] a real customer JWT is refused by every staff surface and every report", () => {
+  let customer: Db;
+  let strangerId: string;
+  const STRANGER_NOTE = "SESAME ANAPHYLAXIS — do not serve";
+
+  beforeAll(async () => {
+    const a = admin();
+    // a stranger with real data, so "empty result" is a refusal and not an empty table
+    const { data: stranger, error: sErr } = await a
+      .from("customers")
+      .insert({ name: "Stranger S7", phone: freshPhone(), kitchen_note: STRANGER_NOTE })
+      .select().single();
+    if (sErr) throw sErr;
+    strangerId = (stranger as any).id;
+
+    // a linked customer — the caller
+    const { data: own, error: oErr } = await a
+      .from("customers").insert({ name: "Matrix Caller", phone: freshPhone() }).select().single();
+    if (oErr) throw oErr;
+    const acct = await newCustomerAuth({ phone: (own as any).phone });
+    const { data: link, error: lErr } = await acct.client.rpc("link_my_account");
+    if (lErr) throw lErr;
+    expect((link as any).outcome, "fixture: the caller is a linked customer").toBe("linked_by_phone");
+    customer = acct.client;
+  });
+
+  it("is not staff, by the only mechanism that decides it", async () => {
+    // auth_role() is `select role from public.staff where id = auth.uid() and active` — a lookup,
+    // not an assumption. This one null is what every `is_staff(...)` predicate in every policy
+    // coalesces to false, which is the whole reason the backend was already safe against a second
+    // class of authenticated user. is_staff() itself is VARIADIC and awkward to call over
+    // PostgREST, so it is proved behaviourally by the refusals below instead.
+    const { data: role } = await customer.rpc("auth_role");
+    expect(role, "auth_role() is a lookup in `staff`, so a customer gets null").toBeNull();
+    const { data: staffRow } = await admin().from("staff").select("id").eq("id", strangerId);
+    expect(staffRow ?? [], "fixture sanity: the caller is not in `staff`").toEqual([]);
+  });
+
+  // Every staff-only and service-only RPC in api-contracts §2 / §6 / §8. Each must RAISE: these
+  // are functions with their own guards, so a customer must be told no, not handed an empty result.
+  const STAFF_RPCS: Array<[string, Record<string, unknown>]> = [
+    ["kitchen_pause", { paused: true }],
+    ["anonymise_silent_customers", { months: 1 }],
+    ["resolve_segment", { p_segment: {}, p_channel: "push" }],
+    ["publish_site", {}],
+    ["reports_guard", {}],
+    ["report_revenue_by_day", { from_date: "2026-01-01", to_date: "2026-12-31" }],
+    ["report_top_items", { from_date: "2026-01-01", to_date: "2026-12-31", limit_count: 10 }],
+    ["report_funnel", { from_date: "2026-01-01", to_date: "2026-12-31" }],
+    ["report_delivery_times", { from_date: "2026-01-01", to_date: "2026-12-31" }],
+    ["report_payments", { from_date: "2026-01-01", to_date: "2026-12-31" }],
+    ["claim_campaign_recipients", { p_limit: 5 }],
+    ["claim_payment_jobs", { p_limit: 5 }],
+    ["claim_agent_tasks", { p_limit: 1 }],
+    ["security_audit_function_grants", {}],
+    ["security_audit_table_grants", {}],
+    ["security_audit_policies", {}],
+    ["payment_worker_secret", {}],
+    ["is_service_request", {}],
+    ["current_actor", {}],
+    ["require_customer_id", {}],
+    ["my_verified_identifiers", {}],
+    ["log_account_link", { p_customer_id: null, p_outcome: "forged", p_reason: null, p_uid: null }],
+  ];
+
+  it("every staff-only and service-only RPC raises, none returns data", async () => {
+    const leaked: string[] = [];
+    for (const [fn, args] of STAFF_RPCS) {
+      const { error } = await customer.rpc(fn, args);
+      if (!error) leaked.push(fn);
+    }
+    expect(leaked, "these answered a customer JWT instead of refusing").toEqual([]);
+  });
+
+  it("set_order_status / update_order_items / add_customer_event raise 42501 with the role guard", async () => {
+    const { data: order } = await admin().from("orders").select("id").limit(1).single();
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["set_order_status", { order_id: (order as any)?.id, new_status: "accepted", payload: {} }],
+      ["update_order_items", { order_id: (order as any)?.id, items: [] }],
+      ["add_customer_event", { customer_id: strangerId, type: "note", payload: { text: "x" } }],
+    ];
+    for (const [fn, args] of cases) {
+      const { error } = await customer.rpc(fn, args);
+      expect(error, `${fn} must refuse`).not.toBeNull();
+      expect(error!.message, fn).toMatch(/not_staff|forbidden_for_role/);
+    }
+  });
+
+  // The silent class. Each of these returns [] rather than an error, which is why the assertion is
+  // "no rows came back AND the data is demonstrably still there".
+  it("every staff table read comes back empty — and the data it would have shown still exists", async () => {
+    const TABLES = [
+      "customers", "customer_events", "orders", "order_items", "order_events", "staff",
+      "payment_events", "payment_jobs", "order_attempts", "campaigns", "campaign_recipients",
+      "automations", "banners", "site_publications", "promo_codes", "agent_runs", "agent_outputs",
+    ];
+    for (const t of TABLES) {
+      const { data, error } = await customer.from(t).select("*").limit(5);
+      expect(error, `${t}: expected a silent empty result, not an error`).toBeNull();
+      expect(data ?? [], `${t} must be empty for a customer`).toEqual([]);
+    }
+    // the ground truth the emptiness above is hiding
+    const { data: real } = await admin().from("customers").select("id").limit(5);
+    expect(real!.length, "there IS data in customers — the empty results were refusals").toBeGreaterThan(0);
+  });
+
+  it("no kitchen_note of anyone else is reachable, by table, by view or by RPC", async () => {
+    const { data: viaTable } = await customer.from("customers").select("kitchen_note").not("kitchen_note", "is", null);
+    expect(viaTable ?? []).toEqual([]);
+
+    const { data: viaView } = await customer.from("customer_stats").select("*").limit(5);
+    expect(viaView ?? [], "customer_stats is security_invoker, so it narrows with the caller").toEqual([]);
+
+    const { data: profile } = await customer.rpc("get_my_profile");
+    expect(JSON.stringify(profile ?? {})).not.toContain("SESAME");
+
+    const { data: orders } = await customer.rpc("get_my_orders");
+    expect(JSON.stringify(orders ?? {})).not.toContain("SESAME");
+
+    // and it is still on the stranger's row, so none of the above was an empty table
+    const { data: still } = await admin()
+      .from("customers").select("kitchen_note").eq("id", strangerId).single();
+    expect(still!.kitchen_note).toBe(STRANGER_NOTE);
+  });
+
+  it("private settings keys stay private", async () => {
+    const { data } = await customer.from("settings").select("key");
+    const keys = (data ?? []).map((r: { key: string }) => r.key);
+    for (const k of ["payments", "kitchen", "ops"]) {
+      expect(keys, `a customer must not read settings.${k}`).not.toContain(k);
+    }
+    expect(keys.sort(), "a customer sees exactly the public set, same as anon").toEqual(
+      ["business", "kitchen.status", "opening_hours", "payments.enabled", "site"],
+    );
+  });
+
+  it("writes are refused — INSERT raises, UPDATE/DELETE are silent no-ops, nothing changes", async () => {
+    // INSERT: raises. This is the loud half.
+    for (const [t, row] of [
+      ["customers", { name: "Forged", phone: freshPhone() }],
+      ["staff", { id: "00000000-0000-4000-8000-0000000000ff", name: "Me", role: "owner", active: true }],
+      ["promo_codes", { code: "FREE100", kind: "percent", value: 100 }],
+    ] as const) {
+      const { error } = await customer.from(t).insert(row as Record<string, unknown>);
+      expect(error, `INSERT into ${t} must raise`).not.toBeNull();
+    }
+
+    // UPDATE / DELETE: silent. This is the half a "no rows" assertion cannot distinguish, so the
+    // test asserts the target is unchanged afterwards instead of trusting the empty return.
+    const { data: upd, error: uErr } = await customer
+      .from("customers").update({ kitchen_note: "HIJACKED", tags: ["vip"] }).eq("id", strangerId).select();
+    expect(uErr, "no error at all — the silent class").toBeNull();
+    expect(upd ?? []).toEqual([]);
+
+    const { data: del, error: dErr } = await customer
+      .from("customers").delete().eq("id", strangerId).select();
+    expect(dErr).toBeNull();
+    expect(del ?? []).toEqual([]);
+
+    const { data: after } = await admin()
+      .from("customers").select("kitchen_note, tags").eq("id", strangerId).single();
+    expect(after, "the row still exists").toBeTruthy();
+    expect(after!.kitchen_note, "and is byte-for-byte unchanged").toBe(STRANGER_NOTE);
+    expect(after!.tags).toEqual([]);
+
+    const { data: settings } = await customer
+      .from("settings").update({ value: { hacked: true } }).eq("key", "ops").select();
+    expect(settings ?? []).toEqual([]);
+  });
+
+  it("the storage buckets staff write to are not writable by a customer", async () => {
+    for (const bucket of ["menu", "site"]) {
+      const { error } = await customer.storage.from(bucket)
+        .upload(`s2-07-probe-${Date.now()}.txt`, new Blob(["x"]), { contentType: "text/plain" });
+      expect(error, `${bucket} must refuse a customer upload`).not.toBeNull();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// [S2-07] THE ONE PLACE "safe by construction" DOES NOT HOLD — found by doing task 4, and the
+// reason this phase needed a behavioural test rather than a grant audit.
+//
+// Migration 32 named the pitfall itself: RLS is row-level, not column-level, so adding
+// `settings.draft` to a publicly-readable row would hand `anon` every unpublished edit. Its fix
+// was a column grant — `revoke all on settings from anon; grant select (key, value, created_at,
+// updated_at) to anon` — and its comment says `authenticated` deliberately keeps the blanket
+// table grant "so owner/operator continue to see `draft` on the rows their existing ROW policies
+// already admit them to".
+//
+// That reasoning was sound while `authenticated` could only ever be staff. Migration 35 creates
+// the second class of authenticated user, and a customer passes `settings_public_read`
+// (`key = any (settings_public_keys())`, which includes `site`) — so a customer reads
+// `settings.draft` on the `site` row: the unpublished site copy. Measured, not inferred.
+//
+// Column privileges cannot fix it, because a customer and an operator are the same Postgres role:
+// narrowing `authenticated`'s column list would also blind the back-office draft editor (§6.6
+// reads `from('settings')` directly). The candidate fixes are all someone else's call — move
+// `draft` to its own staff-only table, or serve the public settings through a view/RPC and
+// narrow the table — so this is REPORTED, NOT FIXED, and filed for S7-04 / S0.
+//
+// Nothing is exposed in production today: phase A ships no login, so no customer JWT exists yet.
+// It must be resolved before phase B (S3-04) ships one.
+//
+// `it.fails` on purpose: it passes while the defect stands, and starts failing the moment someone
+// fixes it — at which point whoever fixed it deletes the `.fails` and keeps the assertion.
+// ---------------------------------------------------------------------------------------------
+describe("[S2-07] known finding: settings.draft is reachable by a customer JWT", () => {
+  let customer: Db;
+
+  beforeAll(async () => {
+    const a = admin();
+    const { data: own } = await a
+      .from("customers").insert({ name: "Draft Probe", phone: freshPhone() }).select().single();
+    const acct = await newCustomerAuth({ phone: (own as any).phone });
+    await acct.client.rpc("link_my_account");
+    customer = acct.client;
+    await a.from("settings").update({ draft: { hero: "UNPUBLISHED COPY" } }).eq("key", "site");
+  });
+
+  afterAll(async () => {
+    await admin().from("settings").update({ draft: null }).eq("key", "site");
+  });
+
+  it("anon still cannot — migration 32's column grant holds for the role it was written for", async () => {
+    const { error } = await anon().from("settings").select("key, draft");
+    expect(error, "anon has no SELECT on the `draft` column").not.toBeNull();
+  });
+
+  it("a customer cannot read other staff-only settings columns it has no row for", async () => {
+    // the scope of the finding, asserted so it cannot widen unnoticed: only rows
+    // settings_public_keys() admits, never `payments` or `kitchen`.
+    const { data } = await customer.from("settings").select("key, draft");
+    const keys = (data ?? []).map((r: { key: string }) => r.key).sort();
+    expect(keys).toEqual(["business", "kitchen.status", "opening_hours", "payments.enabled", "site"]);
+  });
+
+  it.fails("a customer must not read settings.draft (fails today — see the block comment)", async () => {
+    const { data, error } = await customer.from("settings").select("key, draft").eq("key", "site").single();
+    expect(error).toBeNull();
+    expect((data as any)?.draft, "the unpublished site copy must not reach a customer").toBeNull();
   });
 });

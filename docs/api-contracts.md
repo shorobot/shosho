@@ -782,3 +782,182 @@ approvals live.
 **The rule this exists to enforce, stated once rather than per-consumer:** nothing downstream — a
 Steuerberater export, a promoted Sales draft, a stock figure feeding a reorder — may treat an
 `agent_outputs` row as live before `status = 'approved'`.
+
+---
+
+## 9. Customer accounts & self-service — S2-07 (phase A)
+
+Optional customer accounts per **D-016**. **Guest checkout is unchanged and remains a first-class
+path** — every customer row `place_order` has ever created has `auth_user_id` null and keeps working
+untouched. Nothing in this section configures or depends on a login *channel*: D-017 owns that, and
+these functions read whichever identifier Supabase Auth has already stamped confirmed on
+`auth.users` (`phone_confirmed_at` / `email_confirmed_at`), whether an SMS or an email produced it.
+
+**Scope boundary.** Phase A is the backend only. The login screens, the cabinet and the address form
+are phase B (S3-04), which also carries D-016's required update to `docs/design/README.md`'s
+product-rule list.
+
+### 9.1 `customers.auth_user_id` — migration 35
+
+```
+auth_user_id  uuid  null  unique  references auth.users (id) on delete set null
+```
+
+Nullable is the point: **null means "guest-created profile", which is the default and the common
+case.** `on delete set null` orphans the account link rather than cascading away order history
+(GoBD retention). The `unique` constraint is also the index — one account, at most one profile.
+
+Set only by `link_my_account()` under the rule in §9.2, or deliberately by staff. **Never accepted
+from a client**: no function in this section takes a customer id as a parameter.
+
+### 9.2 `link_my_account()` → jsonb — authenticated (customer), never anon
+
+Call on every login; it is idempotent. Takes no arguments **by design** — it reads the verified
+identifiers from `auth.users` for `auth.uid()`, so a caller cannot assert someone else's phone and
+be believed.
+
+**The rule (finding 5 — a food-safety rule, not a privacy one).** `customers.kitchen_note` is
+*"Allergy / kitchen note — copied to `orders.allergy_note` on every order"*, so a profile handed to
+the wrong person puts a stranger's allergy on a kitchen card. Matching order is **phone first, then
+email**; phone is `unique` and proves possession, email is neither.
+
+A candidate row is eligible only if **all three** hold:
+
+| condition | why |
+|---|---|
+| `auth_user_id is null` | never take an account someone else already holds |
+| `anonymised_at is null` | an erased row is never a candidate |
+| `kitchen_note is null` | **S2-07's addition**, strictly tightening the stated rule — see the note below |
+
+> **On the third condition.** The rule as originally stated ("link when the identifier matches and
+> the row has no other account attached") does not prevent the recycled-number disaster it
+> describes: a guest row is unlinked *by definition*, so a recycled number matches one and is
+> taken. The column that makes mis-linking a food-safety defect rather than a privacy one is
+> exactly `kitchen_note`, so automatic linking is gated on its absence. Rows without one carry
+> order history and addresses only — the risk the product already accepts, since guest checkout
+> has matched profiles by phone since S2-01. **S0 to ratify or overrule.**
+
+**Email tie-break.** `customers.email` is nullable with **no unique constraint or index**, so an
+email match can be zero, one or many rows. Link **only** on exactly one eligible candidate; two or
+more → a fresh profile, never a guess. A `NULL` verified email matches nothing (guarded explicitly —
+`where email = <null>` would return zero rows and read as "no candidate" rather than "not asked").
+
+**Outcomes.** Every one of them is audited on the customer timeline as a `customer_events` row of
+type `note` with `payload->>'event' = 'account_link'` (plus `outcome`, `reason`, `auth_user_id`).
+
+| `outcome` | `linked` | `customer_id` | meaning |
+|---|---|---|---|
+| `already_linked` | true | the profile | this account already has one; safe to call on every login |
+| `linked_by_phone` | true | the profile | verified phone matched exactly one eligible row |
+| `linked_by_email` | true | the profile | verified email matched exactly one eligible row |
+| `created` | true | the new profile | no eligible candidate — a fresh, deliberately empty profile. `reason` says what was passed over (`ambiguous_email`, `identifier_claimed`, `profile_has_kitchen_note`) or is absent |
+| `staff_merge_required` | false | null | **a candidate exists and must not be taken.** `reason` ∈ `identifier_claimed` \| `profile_has_kitchen_note` \| `profile_anonymised`. A fresh row is impossible here because it would need the candidate's phone, which is `unique` and already held. **Staff resolve it from the back-office; the refusal is already on the timeline.** |
+| `needs_verified_identifier` | false | null | nothing confirmed on the account yet |
+| `needs_phone` | false | null | a fresh profile is required but the account has no verified phone, and `customers.phone` is `not null`. **An email-only account therefore cannot get a profile today** — see §9.6 |
+
+**Raises** (errcode `42501`): `not_authenticated` when there is no JWT; `staff_cannot_link` when the
+uid belongs to a `staff` row — staff and customer are separate identities.
+
+**What phase B must render.** `staff_merge_required` and `needs_phone` are not errors to retry; they
+are states the login screen has to show ("we need to check something — please call us"). Treating
+either as a transient failure is the one way to turn a safe refusal into a bad experience.
+
+### 9.3 Profile — authenticated (customer)
+
+| RPC | returns |
+|---|---|
+| `get_my_profile()` | `{customer_id, name, phone, email, birthday, is_company, consent{email,push,phone}, created_at, addresses[]}` |
+| `update_my_profile(payload jsonb)` | the same shape, after the write |
+
+**`kitchen_note` is not in the field list, and there is deliberately no self SELECT policy on
+`customers`.** A `select *` would hand the customer the staff's internal note about them, and
+whether that is shown to them is the owner's decision, not a session's. Serving a field list also
+means a column added to `customers` later cannot leak through this path.
+
+**Customer-writable fields: `name`, `birthday`, `email`. Nothing else.** Any other key raises
+`field_not_writable` (`42501`) with the offending keys in `detail` — rejecting loudly rather than
+silently ignoring, because a silently dropped write is indistinguishable from a successful one.
+
+| refused | why |
+|---|---|
+| `phone` | the verified login identifier *and* `place_order`'s guest upsert key; `unique`, so a write is an attempt to claim an identifier. Changing it needs re-verification — a channel operation, phase B/C |
+| `kitchen_note` | allergy text the kitchen cooks against; a customer-writable path into the kitchen card is the surface this phase exists to protect |
+| `tags` | staff segmentation; drives campaign reach (`resolve_segment`, §8.2) |
+| `is_company` | invoicing and VAT consequences (D-019 territory) |
+| `consent_email` / `consent_push` / `consent_phone` | a legal record. The consent trigger (migration 13) fires on any update and would write a `consent_changed` event with no `source`, which is worse than no path. Consent gets its own RPC with an explicit source in phase B |
+| `anonymised_at`, `auth_user_id`, `id`, `created_at`, `updated_at` | mechanism, not data |
+
+`email` **is** writable, and safely: only a linked customer can call this, and a linked row has
+`auth_user_id is not null`, which §9.2's condition (a) permanently excludes from being an email
+candidate. So a customer cannot poison the email match by writing a stranger's address into their
+own row. (The `contact.email` a *guest* passes to `place_order` lands on an **unlinked** row and is
+not covered by that argument — see §9.6.)
+
+`NULL`/absent means "leave unchanged"; clearing a field is not expressible in this phase.
+
+### 9.4 Orders — authenticated (customer)
+
+`get_my_orders(p_limit integer default 20, p_offset integer default 0)` →
+`{total, orders[]}`, newest first, `p_limit` clamped to 1–100.
+
+Each order mirrors `get_order_by_token` (§5.4) so the tracking renderer is reusable, plus
+`order_id`, `tracking_token`, `allergy_note` (the caller's own) and the money columns.
+
+**A function, not a policy on `orders`, on purpose.** Policies are OR-ed, and `orders` already
+carries `orders_kitchen_read using (public.is_staff('kitchen'))` with **no row restriction** (open
+item B4). Adding another permissive policy to that table widens the loosest surface in the schema,
+and the `report_payments` lesson is that a view or policy is only as tight as the loosest thing it
+touches. There is therefore **no customer policy on `orders`, `order_items`, `order_events` or
+`customer_events`** — a direct read returns `[]`.
+
+### 9.5 Addresses — authenticated (customer), over the existing `customer_addresses`
+
+`customer_addresses` has existed since migration 4. This is CRUD and RLS over it; no table is
+created.
+
+| RPC | notes |
+|---|---|
+| `add_my_address(payload jsonb)` | `{label?, street, floor_apt?, postal_code, city?, is_default?}`. `zone_id` is **derived server-side** from the postal code — a client never picks its own delivery zone. The **first** address is the default whatever the client asks |
+| `update_my_address(p_id uuid, payload jsonb)` | `p_id` is the **address** id; ownership still comes from `auth.uid()`. `is_default` is not settable here |
+| `set_my_default_address(p_id uuid)` | the one path that moves the default |
+| `delete_my_address(p_id uuid)` | deleting the default promotes the oldest remaining address |
+
+**At most one default per customer, enforced in the database:**
+`create unique index customer_addresses_one_default_idx on customer_addresses (customer_id) where is_default`.
+Migration 35 collapses any pre-existing duplicates (oldest wins) before creating it.
+
+**Reads** go directly against the table — `customer_addresses_self_read`, a `for select` policy
+scoped to `customer_id = current_customer_id()`. **Writes do not**: there is no customer INSERT /
+UPDATE / DELETE policy, so a direct write is refused and the four RPCs are the only path. That keeps
+zone derivation and the one-default rule to a single enforcement point.
+
+### 9.6 Refusal codes, and two gaps phase B inherits
+
+| condition | errcode | message |
+|---|---|---|
+| no JWT | `42501` | `not_authenticated` |
+| JWT with no linked profile, on any `*_my_*` RPC | `42501` | `no_customer_account` |
+| a staff uid calling `link_my_account()` | `42501` | `staff_cannot_link` |
+| a non-writable field in `update_my_profile` | `42501` | `field_not_writable` |
+| an address that is not the caller's | `P0002` | `address_not_found` |
+| malformed payload | `P0001` | `invalid_input` |
+
+Every one of these **raises**. That is deliberate and worth stating, because the alternative in this
+schema is silence: `authenticated` holds blanket DML grants on these tables and RLS is the only
+gate, so a direct `SELECT` returns `[]` and a direct `UPDATE`/`DELETE` affects 0 rows **with no
+error**, while a direct `INSERT` raises. A client cannot tell a refusal from an empty result, so the
+RPCs never return an empty success where they mean no.
+
+**Two gaps this phase could not close, stated rather than implied:**
+
+1. **An email-only account cannot get a profile.** `customers.phone` is `text not null unique`, so
+   a fresh row needs a verified phone. `link_my_account()` returns `needs_phone` rather than
+   inventing a placeholder, which would collide on the unique index and poison `place_order`'s
+   upsert key. **Making `phone` nullable (keeping `unique`) is the fix** — `place_order` always
+   supplies one, so the guest path is unaffected — but it is a structural change with a back-office
+   and contract (§1.3) blast radius, and it belongs in its own migration.
+2. **Email poisoning through guest checkout.** A guest can pass any `contact.email` to
+   `place_order`; it lands on an unlinked row and is then a valid email link candidate. The
+   argument in §9.3 does not cover it. The proper fix is an `email_verified_at` column so only
+   verified emails are candidates. **Filed for S7-04** (phase C, account enumeration and the
+   linking rule), not fixed here.
