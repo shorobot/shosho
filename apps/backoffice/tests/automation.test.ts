@@ -123,16 +123,16 @@ describe("sortAgents / agentLabelKey / isAgentImplemented", () => {
 
 describe("agentConfigOf / agentConfigToJson — the spend-ceiling convention this boot gives agents.config", () => {
   it("reads a configured ceiling", () => {
-    expect(agentConfigOf({ ceiling_usd_per_day: 20, ceiling_usd_per_run: 2 })).toEqual({ ceiling_usd_per_day: 20, ceiling_usd_per_run: 2 });
+    expect(agentConfigOf({ day_ceiling_usd: 20, run_ceiling_usd: 2 })).toEqual({ day_ceiling_usd: 20, run_ceiling_usd: 2 });
   });
   it("treats a missing, non-numeric or non-positive value as unconfigured, never as zero", () => {
-    expect(agentConfigOf({})).toEqual({ ceiling_usd_per_run: undefined, ceiling_usd_per_day: undefined });
-    expect(agentConfigOf({ ceiling_usd_per_day: 0 })).toEqual({ ceiling_usd_per_run: undefined, ceiling_usd_per_day: undefined });
-    expect(agentConfigOf({ ceiling_usd_per_day: "20" })).toEqual({ ceiling_usd_per_run: undefined, ceiling_usd_per_day: undefined });
+    expect(agentConfigOf({})).toEqual({ run_ceiling_usd: undefined, day_ceiling_usd: undefined });
+    expect(agentConfigOf({ day_ceiling_usd: 0 })).toEqual({ run_ceiling_usd: undefined, day_ceiling_usd: undefined });
+    expect(agentConfigOf({ day_ceiling_usd: "20" })).toEqual({ run_ceiling_usd: undefined, day_ceiling_usd: undefined });
     expect(agentConfigOf(null)).toEqual({});
   });
   it("round-trips only the keys actually set", () => {
-    expect(agentConfigToJson({ ceiling_usd_per_day: 20 })).toEqual({ ceiling_usd_per_day: 20 });
+    expect(agentConfigToJson({ day_ceiling_usd: 20 })).toEqual({ day_ceiling_usd: 20 });
     expect(agentConfigToJson({})).toEqual({});
   });
 });

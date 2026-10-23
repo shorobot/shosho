@@ -680,7 +680,7 @@ describe("BO · Automation renders", () => {
   });
 
   it("spend: a configured ceiling and a finished run together show the ratio", async () => {
-    const ceiled = AGENTS.map((a) => (a.key === "accounting" ? { ...a, config: { ceiling_usd_per_day: 20 } } : a));
+    const ceiled = AGENTS.map((a) => (a.key === "accounting" ? { ...a, config: { day_ceiling_usd: 20 } } : a));
     automationData.current = automation({ agents: ceiled, runs: [RUN] });
     const { SpendPanel } = await import("@/components/automation/SpendPanel");
     const out = html(<SpendPanel />);

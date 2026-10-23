@@ -66,21 +66,21 @@ export function sortAgents(rows: AgentRow[]): AgentRow[] {
  * fix in place (docs/api-contracts.md is propose-only from here).
  */
 export type AgentConfig = {
-  ceiling_usd_per_run?: number;
-  ceiling_usd_per_day?: number;
+  run_ceiling_usd?: number;
+  day_ceiling_usd?: number;
 };
 
 export function agentConfigOf(value: Json): AgentConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const v = value as Record<string, Json>;
   const num = (k: string) => (typeof v[k] === "number" && v[k] > 0 ? (v[k] as number) : undefined);
-  return { ceiling_usd_per_run: num("ceiling_usd_per_run"), ceiling_usd_per_day: num("ceiling_usd_per_day") };
+  return { run_ceiling_usd: num("run_ceiling_usd"), day_ceiling_usd: num("day_ceiling_usd") };
 }
 
 export function agentConfigToJson(cfg: AgentConfig): Json {
   const out: Record<string, Json> = {};
-  if (cfg.ceiling_usd_per_run !== undefined) out.ceiling_usd_per_run = cfg.ceiling_usd_per_run;
-  if (cfg.ceiling_usd_per_day !== undefined) out.ceiling_usd_per_day = cfg.ceiling_usd_per_day;
+  if (cfg.run_ceiling_usd !== undefined) out.run_ceiling_usd = cfg.run_ceiling_usd;
+  if (cfg.day_ceiling_usd !== undefined) out.day_ceiling_usd = cfg.day_ceiling_usd;
   return out;
 }
 

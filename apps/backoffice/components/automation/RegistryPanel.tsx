@@ -21,17 +21,17 @@ function AgentCard({ agent }: { agent: AgentRow }) {
   const { t, lang } = useI18n();
   const { canWrite, setAgentActive, saveAgentConfig } = useAutomation();
   const stored = agentConfigOf(agent.config);
-  const [perRun, setPerRun] = useState<number | null>(ceilingToDollars(stored.ceiling_usd_per_run));
-  const [perDay, setPerDay] = useState<number | null>(ceilingToDollars(stored.ceiling_usd_per_day));
+  const [perRun, setPerRun] = useState<number | null>(ceilingToDollars(stored.run_ceiling_usd));
+  const [perDay, setPerDay] = useState<number | null>(ceilingToDollars(stored.day_ceiling_usd));
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setPerRun(ceilingToDollars(stored.ceiling_usd_per_run));
-    setPerDay(ceilingToDollars(stored.ceiling_usd_per_day));
+    setPerRun(ceilingToDollars(stored.run_ceiling_usd));
+    setPerDay(ceilingToDollars(stored.day_ceiling_usd));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id, agent.config]);
 
-  const dirty = perRun !== ceilingToDollars(stored.ceiling_usd_per_run) || perDay !== ceilingToDollars(stored.ceiling_usd_per_day);
+  const dirty = perRun !== ceilingToDollars(stored.run_ceiling_usd) || perDay !== ceilingToDollars(stored.day_ceiling_usd);
   const implemented = isAgentImplemented(agent.key);
   const labelKey = agentLabelKey(agent.key);
 
@@ -64,8 +64,8 @@ function AgentCard({ agent }: { agent: AgentRow }) {
             onClick={async () => {
               setBusy(true);
               const next: AgentConfig = {};
-              if (perRun != null) next.ceiling_usd_per_run = perRun;
-              if (perDay != null) next.ceiling_usd_per_day = perDay;
+              if (perRun != null) next.run_ceiling_usd = perRun;
+              if (perDay != null) next.day_ceiling_usd = perDay;
               await saveAgentConfig(lang, agent.id, next);
               setBusy(false);
             }}

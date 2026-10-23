@@ -50,7 +50,7 @@ export function SpendPanel() {
             {agents.map((a) => {
               const lk = agentLabelKey(a.key);
               const totals = byAgentDay.get(a.id)?.get(today);
-              const ceiling = agentConfigOf(a.config).ceiling_usd_per_day;
+              const ceiling = agentConfigOf(a.config).day_ceiling_usd;
               const alarm = totals ? spendAlarm(totals.costUsd, ceiling) : ceiling == null ? "no_ceiling" : "ok";
               return (
                 <tr key={a.id} className="border-b border-line last:border-0">
