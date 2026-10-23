@@ -105,18 +105,36 @@ $$;
 -- This is the load-bearing half of the safety rule: because the identifier is never a parameter,
 -- a caller cannot assert "my phone is the stranger's phone" and be believed. An identifier that
 -- Supabase Auth has not stamped confirmed is treated as absent.
+--
+-- NOTE, and the one unverified assumption in this migration: this is the FIRST function in this
+-- schema to READ `auth.users`. Migration 2 references it in a foreign key (`staff.id`), which
+-- needs only REFERENCES, not SELECT. A `security definer` function runs as its owner, and whether
+-- the migration owner holds `select` on `auth.users` is a property of the Supabase project, not of
+-- this file — it could not be checked without staging access (see S2-07's report). It is the
+-- standard Supabase pattern and is expected to work; the exception handler exists so that if it
+-- does not, the failure says what to do instead of surfacing as "permission denied for table
+-- users" from inside a login call.
 create or replace function public.my_verified_identifiers()
 returns table (phone text, email text)
-language sql
+language plpgsql
 stable
 security definer
 set search_path = public
 as $$
-  select
-    case when u.phone_confirmed_at is not null then nullif(trim(u.phone), '') end,
-    case when u.email_confirmed_at is not null then lower(nullif(trim(u.email), '')) end
-  from auth.users u
-  where u.id = auth.uid()
+begin
+  return query
+    select
+      case when u.phone_confirmed_at is not null then nullif(trim(u.phone), '') end,
+      case when u.email_confirmed_at is not null then lower(nullif(trim(u.email), '')) end
+    from auth.users u
+    where u.id = auth.uid();
+exception when insufficient_privilege then
+  raise exception 'auth_users_unreadable' using errcode = '42501',
+    detail = 'This function owner cannot SELECT auth.users, so a verified identifier cannot be '
+             'read and link_my_account() cannot run.',
+    hint = 'Grant it from a role that can: `grant usage on schema auth, select on auth.users` to '
+           'the migration owner. See api-contracts §9.2.';
+end;
 $$;
 
 -- Audit of every link decision on the customer timeline. `customer_events.type` is a CHECK'd

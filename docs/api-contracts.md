@@ -857,7 +857,16 @@ type `note` with `payload->>'event' = 'account_link'` (plus `outcome`, `reason`,
 | `needs_phone` | false | null | a fresh profile is required but the account has no verified phone, and `customers.phone` is `not null`. **An email-only account therefore cannot get a profile today** — see §9.6 |
 
 **Raises** (errcode `42501`): `not_authenticated` when there is no JWT; `staff_cannot_link` when the
-uid belongs to a `staff` row — staff and customer are separate identities.
+uid belongs to a `staff` row — staff and customer are separate identities; `auth_users_unreadable`
+if the function owner cannot `select auth.users`.
+
+> **One unverified deployment assumption.** `my_verified_identifiers()` is the first function in
+> this schema to **read** `auth.users` — migration 2 only *references* it in a foreign key, which
+> needs `REFERENCES`, not `SELECT`. A `security definer` function runs as its owner, and whether the
+> migration owner holds `select` on `auth.users` is a property of the Supabase project rather than of
+> the migration. It is the standard Supabase pattern and is expected to work, but it could not be
+> checked without staging access, so the function raises `auth_users_unreadable` with the exact grant
+> to apply instead of surfacing `permission denied for table users` from inside a login call.
 
 **What phase B must render.** `staff_merge_required` and `needs_phone` are not errors to retry; they
 are states the login screen has to show ("we need to check something — please call us"). Treating

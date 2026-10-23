@@ -3140,6 +3140,16 @@ Neither fixed, per the boot.
   diff either way.** Formatting is unverified; **CI's `db:types` diff check is the authority** and
   will say so if I got a line wrong.
 
+**One unverified deployment assumption, flagged rather than discovered later.**
+`my_verified_identifiers()` is the **first function in this schema to read `auth.users`** — migration
+2 only *references* it in a foreign key (`staff.id`), which needs `REFERENCES`, not `SELECT`. A
+`security definer` function runs as its owner, and whether the migration owner holds `select` on
+`auth.users` is a property of the Supabase project, not of the migration, so it could not be checked
+without staging access. It is the standard Supabase pattern and is expected to work. If it does not,
+the function raises `auth_users_unreadable` **naming the exact grant to apply**, rather than
+surfacing `permission denied for table users` from inside a login call — a deliberate choice to make
+the one thing I could not test say what to do when it fails.
+
 **What I verified instead, and it is a real verification, not a grep.** A local PostgreSQL **16.2**
 (the `pgserver` wheel) with a hand-written Supabase shim — `auth`/`storage`/`realtime`/`vault`/`cron`
 schemas, the three roles, `auth.uid()` defined exactly as Supabase defines it, and Supabase's
