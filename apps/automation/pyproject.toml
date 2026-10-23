@@ -1,0 +1,70 @@
+# [S5-01] apps/automation — D-020's orchestrator and the Accounting agent.
+#
+# Tooling is chosen to match `.github/workflows/ci.yml`'s existing `python (automation)` job
+# (S1's file, D-004 — not edited here): it pins python 3.12, installs `ruff` and `pytest`
+# itself, runs `pip install -e ".[dev]"` with a fallback to `pip install -e .`, then
+# `ruff check . && ruff format --check .` and `pytest -q`. So: ruff for lint+format, pytest
+# for tests, both also declared in [dev] so a local checkout matches CI without reading YAML.
+#
+# `requires-python` is >=3.11 rather than ==3.12: CI runs 3.12, but nothing here needs a
+# 3.12-only feature and a 3.11 dev machine should be able to run the suite.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shosho-automation"
+version = "0.1.0"
+description = "SHOSHO automation layer: agent orchestrator + the Accounting agent (D-020)"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=1.0",
+  "psycopg[binary]>=3.1",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6",
+  "pytest>=8.0",
+  "mypy>=1.11",
+  "httpx2>=0.1 ; python_version >= '3.11'",
+]
+
+[project.scripts]
+shosho-automation = "shosho_automation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "ANN", "RUF"]
+ignore = [
+  "ANN401", # typing.Any is the honest annotation for a jsonb payload
+  "B008",   # FastAPI's Depends()-in-default idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["shosho_automation"]
+mypy_path = "src"
+strict = true
+warn_unreachable = true
+# psycopg ships types; anthropic/fastapi are typed. Third-party stubs we do not control:
+[[tool.mypy.overrides]]
+module = ["anthropic.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

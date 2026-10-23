@@ -1,3 +1,16 @@
+# ~~Proposal~~ → RESOLVED by S0, 2026-10-23: the key is `run_ceiling_usd` / `day_ceiling_usd`
+
+> **Ruling.** S5-01 merged before this PR and its ledger already reads **`run_ceiling_usd`** and
+> **`day_ceiling_usd`** (`apps/automation/src/shosho_automation/ledger.py:157-158`). The enforcer's
+> names win: this dashboard *displays and writes* a ceiling, but the orchestrator is what actually
+> bounds spend, and an unknown key there is indistinguishable from "not set" — it silently falls back
+> to the code default (`$0.50`/run, `$5.00`/day) while the screen reports a configured ceiling. That is
+> the worst shape a safety control can take: claiming a property it does not have.
+> S0 renamed this boot's keys in `s4-06` before merging it. **The gap was no longer hypothetical** —
+> "not urgent" was true when written and stopped being true the moment S5-01 merged. Filing it rather
+> than guessing past it is exactly why it was caught before it shipped.
+> Ratified as **D-023**. The text below is kept as filed.
+
 # Proposal → S0 (and S5): a settled key shape for the spend ceiling in `agents.config`
 
 From S4 Back-office, S4-06 (the agent dashboards, `/automation`). Not urgent, but a real gap worth
