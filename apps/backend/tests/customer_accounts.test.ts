@@ -399,6 +399,35 @@ describe("update_my_profile — the customer-writable field list", () => {
     }
   });
 
+  it("an absent key leaves a field alone; an explicit null clears email and birthday", async () => {
+    await rpc(acct.client, "update_my_profile", {
+      payload: { email: "keep@customer.test", birthday: "1990-01-01" },
+    });
+    // absent -> unchanged
+    const { data: kept } = await rpc<any>(acct.client, "update_my_profile", { payload: { name: "Kept" } });
+    expect(kept.email).toBe("keep@customer.test");
+    expect(kept.birthday).toBe("1990-01-01");
+    // explicit null -> cleared
+    const { data: cleared } = await rpc<any>(acct.client, "update_my_profile", {
+      payload: { email: null, birthday: null },
+    });
+    expect(cleared.email).toBeNull();
+    expect(cleared.birthday).toBeNull();
+  });
+
+  it("an empty name raises rather than being coerced (customers.name is NOT NULL)", async () => {
+    for (const bad of ["", "   "]) {
+      const { error } = await rpc(acct.client, "update_my_profile", { payload: { name: bad } });
+      expect(error, JSON.stringify(bad)).not.toBeNull();
+      expect(error!.message).toContain("invalid_input");
+    }
+  });
+
+  it("a malformed email raises", async () => {
+    const { error } = await rpc(acct.client, "update_my_profile", { payload: { email: "not-an-address" } });
+    expect(error!.message).toContain("invalid_input");
+  });
+
   it("the kitchen_note is provably unchanged after all of that", async () => {
     const { data } = await asAdmin().from("customers").select("kitchen_note").eq("id", id).single();
     expect(data!.kitchen_note).toBe("DO NOT CHANGE");

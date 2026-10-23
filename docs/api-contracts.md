@@ -853,6 +853,7 @@ type `note` with `payload->>'event' = 'account_link'` (plus `outcome`, `reason`,
 | `created` | true | the new profile | no eligible candidate — a fresh, deliberately empty profile. `reason` says what was passed over (`ambiguous_email`, `identifier_claimed`, `profile_has_kitchen_note`) or is absent |
 | `staff_merge_required` | false | null | **a candidate exists and must not be taken.** `reason` ∈ `identifier_claimed` \| `profile_has_kitchen_note` \| `profile_anonymised`. A fresh row is impossible here because it would need the candidate's phone, which is `unique` and already held. **Staff resolve it from the back-office; the refusal is already on the timeline.** |
 | `needs_verified_identifier` | false | null | nothing confirmed on the account yet |
+| `staff_merge_required` + `reason: concurrent_conflict` | false | null | the same answer reached by a race — something took the phone between the eligibility check and the insert (a concurrent guest order on `place_order`, which upserts by phone). Refused rather than retried into a row whose eligibility was never evaluated |
 | `needs_phone` | false | null | a fresh profile is required but the account has no verified phone, and `customers.phone` is `not null`. **An email-only account therefore cannot get a profile today** — see §9.6 |
 
 **Raises** (errcode `42501`): `not_authenticated` when there is no JWT; `staff_cannot_link` when the
@@ -893,7 +894,7 @@ candidate. So a customer cannot poison the email match by writing a stranger's a
 own row. (The `contact.email` a *guest* passes to `place_order` lands on an **unlinked** row and is
 not covered by that argument — see §9.6.)
 
-`NULL`/absent means "leave unchanged"; clearing a field is not expressible in this phase.
+An **absent** key means "leave unchanged". An explicit **JSON `null`** clears `email` or `birthday`; `name` is `not null` and an empty or whitespace-only value raises `invalid_input` rather than being coerced.
 
 ### 9.4 Orders — authenticated (customer)
 

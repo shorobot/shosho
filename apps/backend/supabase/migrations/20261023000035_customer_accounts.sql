@@ -155,7 +155,9 @@ $$;
 --   linked_by_email       verified email matched exactly one eligible row
 --   created               no eligible candidate — a fresh profile, deliberately empty
 --   staff_merge_required  a candidate existed but is not safe to take, and a fresh row is
---                         impossible because it would need the candidate's phone (unique)
+--                         impossible because it would need the candidate's phone (unique).
+--                         reason `concurrent_conflict` is the same answer reached by a race:
+--                         something took the phone between the check and the insert
 --   needs_verified_identifier   nothing confirmed on the account yet (no channel has run)
 --   needs_phone           a fresh row is required but the account has no verified phone, and
 --                         `customers.phone` is `not null` — the structural gap in S2-07's report
@@ -219,7 +221,10 @@ begin
   -- `customers.phone` is `text not null unique`, so a phone match is zero rows or exactly one.
   -- It is also the stronger proof: the customer demonstrated possession of the number.
   if v_phone is not null then
-    select * into v_cand from public.customers c where c.phone = v_phone;
+    -- `for update`: this is a login endpoint, so two concurrent calls are normal (a client
+    -- retrying, or a second device). Without the lock both could see the same candidate unlinked
+    -- and both claim it, and the loser would get a raw 23505 instead of an outcome.
+    select * into v_cand from public.customers c where c.phone = v_phone for update;
     if found then
       if v_cand.auth_user_id is not null then
         v_reason := 'identifier_claimed';
@@ -264,7 +269,8 @@ begin
       select * into v_cand
         from public.customers c
        where lower(c.email) = v_email
-         and c.anonymised_at is null;
+         and c.anonymised_at is null
+         for update;
 
       if v_cand.auth_user_id is null and v_cand.kitchen_note is null then
         update public.customers
@@ -301,9 +307,28 @@ begin
     into v_name
     from auth.users u where u.id = v_uid;
 
-  insert into public.customers (name, phone, email, auth_user_id)
-  values (coalesce(v_name, ''), v_phone, v_email, v_uid)
-  returning * into v_cust;
+  -- The checks above are not in the same statement as this insert, so two things can change
+  -- underneath them: a concurrent call for this same uid, or a concurrent GUEST ORDER that creates
+  -- a customer on this phone (`place_order` upserts by phone and is the busiest path in the
+  -- system). Both surface as a unique violation, and both must resolve to a safe answer rather
+  -- than a raw 23505 on a login screen.
+  begin
+    insert into public.customers (name, phone, email, auth_user_id)
+    values (coalesce(v_name, ''), v_phone, v_email, v_uid)
+    returning * into v_cust;
+  exception when unique_violation then
+    -- did this uid get a profile in the meantime?
+    select * into v_existing from public.customers c where c.auth_user_id = v_uid;
+    if found then
+      return jsonb_build_object('linked', true, 'outcome', 'already_linked',
+                                'customer_id', v_existing.id,
+                                'anonymised', v_existing.anonymised_at is not null);
+    end if;
+    -- otherwise something else took the phone between the check and the insert. Refuse rather
+    -- than retry into a row whose eligibility was never evaluated.
+    return jsonb_build_object('linked', false, 'outcome', 'staff_merge_required',
+                              'reason', 'concurrent_conflict', 'customer_id', null);
+  end;
 
   perform public.log_account_link(v_cust.id, 'created', v_reason, v_uid);
   return jsonb_strip_nulls(jsonb_build_object('linked', true, 'outcome', 'created',
