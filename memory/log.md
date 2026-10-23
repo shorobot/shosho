@@ -3140,6 +3140,21 @@ stack **applied all 35 migrations and the committed seed with no error**, on Pos
 than my local 16.2. That closes the gap I flagged about the version difference, and it is the first
 independent confirmation of the local result.
 
+**Then the suite itself ran: 236 of 238 passed, and both failures were in my own harness, not in
+the migration.** All 20 pre-existing test files passed unchanged. The two harness bugs:
+
+- **The `set_order_status` probe looked up an order id from a possibly empty table.** `.single()`
+  yields `undefined`, PostgREST *drops* an undefined argument, and the call then fails overload
+  resolution ("Could not find the function") instead of reaching the guard — a harness artefact
+  reported as a non-refusal. Fixed with a literal id, after measuring that the role guard really
+  does fire before any row lookup (`not_staff` at `set_order_status` line 17,
+  `forbidden_for_role` at `update_order_items` line 28).
+- **The "unconfirmed identifiers" case could not get a JWT at all:** GoTrue refuses
+  `signInWithPassword` for an unconfirmed email. The helper created the user unconfirmed and *then*
+  tried to sign in. Fixed by always creating confirmed, signing in, and clearing the stamp
+  afterwards — the token is already issued, and everything under test reads `auth.users` live, so
+  it sees exactly the state the case is about.
+
 It also caught something I had no way to see: **`supabase db lint` (plpgsql_check) failed on exactly
 one function, `get_my_profile`.** Not a defect in the SQL — plpgsql_check *plans* each SQL statement,
 `get_my_profile` called `require_customer_id()` **inline inside** its `select`, the planner evaluates

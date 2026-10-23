@@ -523,10 +523,14 @@ describe("[S2-07] a real customer JWT is refused by every staff surface and ever
   });
 
   it("set_order_status / update_order_items / add_customer_event raise 42501 with the role guard", async () => {
-    const { data: order } = await admin().from("orders").select("id").limit(1).single();
+    // A literal id, not one looked up from `orders`: the role guard in each of these fires before
+    // any row lookup, and `.single()` on an empty table yields undefined — which PostgREST then
+    // drops from the argument list, so the call fails overload resolution ("Could not find the
+    // function") instead of reaching the guard. That is a harness artefact, not a refusal.
+    const ABSENT = "00000000-0000-4000-8000-0000000000aa";
     const cases: Array<[string, Record<string, unknown>]> = [
-      ["set_order_status", { order_id: (order as any)?.id, new_status: "accepted", payload: {} }],
-      ["update_order_items", { order_id: (order as any)?.id, items: [] }],
+      ["set_order_status", { order_id: ABSENT, new_status: "accepted", payload: {} }],
+      ["update_order_items", { order_id: ABSENT, items: [] }],
       ["add_customer_event", { customer_id: strangerId, type: "note", payload: { text: "x" } }],
     ];
     for (const [fn, args] of cases) {

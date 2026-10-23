@@ -164,10 +164,15 @@ export async function newCustomerAuth(opts: {
   const email = opts.email ?? `cust-${rand}-${custSeq}@customer.test`;
   const a = admin();
 
+  // Always CREATED confirmed, whatever the caller asked for: GoTrue refuses
+  // `signInWithPassword` for an unconfirmed email ("Email not confirmed"), so creating it
+  // unconfirmed would mean no JWT at all and nothing to test with. `confirmEmail: false` is applied
+  // by clearing the stamp AFTER sign-in — the token is already issued by then, and everything under
+  // test reads `auth.users` live, so it sees exactly the state the caller asked for.
   const { data: created, error: cErr } = await a.auth.admin.createUser({
     email,
     password: PASSWORD,
-    email_confirm: opts.confirmEmail ?? true,
+    email_confirm: true,
   });
   if (cErr) throw new Error(`createUser: ${cErr.message}`);
   const uid = created.user!.id;
@@ -182,12 +187,13 @@ export async function newCustomerAuth(opts: {
       );
     });
   }
-  if (opts.confirmEmail === false) {
-    await asSuperuser((c) => c.query(`update auth.users set email_confirmed_at = null where id = $1`, [uid]));
-  }
 
   const client = anon();
   const { error: sErr } = await client.auth.signInWithPassword({ email, password: PASSWORD });
   if (sErr) throw new Error(`sign in customer: ${sErr.message}`);
+
+  if (opts.confirmEmail === false) {
+    await asSuperuser((c) => c.query(`update auth.users set email_confirmed_at = null where id = $1`, [uid]));
+  }
   return { client, uid, email, phone };
 }
