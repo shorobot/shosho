@@ -3264,6 +3264,24 @@ this phase". Measured, it is — an absent key leaves a field alone, an explicit
 `not null`. The behaviour is the right behaviour; the sentence was wrong. Corrected, with tests for
 all three.
 
+### CI, finally: everything mine is green; the one red check is not mine, and that is measured
+
+`backend (supabase)` **passes in full** — `db reset` (all 35 migrations + the seed, from scratch,
+on PostgreSQL 17), `db lint`, seed idempotency, typecheck, **the whole vitest suite**, and the
+generated-types diff. `CI`, `infra`, `node (web)`, `node (backoffice)`, `python (automation)` and
+`plan` all pass.
+
+**`e2e (apps/e2e)` fails — and it fails identically on `main`.** Not asserted, diffed: `main`'s
+latest run is **16 failed / 15 passed**, my branch is **16 failed / 15 passed**, and the sixteen
+failing test titles are **the same sixteen, byte-for-byte** (`diff` of the two sorted lists is
+empty). Every one is a guest-site UI-text assertion — "We don't deliver to this address",
+`sold out today|paused`, "Unavailable.", the design-README board checks — and none touches
+`customers`, `auth_user_id` or any function in migration 35. The workflow has also failed on **every
+branch** for the last two days (`main`, `s0-work`, `s5-01`, `s4-06`, `s3-csp-dev-eval`, `s0-xff`),
+which matches `state.md`'s existing note about PR #77's `e2e` job. `apps/e2e/` is S6's fence, so
+this is **reported and not touched**; the `guest_realtime` flake-rate gate inside the same job passes
+25/25.
+
 **Boundaries kept:** no front-end feature work, no `apps/e2e/` or `apps/backoffice/e2e/`, no other
 session's worktree, no bonuses, migrations 1–34 untouched, `docs/design/README.md` and the
 twelve-rule list untouched (D-016 puts that in phase B, with the login), and B4/B5 left alone. The
