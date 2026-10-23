@@ -187,7 +187,7 @@ declare
   v_existing  public.customers;
   v_cand      public.customers;
   v_n         integer;
-  v_outcome   text;
+  v_cand_id   uuid;
   v_reason    text;
   v_cust      public.customers;
   v_name      text;
@@ -260,17 +260,22 @@ begin
   -- `where lower(email) = null` would quietly return zero rows and look like "no candidate"
   -- instead of "not asked".
   if v_email is not null then
-    select count(*) into v_n
-      from public.customers c
-     where lower(c.email) = v_email
-       and c.anonymised_at is null;
-
-    if v_n = 1 then
-      select * into v_cand
+    -- Count and identify in ONE statement, then lock by primary key. Two statements would be two
+    -- snapshots: `count(*)` could say 1, a second row with this email could arrive, and
+    -- `select * into` would then silently take the FIRST of two rows (plpgsql SELECT INTO without
+    -- STRICT does not raise on multiple rows) — linking on an email the rule calls ambiguous.
+    -- The id is read only when the count is exactly 1, where it is the single candidate.
+    -- `array_agg(...)[1]` rather than `min(...)`: there is no `min(uuid)` before PostgreSQL 18.
+    with cand as (
+      select c.id
         from public.customers c
        where lower(c.email) = v_email
          and c.anonymised_at is null
-         for update;
+    )
+    select count(*), (array_agg(id))[1] into v_n, v_cand_id from cand;
+
+    if v_n = 1 then
+      select * into v_cand from public.customers c where c.id = v_cand_id for update;
 
       if v_cand.auth_user_id is null and v_cand.kitchen_note is null then
         update public.customers

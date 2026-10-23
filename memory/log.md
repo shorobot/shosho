@@ -3192,6 +3192,23 @@ instead of newest-first. Now `created_at desc, number desc` (`number` is a uniqu
 order is total), with a test that writes three orders sharing a `created_at` and asserts each row
 appears on exactly one page.
 
+**A TOCTOU in the email branch — and I nearly shipped a broken fix for it, by grepping instead of
+reading.** The branch did `count(*)` in one statement and then `select * into v_cand` in another.
+Two snapshots: the count can say 1, a second row with that email can arrive, and **plpgsql
+`SELECT INTO` without `STRICT` silently takes the FIRST of two rows** — so it would link on an email
+the rule calls ambiguous, which is the one thing the tie-break exists to prevent. Fixed by counting
+and identifying in a single statement (a CTE returning `count(*)` and the id) and then locking that
+id by primary key.
+
+**My first attempt at that fix used `min(id)`, and `min(uuid)` does not exist before PostgreSQL 18.
+Every call to `link_my_account()` raised.** I then "verified" it with a grep for outcome strings,
+saw the CASE headers scroll past, and reported "all cases still correct" — while the function was
+dead. It was caught only because I ran the two email cases directly afterwards and read the whole
+output. That is **[[feedback-measure-dont-grep]] committed by me, in the session that quotes it**:
+a grep for the strings you expect cannot see an error, because an error prints different strings.
+The re-verification now enumerates every `ERROR:` every proof script raises and accounts for each
+one, rather than looking for the successes. (`array_agg(id)[1]` is the portable aggregate.)
+
 **And one documentation error in my own §9.3:** it claimed "clearing a field is not expressible in
 this phase". Measured, it is — an absent key leaves a field alone, an explicit JSON `null` clears
 `email` or `birthday`, and an empty `name` raises `invalid_input` because `customers.name` is
