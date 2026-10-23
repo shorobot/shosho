@@ -1,0 +1,10 @@
+# [S5-01] Deliberately a pointer to pyproject.toml, not a second dependency list.
+#
+# Why this file exists at all: ci.yml's `python (automation)` job uses
+# `actions/setup-python` with `cache: pip`, whose dependency-file lookup is a
+# requirements-glob by default. With only a pyproject.toml present that step can fail
+# before any of our code runs — and `.github/workflows/**` is S1's (D-004), so the fix
+# that belongs here is a file, not a workflow edit. Reported to S1 in log.md: adding
+# `cache-dependency-path: apps/automation/pyproject.toml` to that step would let this
+# file be deleted.
+-e .
