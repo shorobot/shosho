@@ -70,6 +70,7 @@ const ENTRIES: Entry[] = [
   { name: "/marketing layout", load: () => import("@/app/(shell)/marketing/layout") },
   { name: "/reports page", load: () => import("@/app/(shell)/reports/page") },
   { name: "/settings page", load: () => import("@/app/(shell)/settings/page") },
+  { name: "/automation page", load: () => import("@/app/(shell)/automation/page") },
 ];
 
 beforeEach(() => {

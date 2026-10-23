@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { STATIC_SECURITY_HEADERS, contentSecurityPolicy, referrerPolicyFor, supabaseOrigin, supabaseSources } from "@/lib/csp";
 import { Photo, photoUrl } from "@/components/ui/Photo";
 
@@ -28,7 +28,12 @@ describe("supabaseSources", () => {
 });
 
 describe("content security policy", () => {
+  // The deployed shape — these assertions describe `next build`/`next start`, exactly what
+  // shosho-staging runs, so NODE_ENV is pinned to "production" for this whole block rather than
+  // left at whatever vitest's own default is. The dev carve-out below has its own describe.
+  vi.stubEnv("NODE_ENV", "production");
   const csp = contentSecurityPolicy("n0nce", supabaseSources({ SUPABASE_URL: SB }));
+  vi.unstubAllEnvs();
   const directive = (name: string) => csp.split("; ").find((d) => d.startsWith(`${name} `)) ?? "";
 
   it("carries the nonce in the shape Next parses out of the header", () => {
@@ -40,7 +45,7 @@ describe("content security policy", () => {
     expect(directive("script-src")).toContain("'strict-dynamic'");
   });
 
-  it("never allows eval or inline script", () => {
+  it("never allows eval or inline script in production", () => {
     expect(directive("script-src")).not.toContain("'unsafe-eval'");
     expect(directive("script-src")).not.toContain("'unsafe-inline'");
   });
@@ -77,6 +82,39 @@ describe("content security policy", () => {
     expect(csp).toContain("object-src 'none'");
     expect(csp).toContain("base-uri 'self'");
     expect(csp).toContain("form-action 'self'");
+  });
+});
+
+// S6-01 finding 0 (HIGH): next dev's HMR runtime evaluates chunks via eval(), which a CSP with no
+// 'unsafe-eval' blocks outright — total, not partial: the page paints, but no client JS runs at all,
+// anywhere. The carve-out is non-production only; production must stay byte-for-byte what it already
+// was (pinned above, in "content security policy"). Mirrors apps/backoffice/tests/csp.test.ts exactly.
+describe("contentSecurityPolicy — script-src 'unsafe-eval' carve-out (S6-01 finding 0)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("production carries no 'unsafe-eval' — unchanged from before this fix", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const csp = contentSecurityPolicy("abc123", { http: "https://x.supabase.co", ws: "wss://x.supabase.co" });
+    const scriptSrc = csp.split("; ").find((d) => d.startsWith("script-src"));
+    expect(scriptSrc).toBe("script-src 'self' 'nonce-abc123' 'strict-dynamic'");
+  });
+
+  it("development/test gets 'unsafe-eval' so next dev's HMR eval() is not blocked", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const csp = contentSecurityPolicy("abc123", { http: "https://x.supabase.co", ws: "wss://x.supabase.co" });
+    const scriptSrc = csp.split("; ").find((d) => d.startsWith("script-src"));
+    expect(scriptSrc).toBe("script-src 'self' 'nonce-abc123' 'strict-dynamic' 'unsafe-eval'");
+  });
+
+  it("every other directive is untouched by the NODE_ENV branch", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const prod = contentSecurityPolicy("n1", { http: "https://x.supabase.co", ws: "wss://x.supabase.co" });
+    vi.stubEnv("NODE_ENV", "development");
+    const dev = contentSecurityPolicy("n1", { http: "https://x.supabase.co", ws: "wss://x.supabase.co" });
+    const strip = (csp: string) => csp.split("; ").filter((d) => !d.startsWith("script-src"));
+    expect(strip(prod)).toEqual(strip(dev));
   });
 });
 

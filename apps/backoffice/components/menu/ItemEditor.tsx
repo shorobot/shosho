@@ -31,7 +31,7 @@ type Draft = {
   category_id: string; base_price_cents: number; cost_cents: number | null; sku: string;
   available: boolean; stoplisted: boolean; stock_remaining: number | null; max_per_order: number | null; tags: ItemTag[];
   prep_minutes: number | null; station: string; kitchen_note: string;
-  allergens: Allergen[]; weight_g: number | null; kcal_per_100g: number | null; vat_delivery_pct: number; vat_onsite_pct: number;
+  allergens: Allergen[]; weight_g: number | null; kcal_per_100g: number | null; vat_delivery_pct: number;
   recommended_item_ids: string[];
   photos: string[];
   groupIds: string[];
@@ -61,7 +61,6 @@ function draftOf(item: MenuItemRow | null, fallbackCategory: string, today: stri
     weight_g: item?.weight_g ?? null,
     kcal_per_100g: item?.kcal_per_100g ?? null,
     vat_delivery_pct: item?.vat_delivery_pct ?? 7,
-    vat_onsite_pct: item?.vat_onsite_pct ?? 19,
     recommended_item_ids: item?.recommended_item_ids ?? [],
     photos: photoPaths(item?.photos ?? []),
     groupIds: [],
@@ -189,7 +188,6 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
       weight_g: d.weight_g,
       kcal_per_100g: d.kcal_per_100g,
       vat_delivery_pct: d.vat_delivery_pct,
-      vat_onsite_pct: d.vat_onsite_pct,
       recommended_item_ids: d.recommended_item_ids,
       photos: d.photos,
     };
@@ -312,11 +310,14 @@ export function ItemEditor({ itemId, presetCategoryId = null }: { itemId: string
               <Label>{t("ie.allergens")}</Label>
               <Chips values={ALLERGENS} selected={d.allergens} disabled={!canWrite} onToggle={(a) => set((c) => ({ allergens: c.allergens.includes(a) ? c.allergens.filter((x) => x !== a) : [...c.allergens, a] }))} render={(a) => t(`al.${a}` as Key)} />
             </div>
-            <Row cols={4}>
+            <Row cols={3}>
               <NumberField label={t("ie.weight")} value={d.weight_g} onChange={(v) => set({ weight_g: v })} suffix="g" disabled={!canWrite} />
               <NumberField label={t("ie.kcal")} value={d.kcal_per_100g} onChange={(v) => set({ kcal_per_100g: v })} disabled={!canWrite} />
+              {/* vat_onsite_pct (D-019): removed, not just disabled. The backend reads it nowhere —
+                  every order is charged vat_delivery_pct regardless of order_type, and SHOSHO has no
+                  on-premises channel for an on-premises rate to apply to. The column stays dormant on
+                  menu_items for a possible future dine-in channel; this editor no longer touches it. */}
               <Select label={t("ie.vatDelivery")} value={String(d.vat_delivery_pct)} onChange={(v) => set({ vat_delivery_pct: Number(v) })} disabled={!canWrite} options={[{ value: "7", label: "7 %" }, { value: "19", label: "19 %" }]} />
-              <Select label={t("ie.vatOnsite")} value={String(d.vat_onsite_pct)} onChange={(v) => set({ vat_onsite_pct: Number(v) })} disabled={!canWrite} options={[{ value: "7", label: "7 %" }, { value: "19", label: "19 %" }]} />
             </Row>
           </Section>
 

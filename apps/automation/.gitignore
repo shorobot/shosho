@@ -1,0 +1,11 @@
+# [S5-01] Python build/tool artefacts. Scoped to this app rather than added to the root
+# .gitignore, which is outside this boot's boundary.
+#
+# The root .gitignore already covers .env, __pycache__/, *.pyc, .venv/ and venv/. mypy and
+# pytest write a self-ignoring .gitignore into their own cache directories, so those need
+# nothing here; an editable install's egg-info does.
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
