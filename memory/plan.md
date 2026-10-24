@@ -9,13 +9,24 @@ Last moved: 2026-10-21 (S0 — **C3 and C4 issued** as S5-01 and S4-06; strict b
 
 ---
 
-## A. Merge queue — REFILLED, 4 deep as of 2026-10-23
+## A. Merge queue — DRAINED 2026-10-23/24; one new PR behind it
 
-`main` at `7b18ac8`. **Open: #106** (S4-06 dashboards) · **#108** (S5-01 automation — S0 resolved its
-`memory/log.md` conflict under D-009 and pushed the merge to `s5-01`; CI re-running) · **#109** (S0
-bookkeeping) · **#110** (S3's B2 CSP dev carve-out, which S0 pre-approved on substance). With
-`strict_required_status_checks_policy` **on**, each merge makes the rest out-of-date, so this drains
-**serially** — and the `&&` lesson below is the one that costs time if forgotten.
+`main` at `084df37`. Drained in order: **#108** S5-01 automation (`ad80f67`) · **#110** S3's B2 CSP
+dev carve-out (`47fd562`) · **#106** S4-06 dashboards (`c0fe345`) · **#109** S0 decisions (`084df37`).
+**Open: #111** (S2-07, customer-accounts phase A — conflict resolved by S0, CI re-running).
+
+**What the four-deep drain actually cost, recorded because it will happen again.** All four touched
+`memory/log.md`, so with `strict_required_status_checks_policy` **on** every merge invalidated the rest
+and the queue could only drain **serially**: update-branch → wait for a fresh CI → merge, four times.
+**S0 resolved three of the four memory conflicts** under D-009 (#108, #106, #111) because the authoring
+sessions had stopped. The resolution rule is not one rule: `log.md` is append-only chronology so it is
+always **keep both**, while `state.md` is **per row** — in #106 the three conflicting rows needed three
+different answers (S4 from the PR, S3 and S5 from `main`). "Keep both" applied to `state.md` would have
+produced duplicate session rows.
+
+**Two mechanical lessons, both already paid for:** the `&&` chain below, and that a PR's own report can
+say "green, just needs merging" while the PR is `CONFLICTING/DIRTY` — check `mergeStateStatus`, not the
+report.
 
 ### Historical: DRAINED 2026-10-17
 Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87** S3-03 · **#89** S4-05 · **#92** S7-02 ·
