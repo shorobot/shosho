@@ -3565,3 +3565,39 @@ and I'm not chasing it further; it needs the owner's five minutes in `/website`,
 **Boundary.** Touched only `apps/web/lib/csp.ts` and `apps/web/tests/csp.test.tsx` — the back-office's
 identical bug is S4's own file and already fixed by S4 in #89; not mine to touch a second time.
 `plan.md`'s B2 row closed. PR: see state.md's S3 row for the number once opened.
+
+## 2026-10-24 — S0 Orchestrator — queue drained to zero; migration 35 verified live, not just green
+
+**Five PRs merged, zero open:** #108 `ad80f67` · #110 `47fd562` · #106 `c0fe345` · #109 `084df37` ·
+#111 `61c6ee4`. **S0 resolved four of the five `memory/` conflicts** under D-009 because the authoring
+sessions had stopped; every push was a fast-forward, no force-push anywhere.
+
+**The thing worth keeping from the drain: the conflict rule is per file, not one rule.** `log.md` is an
+append-only chronology, so it is always **keep both**. `state.md` is **per row** — in #106 the three
+conflicting session rows needed three *different* answers (S4 from the PR, S3 and S5 from `main`), and
+in #111 the same again (S2 from the PR, S3/S4 from `main`). Applying "keep both" to `state.md` would
+have produced duplicate session rows. Recorded in `plan.md` section A.
+
+**Migration 35 verified on the live database, closing a gap S2-07 named honestly rather than papered
+over.** Their report said plainly that `supabase db push` against `shosho-staging` was impossible from
+their host (no credentials), that CI applying all 35 migrations from scratch is strong evidence but is
+not staging, and that they had **not** recorded it as done. So merging #111 was the first real
+application of a 735-line migration to a live database, and the boot's own rule applies: watch the
+chain to completion rather than merge and assume.
+
+`Migrate staging` passed on `61c6ee4`. **But a green run is a claim about the workflow, not about the
+database**, so I probed the deployed PostgREST with the anon key the guest site already ships to every
+browser:
+- `rpc/link_my_account` → **`42501 permission denied for function`**, HTTP 401.
+- a deliberately invented function → **`PGRST202 could not find the function`**, HTTP 404.
+
+The two are distinguishable, and ours is "exists but you may not call it" — so the function is really in
+the live schema **and** its grant matches what migration 35 wrote (`revoke ... from public, anon;
+grant execute ... to authenticated, service_role`). That is a different claim from "the workflow went
+green", and it is the one S2-07 could not make.
+
+**Method note, since this will recur:** the anon key is not a secret — it is `NEXT_PUBLIC_` and ships in
+the HTML of every page view. Reading it from our own live page is the cheapest way to make a real
+assertion about a deployment from this seat, and it needs no credential anyone has to hand over. Pair
+any such probe with a **control** (here, the invented function); without one, a single error response
+cannot tell "deployed and refusing" from "not deployed at all".
