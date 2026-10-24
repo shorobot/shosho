@@ -74,7 +74,12 @@ is on `infra-access.md`'s do-not-touch list and attempts are logged), so this is
 apply, never work we announce or perform.
 
 **Sessions.** S1 · S2 · S3 · S4 · S6 · S7 have all run and reported; **S5 has never run** and S5-01 is its
-first boot. **S5-01 and S4-06 issued 2026-10-21, not yet launched.** **No open PRs** — #103, #104 and #105
+first boot. **S5-01 and S4-06 issued 2026-10-21; S2-07 issued 2026-10-22 — none launched yet.**
+**D-016's last open clause was confirmed by the owner on 2026-10-22** (accounts optional, guest checkout
+survives), which unblocked S2-07; it is channel-agnostic, so **D4/SMTP does not gate it** — D4 and the two
+newly-tracked owner actions (**D14** MessageBird, **D15** Turnstile + dashboard rate limits) gate **phase B**,
+the login UI. D-021 rules on the email half of the linking rule, because `customers.email` is nullable and
+**non-unique** while `phone` is unique. **No open PRs** — #103, #104 and #105
 all merged; re-measured 2026-10-21 via `gh pr list`, correcting this block's own earlier claim that #103
 and #104 were still open. `strict_required_status_checks_policy` is back **on** after being switched off to drain
 a six-deep queue on 2026-10-17.
@@ -230,7 +235,7 @@ Both go-live preconditions are met: the seed passwords are rotated (owner, 2026-
 | 6 | ~~Force https for the back-office hostname~~ | **✅ done 2026-10-09–10 by the owner**, verified independently by S0 2026-10-10 (8 probes below) | the last hardening item before staff use |
 | 6b | Cloudflare Zero Trust → Access → self-hosted app for `bo-shos.hellfiresol.com`, policy Allow → Emails (free ≤ 50 users) | after 6 | handing the back-office to staff |
 | 7 | Revoke the Supabase personal access token created 2026-09-20 (the 2026-09-26 one is in use) | open, low | — |
-| 8 | Replace the generated placeholder image on `RL-014 Philadelphia Deluxe` with a real photograph | open, cosmetic | — |
+| 8 | ~~Replace the generated placeholder image on `RL-014 Philadelphia Deluxe` with a real photograph~~ | **CLOSED 2026-10-23 (D12)** — owner did it; S0 verified by fetching the live page and opening the image (`2.webp`, real photo), and confirmed the old `1.png` is `400` | — |
 
 Done and verified: the zone is already on **Full** and the origin serves our names on `:443`, so the Cloudflare↔origin hop is encrypted — the step once described as "switch to Full" needs no action.
 

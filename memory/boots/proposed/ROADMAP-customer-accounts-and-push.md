@@ -105,7 +105,7 @@ S0 measured these against the code before filing; each one changes a decision, n
 ```
 D-016 ✅ settled 2026-10-06
       │
-      ├── C. S7-03 rate limiting + auth audit ─┐   ← BLOCKING for SMS OTP, start it first
+      ├── C. S7-04 rate limiting + auth audit ─┐   ← BLOCKING for SMS OTP, start it first
       │                                         │
       ├── A. S2-07 backend auth foundation ─────┴── B. S3-04 login + cabinet UI
       │
@@ -117,7 +117,11 @@ D-016 ✅ settled 2026-10-06
 ```
 **C moved to the front and is now blocking, not parallel** — the owner chose SMS OTP, and SMS without rate
 limiting is an open financial exposure (finding 4), so the throttle must exist before the SMS channel does.
-Email OTP has no such constraint and can ship in A ahead of the SMS half if the owner wants login sooner.
+~~Email OTP has no such constraint and can ship in A ahead of the SMS half if the owner wants login
+sooner.~~ **Superseded by D-017 (2026-10-07):** email OTP has its *own* blocker — Supabase's built-in relay
+caps email at **2/hour project-wide**, so the email channel must not ship until real SMTP is configured
+(owner action D4). So **both** channels are gated on an owner action, and neither gates phase **A**: S2-07
+is channel-agnostic and was issued 2026-10-22 without either.
 
 **G/H (the bell) is independent of everything else and is the cheapest real delivery** — it needs no
 accounts to *build*, though it needs them to be *useful*, since a message has to belong to someone. Run it
@@ -159,7 +163,10 @@ checkout prompt to save a new address. Guest checkout must remain a first-class 
 Favourites move from `localStorage` to per-customer — already anticipated in
 `proposed/S3-03-banners-i18n-pwa.md`, so reconcile with that file rather than duplicating it.
 
-### C. S7-03 (Security) — audit the new auth surface
+### C. S7-04 (Security) — audit the new auth surface
+**Renumbered S7-03 → S7-04 on 2026-10-22.** The `S7-03` this file named was spent on a different boot —
+"Rule the automation privilege boundary (step C2)", PR #95, merged 2026-10-16. Same ID, two different
+phases; the audit is **S7-04**.
 OTP abuse (SMS pumping, code brute-force, resend flooding), account enumeration (the response must not
 reveal whether an identifier is known), session and token handling for a public-facing authenticated user,
 the self-service RLS from A, and the recycled-number linking rule. **Rate limiting is already an open
@@ -201,7 +208,10 @@ Bell with unread badge in the header, the message list, mark-as-read, deep-links
 and an empty state. Works with no permissions granted and on every platform — build and ship this before
 asking anyone for notification permission, so the permission request in E has something to point at.
 
-## Still assumed, not answered — confirm before A is issued
+## ~~Still assumed, not answered — confirm before A is issued~~ — CONFIRMED 2026-10-22
+**The owner confirmed this out loud on 2026-10-22: accounts are optional and guest checkout survives.**
+A (S2-07) was issued the same day; D-016's text now records the confirmation rather than the inference.
+The original wording is kept below because it states why it mattered.
 Everything else in D-016 is settled. One clause is S0's inference rather than the owner's words: that
 **accounts are optional and guest checkout continues unchanged**. Their description implies it ("name and
 address can be added later"), and it is the only reading consistent with not losing walk-up orders — but it

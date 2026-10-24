@@ -2994,6 +2994,213 @@ branch before acting rather than trusting the number, and the action turned out 
 `acddb39` (now `e769061`) and "Open PRs: #103 and #104, both green" (now **zero** open — #103/#104/#105 all
 merged). A block whose first line claims nothing in it is unmeasured has to be re-measured to keep saying so.
 
+## 2026-10-22 — S0 Orchestrator — merged #107; D-016's last clause confirmed, S2-07 issued, two untracked owner actions found
+
+**Merged #107** (`7b18ac8`) after asserting title and branch were mine rather than trusting the number.
+`CI` gate plus every required job passed; `e2e` red, which is the advisory job excluded from the gate's
+`needs` by design and cannot be caused by a memory-only PR.
+
+**The owner confirmed D-016's last open clause: accounts are optional and guest checkout survives.** That
+clause had been S0's inference from "name and address can be added later", and both D-016 and the ROADMAP
+said in as many words that phase A was not issuable until it was answered out loud. Recorded in D-016 as a
+confirmation, with the inference kept as history.
+
+**Ruled that D4 does not block phase A, and issued it.** The owner's note said S2-07 "also depends on D4".
+Measured against the decision records instead of accepting it: **D-017's own consequence** says "either SMTP
+lands first, **or the first release is SMS-only**", so SMTP was never an unconditional gate — and phase A's
+scope (identity column, linking rule, self-service RPCs, RLS, the customer-JWT regression test) touches no
+channel at all. So **A is channel-agnostic and was issued as `S2-07-account-foundation.md`**; what D4 and the
+SMS preconditions actually gate is **phase B**, the login UI, which cannot ship without a live channel.
+
+**Two owner actions were on the critical path and tracked nowhere — the worse find of the day.**
+`plan.md` had **zero** references to MessageBird or to Turnstile/rate-limiting, though D-016 has named
+MessageBird since 10-06 and makes rate limiting a *hard precondition of shipping phone OTP*, and D-017 makes
+Turnstile load-bearing. Added as **D14** (MessageBird account + a real DE quote; DE SMS onboarding has lead
+time, so it belongs with D1–D3) and **D15** (Turnstile site key + the dashboard rate-limit values; worst-case
+unthrottled spend **€684.72/month**). This is the same failure as the CRITICAL that sat on the open list: a
+decision recorded in `decisions.md` with no corresponding row in the plan is a decision nobody will act on.
+
+**D-021 — specified the email half of the linking rule, because the schema is asymmetric.** Finding 5 says
+link when "the verified identifier matches the customer row's identifier", which is well-defined for
+`phone` (`text not null unique`) and ambiguous for `email`, which is **nullable with no unique constraint
+anywhere in the 34 migrations** — checked repo-wide. So an email match can return many rows and "the
+matching row" becomes whichever the planner returns first. Ruling: link only on an unambiguous single
+candidate; two or more → fresh row; `NULL` email matches nothing; `anonymised_at` rows are never candidates.
+**The reason this is a safety ruling and not a privacy one** is `kitchen_note`'s own column comment —
+"Allergy / kitchen note — copied to orders.allergy_note on every order" — so a wrong link copies a
+stranger's allergy note onto every future order of a different person. A refusal is recoverable; a silent
+wrong link is not.
+
+**Also ruled in the boot:** `link_my_account()` as an explicit RPC rather than a trigger on `auth.users`,
+because the rule must be able to *refuse* and report "staff merge required" (a trigger cannot signal that)
+and because a trigger cannot be tested with a real customer JWT — which is the coverage this phase exists to
+add. S2 may overturn it with reasons.
+
+**Phase C renumbered S7-03 → S7-04.** The ROADMAP's dependency diagram and section C both name `S7-03` for
+the auth-surface audit, but that ID was spent on "Rule the automation privilege boundary" (#95, merged
+10-16). Same ID, two different phases. Fixed in the ROADMAP and in the plan row.
+
+**Corrected in the ROADMAP while there:** its line "Email OTP has no such constraint and can ship in A ahead
+of the SMS half" has been false since D-017 the next day — the built-in relay caps email at 2/hour
+project-wide. Struck through with the supersession named, rather than deleted.
+
+**Two schema facts measured so the boot would not repeat known misreadings:** `customer_addresses` **already
+exists** (migration 4, full shape), so "address CRUD" is CRUD and RLS over an existing table, not a new one;
+and `customers.auth_user_id` does not exist anywhere, so migration 35 adds it.
+
+## 2026-10-23 — S0 Orchestrator — verified S5-01 claim by claim, ruled D-022, unblocked #108
+
+**Re-measured every load-bearing claim in S5-01's report rather than recording it. All of them held** —
+which is worth writing down, because it is the first report in this project where that was true without
+qualification.
+
+- **28 files / ~3,000 lines** → 28 files changed, **3,059 insertions**.
+- **The structural spend ceiling** → holds, and is **stronger than claimed**. `llm.py` is the only holder
+  of an Anthropic client, `_client` is private, and `complete()` calls `check_before_call()` before the
+  client is even *constructed* (it is lazy, from a factory) — so a refused call does not merely skip the
+  request, it never builds a client. `orchestrator.py` passes a factory, not a client; the only other
+  mentions of "anthropic" in the package are the key in `config.py` and a message string.
+- **Model ids and pricing** → correct, checked against the authoritative model table rather than memory:
+  `claude-opus-5` $5/$25, `claude-sonnet-5` $2/$10, `claude-haiku-4-5` $1/$5, all exact. `estimate_cost`
+  prices output at the full `max_output_tokens`, i.e. deliberately pessimistic — the safe direction for a
+  ceiling. **And a near-miss on my side worth recording:** I was about to flag
+  `thinking={"type": "adaptive"}` as the stale `budget_tokens` shape. It is the opposite — `adaptive` is
+  current and `budget_tokens` is what is now rejected. I checked the reference before writing the finding,
+  which is the only reason it did not become a false correction sent to a session that was right.
+- **`.env.example`'s service-role key** → gone. A grep still matched `service_role` twice, which looked
+  like a contradiction; the two lines are the **comment explaining the removal**. The grep was the
+  hypothesis, the lines were the measurement — my own recurring error mode, caught on myself this time.
+- **63 tests** → exactly 63 `def test_` across 9 files. The stated split ("47 unit plus 16 privilege") is
+  off by one against the files (46 + 17); the total is right and the discrepancy is immaterial.
+
+**The VAT finding is correct on all three legs, and I ruled on it as D-022.** Measured: `order_items` has
+no rate column (migration 5); the rate exists only as `menu_items.vat_delivery_pct` (`numeric(4,2) default
+7`) and is read **live** at `rpc.sql:237` / `update_order_items.sql:119`; `menu_items` carries no grant to
+`agent`. S5 was also right that a grant is not the fix — joining today's rates to a past order reprices a
+filed period.
+
+**What I added to their finding, and it is the sharp half:** `order_items` already snapshots `name`,
+`unit_price_cents` and `line_total_cents` off the menu item, precisely because menu values drift and a
+filed order must not move — `item_id` is even `on delete set null` so a deleted item leaves the line
+intact. **The rate drifts identically and is the one thing not copied.** So this is an existing principle
+applied inconsistently, not a new one, which makes it much harder to argue against. And the sequencing
+nobody had stated: **every order placed before the snapshot column exists loses its true rate the moment
+D9 runs**, irrecoverably. So D-022 lands **before D9**, and D9's row now says so. No backfill — pre-migration
+rows take `null` and the split is stated unavailable, because backfilling from today's `menu_items` is the
+exact repricing error the decision exists to prevent.
+
+**Third note confirmed and filed separately:** the delivery fee's VAT is the literal `v_fee * 19.0 / 119.0`
+at `rpc.sql:359`, readable from no table — so the fee's tax component is not derivable **and D9 cannot
+change it at all**; it needs a code change. Filed to S2 in section B.
+
+**Filed S5's two S1 items** (a real `mypy .` step so the gate can leave pytest; `cache-dependency-path` so
+the one-line `requirements.txt` can go) as section-B rows. Both were reported-not-made, correctly — they
+are S1's workflow.
+
+**Unblocked #108 myself under D-009.** It was `CONFLICTING`/`DIRTY` — the report did not mention that. The
+overlap was exactly `memory/log.md` and `memory/state.md`, both mine, and `apps/automation` did not
+conflict at all. `log.md` is append-only chronology → genuine keep-both, S5's entry first (PR opened
+10:43), mine second (#107 merged 18:21). `state.md` auto-merged because S5 touched only their own row and I
+only the non-row sections — verified both survived rather than assuming. Pushed as a fast-forward of
+`s5-01`, not a force-push.
+
+**`plan.md` section A said "DRAINED — zero open PRs" while four were open.** Refreshed; the drain is
+serial because `strict_required_status_checks_policy` is on.
+
+## 2026-10-23 — S0 Orchestrator — closed D12 on evidence; ruled against launching the S3-04 boot as written
+
+**D12 closed, verified rather than relayed.** The owner said the `RL-014 Philadelphia Deluxe` photo had
+been replaced long ago and asked me to check before closing. The image lives in Supabase storage, not the
+repo, so the only honest check was the live site: `RL-014` is
+`30000000-0000-4000-8000-000000000001`; `https://shos.hellfiresol.com/` serves
+`menu/30000000-0000-4000-8000-000000000001/2.webp` (`200`, 500×500, 17.5 KB) and **I opened the image** —
+a real photograph of salmon Philadelphia rolls, not the generated placeholder. The old `.../1.png` from
+`log.md` 1027 now returns **400**, so it is gone from storage rather than merely unreferenced. Closed in
+`plan.md` D12 and `state.md`'s open-items row 8.
+
+**Ruled against launching the proposed `S3-04` boot as written, because its task 1 already exists in an
+open PR.** #110 (`s3-csp-dev-eval`, open since 2026-10-22) implements the carve-out **exactly** as the
+boot specifies — the same `scriptSrc(nonce)` helper, the production branch byte-identical, the comment
+carried across, mirroring `apps/backoffice/lib/csp.ts:137-140` — plus 42 lines of tests. Launching the
+boot would have S3 write the same three lines a second time on a second branch, which **the boot itself
+forbids** ("Do not invent a second way to do this").
+
+**And #110 already beat the boot's own evidence bar.** The boot demands the production `script-src` be
+proven byte-identical by printing both strings rather than asserting it in a test — "an assertion you
+wrote passes because you wrote it". #110 did better: it ran **real servers**, `next start` on :3911 and
+`next dev` on :3912, and curled the actual headers. That is the measurement the boot asks for, already
+taken.
+
+**What the boot has that #110 does not is task 2, and it is the valuable half.** #110's log entry covers
+the fix, the test changes and a staging re-check; it says nothing about re-running the suite or sorting
+the failures. So the re-scoped boot is the classification only.
+
+**Verified the boot's load-bearing claims before planning to re-issue any of it:**
+- **Its central premise holds.** `apps/e2e/playwright.config.ts:31` really does run
+  `next dev` for `apps/web`, so the CSP that blocks `eval()` is the one every spec runs against. Had it
+  been `next start`, the whole theory would have collapsed — production CSP has no eval problem.
+- **The mechanism explains the evidence it cites.** `expect: { timeout: 25_000 }` matches the quoted
+  "54 × locator resolved to `<button disabled>` across 25 s", and the reasoning that a **pickup** order
+  resolves no delivery zone — so "debounced `quote_order` is slow" cannot explain it — is sound.
+- **Its statistics have aged and must be corrected before reuse.** Measured today: **74** e2e runs since
+  2026-10-15, not 65; **46** failures, not 38; cancellations exactly **27**; and the headline claim is
+  confirmed precisely — there is **no `success` conclusion at all** in that window.
+- **One stale cross-reference caused by my own edit:** the boot points at "`plan.md` section B, row 2
+  (B2)", but I inserted the D-022 VAT-snapshot row at the top of section B yesterday, so that row has
+  moved. A boot that names a row by position breaks whenever the table is edited — name the item, not
+  the index.
+
+## 2026-10-23 — S0 Orchestrator — S2-07 corrected me and was right; D-021 amended before it ever reached `main`
+
+**S2-07 reported four things needing me. All four hold, and two of them are my errors.**
+
+**1. Finding 5's rule does not prevent finding 5's disaster — accepted, and this is the serious one.**
+The rule I ratified in D-021 says link on a phone match when the row "has no other account attached".
+S2-07's objection: **a guest row is unlinked by definition** — `place_order` creates it and no account
+has ever claimed it — so that condition is satisfied by *exactly* the rows a recycled number lands on.
+The test excludes rows claimed by another **account**; it says nothing about rows belonging to another
+**person**. For the dominant case the rule collapses to a phone match alone, which finding 5's own last
+sentence forbids. So the rule did not prevent the disaster it was written to prevent, and I ratified it
+without catching that. **Amended D-021 in place, before it ever reached `main`** — it lives in the still
+-open #109, so there was no need to ship a known-defective decision and supersede it later.
+**Ratified their `kitchen_note is null` tightening** as the interim: strictly tightening, blocks the
+food-safety path specifically, needs no schema change. And recorded their warning that **clearing the
+note on link is not the safe alternative** — if the link is correct, clearing destroys a real allergy
+record. Refusing is recoverable; wrong-link and wrong-clear are not.
+
+**3. "Otherwise start a fresh customer row" is not implementable — accepted.** `customers.phone` is
+`not null unique`, so there cannot be a second row with that phone. Taken with point 1, the rule can
+neither safely link nor legally refuse. The premise underneath it — *a phone number identifies one
+person forever* — is simply false, and recycled numbers are what that falsity is called. Filed as its own
+plan item; it needs a decision before phase B, with the `kitchen_note is null` interim holding until then.
+
+**2. `settings.draft` is reachable by a customer JWT — confirmed by reading the migration, and it is
+worse than B5 recorded.** Migration 32 lines 23-24 are `revoke all on table public.settings from anon;
+grant select (key, value, created_at, updated_at) on public.settings to anon;` — **`anon` only**, so
+`authenticated` keeps the blanket table grant including `draft`. The admitting policy is
+**`settings_public_read`**, `for select to anon, authenticated using (key = any
+(settings_public_keys()))` — **the one `to authenticated` policy with no `is_staff(...)` predicate**,
+because it is the public-read policy. So any authenticated user reads `draft` on the public rows. B5
+recorded this as "leaks to kitchen/driver" and named a different policy; the real reach is **every
+authenticated user**, and phase B creates a whole new class of them. **The migration's own comment states
+the assumption that fails:** "`authenticated` keeps its existing table-level grant, so owner/operator
+continue to…" — it read `authenticated` as *staff*, which was true when written. Ruled as **D-024**: a
+phase-B release blocker, to S7 per D-012, B5 upgraded.
+
+**This is also the one place the ROADMAP's "safe by construction against a second class of authenticated
+user" claim fails** — it rested on "every `to authenticated` policy carries an explicit `is_staff(...)`",
+and `settings_public_read` is the exception. The invariant needs restating with its exception named.
+
+**4. "D-021 does not exist" — correct, and it is my sequencing error, repeated.** D-021 and D-016's
+confirmation live in **#109, still open**. I issued S2-07 telling it to read D-021 as task-2 input. My own
+log already carries the lesson from 10-21: *a boot amendment not committed before the session runs does
+not exist.* I did it again with a decision instead of an amendment. The fix is ordering, not wording:
+**merge the decision before issuing the boot that depends on it.**
+
+**Separately: ruled S4-06's spend-ceiling key as D-023** and renamed it in `s4-06` before merge —
+`run_ceiling_usd` / `day_ceiling_usd`, S5's names, because S5 is the enforcer and an unknown key there is
+indistinguishable from "not set", so the screen would have claimed a ceiling that was not in force. S4
+filed it rather than guessing past it, which is why it was caught. Resolved their proposal in place.
 ## 2026-10-23 — S3 Frontend — guest-site CSP dev carve-out (S6-01 finding 0, HIGH, closed)
 
 **Resumed after a long gap and re-oriented before touching anything.** My last local state was a

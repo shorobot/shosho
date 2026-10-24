@@ -103,7 +103,7 @@ Consequences: the funnel's menu→cart step stays unmeasurable in v1, and the Be
 ## D-016 — Customer accounts: optional, OTP by SMS **and** email, bonuses deferred, push as the primary channel
 Status: accepted 2026-10-06 (owner, answering S0's four questions on `boots/proposed/ROADMAP-customer-accounts-and-push.md`)
 Decision:
-- **Accounts are optional.** Guest checkout survives unchanged as a first-class path. This retires the design's product rule "Guest checkout, no account" (`docs/design/README.md` lines 26 and 48) — the rule becomes "guest checkout always available; an optional account adds a personal cabinet, saved addresses and messages". The design and the twelve-rule list must be updated in the same boot that ships the login, or S6 will correctly report the feature as a rule violation. *(This clause is S0's stated assumption from the owner's description — "name and address can be added later" — and is the one part of D-016 the owner did not answer explicitly. Confirm before S2-07 is issued.)*
+- **Accounts are optional.** Guest checkout survives unchanged as a first-class path. This retires the design's product rule "Guest checkout, no account" (`docs/design/README.md` lines 26 and 48) — the rule becomes "guest checkout always available; an optional account adds a personal cabinet, saved addresses and messages". The design and the twelve-rule list must be updated in the same boot that ships the login, or S6 will correctly report the feature as a rule violation. **CONFIRMED BY THE OWNER 2026-10-22, out loud rather than inferred: accounts are optional and guest checkout survives.** S2-07 was explicitly not issuable without this and was issued the same day. *(History: this clause had been S0's inference from the owner's description — "name and address can be added later" — and was the only part of D-016 the owner had never answered explicitly.)*
 - **OTP by both SMS and email** from the first release, owner's choice over S0's email-only recommendation. Consequence accepted: see the rate-limiting clause below, which becomes blocking rather than advisory.
 - **SMS provider: MessageBird**, unless the owner prefers otherwise after seeing a real quote. The owner asked S0 to look at TurboSMS (Ukrainian) and to find a German equivalent. Measured, October 2026 list prices: **TurboSMS international ≈ €0.067–0.068/SMS** and it is **not** one of Supabase Auth's built-in providers, so it needs a custom Send SMS Hook. **MessageBird ≈ €0.0317/SMS** — roughly half the price — **and is built into Supabase Auth**, so no hook. Twilio ≈ €0.094, Sinch ≈ €0.0785, Plivo ≈ €0.089. Germany is among the priciest EU routes because of carrier termination fees and three carriers. So the cheaper option is also the less work, which settles it. These are list prices, not quotes — confirm with MessageBird for DE OTP volume before committing.
 - **Bonuses are deferred** out of the first release and get their own design pass with the owner. Nothing exists today: zero occurrences of bonus / loyalty / points / reward in the schema and nothing in the design canvas, so a session would be inventing the product rules. The first release is login + cabinet + saved addresses.
@@ -157,3 +157,69 @@ Consequences, in the order they bite:
 - **Agent order is forced by external dependencies, not by value.** *Sales* needs a Meta app, Business verification and Messenger/Instagram Messaging permissions — owner-side, weeks, uncodeable-around — so it is **not** first despite being the most commercially interesting. *Warehouse* needs an ingredient/recipe/stock schema that does not exist at all. *Quality* is deferred by the owner. **Accounting** and **Grow** read data that already exists and need no external credential, so one of them is agent #1. Accounting is the better first because D-019 just settled the VAT model it depends on.
 - **Nothing an agent produces can be *sent* yet.** D-017 still stands: no SMTP, so no email; no push transport exists. An agent may write rows and surface them in the back-office; it may not message a customer. Sales order-intake in particular is read-and-draft until a transport exists.
 - QA and Security are **continuous, not a phase**: S6 regresses the guest→order→back-office→agent path on each new boot, S7 audits before any production deploy. Neither waits for the agents to be finished.
+
+## D-021 — The account-linking rule's email half: link only on an unambiguous single match, never on a non-unique identifier
+Status: accepted 2026-10-22 (S0, specifying what D-016's finding 5 left under-defined, at the moment S2-07 was issued)
+Decision: `link_my_account()` links a verified identifier to an existing `customers` row **only** on an unambiguous single candidate.
+- Verified **phone** → **AMENDED 2026-10-23, before this decision ever reached `main`.** The original
+clause read "at most one candidate (the column is `unique`); link it **iff** it has no `auth_user_id`."
+**S2-07 showed that is defective, and they are right.** A guest row is unlinked **by definition** —
+`place_order` creates it and no account has ever claimed it — so "has no other account attached" is
+satisfied by *exactly* the rows a recycled number lands on. The test excludes rows claimed by another
+*account*; it says nothing about rows belonging to another *person*. For the dominant case the rule
+therefore reduces to a phone match alone, which finding 5's own last sentence forbids. **The rule as
+written did not prevent the disaster it was written to prevent.** Ratified by S0 without catching it.
+- **Interim rule, ratified as S2-07 proposed it:** additionally require **`kitchen_note is null`** before
+auto-linking on a phone match. It is strictly tightening, it blocks the food-safety path specifically
+(`kitchen_note` is copied to `orders.allergy_note` on every order), and it needs no schema change.
+**Clearing the note on link is NOT the safe alternative** — if the link is correct, clearing destroys a
+real customer's allergy record. Refusing is recoverable; both wrong-link and wrong-clear are not.
+- Verified **email** → link **iff exactly one** non-anonymised row carries that email **and** it has no `auth_user_id`. Two or more candidates → **fresh customer row**, never a guess.
+- A `NULL` email matches nothing, guarded explicitly. A row with `anonymised_at` set is never a candidate.
+- Any non-link starts a fresh row and leaves a **deliberate staff merge** from the back-office, audited in `customer_events`.
+Why:
+- **Measured, and it is the reason this needed a ruling at all:** `customers.phone` is `text not null unique`, but **`customers.email` is nullable with no unique constraint or index anywhere in the 34 migrations** — checked repo-wide. D-016's finding 5 says "the account's verified identifier matches the customer row's identifier", which is well-defined for phone and ambiguous for email. Written naively against a non-unique column, "the matching row" is whichever row the planner returns first.
+- **The failure mode is food safety, not privacy.** `customers.kitchen_note`'s own column comment is "Allergy / kitchen note — copied to orders.allergy_note on every order." A wrong link copies a stranger's allergy note onto every future order of a different human being. That asymmetry — a silent wrong link is far worse than an inconvenient refusal — is what makes "refuse and let staff merge" the correct default rather than a conservative one.
+- Refusing is cheap and recoverable: the customer gets an account, just a new row, and staff can merge deliberately. Mis-linking is neither.
+Consequences:
+- `link_my_account()` must be able to **report** "did not link, staff merge required" to the client, which is why S2-07 specifies an explicit RPC rather than a trigger on `auth.users` (a trigger cannot signal that outcome, and cannot be tested with a real customer JWT).
+- The back-office needs a deliberate **merge** action eventually. It is **not** in S2-07 and not in B; whoever scopes it must audit into `customer_events`. Until it exists, an unlinked duplicate is a visible, harmless row — the correct failure direction.
+- Does not change D-016's channel choices and does not depend on which channel ships first.
+
+## D-022 — Snapshot the VAT rate on `order_items` at write time, and land it BEFORE D9
+Status: accepted 2026-10-23 (S0, on S5-01's finding, re-measured before accepting it)
+Decision: add a per-line **VAT rate snapshot** to `order_items`, written at order time from the rate actually used, plus the delivery fee's own rate on `orders`. **This migration must land before owner action D9** (setting the real 7/19 rates with the Steuerberater). S2's work; S5 correctly refused to touch `apps/backend`.
+Why:
+- **The schema already snapshots everything else on the line, and the rate is the one thing it forgot.** `order_items` copies `name`, `unit_price_cents` and `line_total_cents` off the menu item precisely because menu values drift and a filed order must not move; `item_id` is even `on delete set null` so a deleted item leaves the line intact. The rate drifts identically and is **not** copied. So this is not a new design principle — it is an existing principle applied inconsistently.
+- **Measured, all three legs, rather than taken from the report:** `order_items` has no vat/rate/pct column (migration 5, lines 54-66); the rate exists only as `menu_items.vat_delivery_pct` (`numeric(4,2) not null default 7`, migration 3) and is read **live at calculation time** (`rpc.sql:237`, `update_order_items.sql:119`); and `menu_items` carries no grant to the `agent` role, which S5 proved as a `42501` refusal rather than an empty result. `orders` keeps only the aggregate `vat_cents`.
+- **A grant would answer the wrong question, which is the part worth recording.** Even with `SELECT` on `menu_items`, joining *today's* rates to a past order reprices a filed period. D9 makes that imminent rather than theoretical: it changes every rate, with the Steuerberater.
+- **Hence the sequencing, which is the sharp half of this decision and which nobody had stated.** Every order placed before the snapshot column exists loses its true rate the moment D9 runs — irrecoverably, because nothing anywhere records what the rate was at the time. The column is cheap; the window in which it is still possible to capture correct history closes when D9 does.
+- **The delivery fee is the same defect in a worse form:** its VAT is the literal `v_fee * 19.0 / 119.0` at `rpc.sql:359`, readable from no table at all. So the fee's tax component is not derivable either, and a hardcoded rate cannot even be changed by D9 — it needs a code change, which is its own finding.
+Consequences:
+- **Historical rows get no backfill.** Pre-migration lines take `null` and every per-rate report states the split as unavailable for that window, with the reason. Backfilling by joining today's `menu_items` is the exact repricing error this decision exists to prevent — it must not be done, even though it would make the reports look complete.
+- Until it lands, Accounting reports **charged** VAT and marks the per-rate split `available: false` with its reason. S5-01 already ships exactly that, which is the correct interim behaviour and not a gap to be closed by inventing a number.
+- **For the owner:** worth putting in front of the Steuerberater already engaged for D9, because a German invoice is normally expected to show the tax amount per rate — which is precisely what is not derivable today. S0 is not the authority on that; the Steuerberater is, and they are already in the loop.
+- Does not change D-019 (the rate is a per-item property; order type does not change it). It makes D-019 *auditable*, which it currently is not: nothing records which per-item rate an order actually used.
+- The misleading column name `vat_delivery_pct` — a per-item rate with "delivery" in it, used unconditionally — is noted for S2 to decide on. Renaming is cosmetic next to the snapshot and must not delay it.
+
+## D-023 — `agents.config` spend-ceiling keys are `run_ceiling_usd` / `day_ceiling_usd`
+Status: accepted 2026-10-23 (S0, settling S4-06's filed proposal against S5-01's shipped code)
+Decision: the keys are **`run_ceiling_usd`** and **`day_ceiling_usd`**, plain USD numbers, optional — absence means "no ceiling configured", never `0`.
+Why: S5-01 merged first and its ledger already reads exactly these (`apps/automation/.../ledger.py:157-158`). **The enforcer's names win**: the dashboard *displays and writes* a ceiling, but the orchestrator is what actually bounds spend, and an unknown key there is indistinguishable from "not set" — it silently falls back to the code default (`$0.50`/run, `$5.00`/day) while the screen reports a configured ceiling. A safety control that claims a property it does not have is worse than a visibly absent one.
+Consequences:
+- S0 renamed S4-06's keys in `s4-06` before merging it (19 lines, 5 files). S4 **filed the gap rather than guessing past it**, which is the only reason it was caught before shipping — their proposal called it "not urgent", which was true when written and stopped being true the moment S5-01 merged.
+- Any third agent reads these keys. `docs/api-contracts.md` §8.8 should name them rather than leaving "S5's vocabulary, not specified here".
+
+## D-024 — `settings.draft` is readable by ANY authenticated user, customers included; it blocks phase B
+Status: accepted 2026-10-23 (S0, confirming S2-07's finding by reading the migration)
+Decision: treat this as a **release blocker for phase B (the customer login)**, not as an open hygiene item, and route it to **S7** per D-012. It must be closed before any non-staff user can hold a JWT.
+Why, measured rather than taken on report:
+- Migration 32 narrowed the `draft` column by **column grant**, and only for one role: `revoke all on table public.settings from anon; grant select (key, value, created_at, updated_at) on public.settings to anon;` (lines 23-24). `authenticated` keeps the blanket table grant.
+- `settings_public_read` is `for select to anon, **authenticated** using (key = any (settings_public_keys()))` — it is the one `to authenticated` policy that carries **no** `is_staff(...)` predicate, because it is the public-read policy.
+- Together: any `authenticated` role can select `draft` on the publicly-readable rows. Today that is kitchen and driver (recorded as **B5**, understated). **After phase B it is every customer** — the shop's unpublished edits, readable by anyone who signs up.
+- **The migration's own comment states the assumption that fails:** "`authenticated` keeps its existing (unchanged) table-level grant, so owner/operator continue to…". It reasoned about `authenticated` as if it meant *staff*. That was true when written and phase B makes it false.
+Consequences:
+- **This is the one place the ROADMAP's "safe by construction against a second class of authenticated user" claim does not hold**, and S2-07 found it. The claim rested on "every `to authenticated` policy carries an explicit `is_staff(...)`" — `settings_public_read` is the exception, and column grants are where it bites. The invariant should be restated with the exception named rather than repeated.
+- Column grants cannot fix it alone (S2-07's words, confirmed): the fix is to revoke the blanket `authenticated` grant and re-grant the public columns, mirroring what was done for `anon` — S7 to rule, S2 to implement.
+- **B5 is upgraded** from "reaches kitchen/driver" to "reaches every authenticated user" and from an open item to a phase-B blocker.
+
