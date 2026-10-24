@@ -2884,6 +2884,27 @@ Next: C3 (S5's orchestrator) and C5 (S1's deploy surface, the credential step ab
 
 **Rewrote `state.md`'s SNAPSHOT and `boots/S0-00-orchestrator.md`.** The boot's "Current position" is now a **pointer**, not a paragraph, and says why: it rotted twice, and the restart snapshot I wrote on 10-12 was wrong on three counts within the hour. The lessons section gained eight entries from this stretch, the sharpest being that **a headings grep is not the file — that error mode has now cost me three times** (the deploy log, the rate-limit log, and S7's proposal whose heading said CRITICAL while its first line said RESOLVED), and that **a boot amendment not committed before the session runs does not exist.**
 
+## 2026-10-22 — S4 Back-office — S4-06
+
+`/automation` — queue, live runs with ordered per-run logs, the approval screen, spend vs a per-agent ceiling, an honest registry, and B3 (the dead `vat_onsite_pct` control). PR `s4-06` → `main`. S5-01 was live in `apps/automation` the whole time this was written; never touched it.
+
+**How I proved realtime arrives, without a live run to watch.** S5-01 had not landed a row by the time this boot started — the tables are real but empty, exactly task 1's premise. So "an inserted row appears without a refetch" is proven the same way `lib/store.tsx`'s orders board already proves it, by construction rather than by a captured screenshot: `AutomationProvider` opens one `postgres_changes` channel on `agent_tasks`/`agent_runs`/`agent_outputs`, and on any event it debounces a **refetch of that one row** (never a payload diff — the same reason the orders board does this: a second writer's change between the event firing and this client re-rendering must not be silently dropped) and upserts it into local state. A run's log lines are a *separate* concern, loaded and subscribed only while its drawer (`RunLogDrawer`) is open — `useRunLogs` mirrors `useCustomerDetail`'s append-only pattern for `customer_events`, filtered to `run_id=eq.<id>`, ordered by `seq` (a `bigserial`) and never by `at`, per migration 33's own comment that concurrent writers can share a millisecond. Unsubscribe on close is the hook's own cleanup, not something the drawer has to remember. What I could **not** do: connect to a live Supabase project and watch a real `INSERT` arrive, because none was reachable in this environment (no Docker, same limitation S2-08/S2-09/S7-02 each hit) — so this is a structural trace against a subscription shape already proven live elsewhere in this codebase, not a fresh live observation this boot made. Said so rather than implied otherwise.
+
+**What the zero-data dashboard actually looks like.** Every panel distinguishes "nothing recorded" from "recorded as zero," by construction, not by a late polish pass: the queue says "no task has ever been queued," not `0` rows in a table with headers; runs says "no agent has run yet"; approvals says "nothing to approve" rather than an empty list with no explanation; spend says **"no run yet today"** for an agent with zero finished runs today, which is a different claim from `$0.00` (an agent that ran and spent nothing) — the render test asserts the string `"0,00"` never appears on that panel at all, not just that the right label does. The ceiling gets the same treatment one level up: an agent with no `ceiling_usd_per_day` configured shows **"no ceiling configured,"** never folded into "ok" (which would silently claim a ceiling exists and is being respected). I did not reuse `lib/marketing.ts`'s `Kpi`/`isAvailable` type verbatim, as the boot suggested — its `unit` field is `cents | count | pct`, and spend needs USD (fractional, different formatting) and raw token counts, so importing it would have meant widening a marketing-specific type for an unrelated domain. I kept the same **convention** (a value is either present or it says why it isn't, never a bare zero) and expressed it with the same branching shape inline in each panel, rather than inventing a third abstraction to hold it. If S0 wants one shared type across both domains, that's a clean follow-up, not something I judged worth a cross-cutting refactor inside this boot.
+
+**`review_agent_output()`'s three named failures, told apart.** `mapReviewError()` (`lib/automation.ts`) reads `error.code`/`error.message` the same way `lib/actions.ts`'s existing `mapError()` already reads `set_order_status`'s — by `errcode` and message substring, because that is what PostgREST actually hands back from a `raise exception`. `42501`/`forbidden_for_role` → a forbidden message (defence in depth only — the route is already `requireRole(["owner","operator"])`, so this shouldn't fire from this screen, but the function's own grant is `authenticated`, all four roles, so the mapping exists regardless). `output_not_found_or_already_reviewed` → its own code, and the dialog's handler refetches that one row and shows its real current state rather than leaving the screen believing its own stale guess — this is the two-operators-two-tablets case the boot named, and it is the one of the three actually reachable from normal use. `invalid_input` (a `pending` decision) is mapped but never reachable from the UI: `REVIEW_DECISIONS` is `["approved", "rejected"]` and the dialog only ever offers those two. Verified against 9 unit tests on `mapReviewError` covering all three plus an unrecognised-message fallback — **not** against a live Postgres role connected as a non-owner/operator staff member, since `apps/backend` and `apps/e2e` are both outside this boundary and I have no way to exercise the live function from `apps/backoffice`'s own test suite. The live guarantee that `42501`/the `pending` rejection/the already-reviewed race actually behave this way is S2-09's migration and S7-03's ruling, both already shipped and already verified by those sessions — this boot trusts that contract rather than re-proving it.
+
+**The spend-ceiling convention — a genuine gap, not an oversight.** §9.3 says the ceiling is "held in `agents.config`" but no agent had ever written to that column before this boot — S5-01's Accounting agent, running in parallel, is the very first write `config` will ever get, and nothing in `docs/api-contracts.md` §8.8 or `docs/security.md` §9.3 names a key. I picked `ceiling_usd_per_run` / `ceiling_usd_per_day` (plain numbers, USD, optional — absence means "no ceiling," never `0`) because the dashboard needed *something* concrete to read and the Registry screen needed something concrete to write, and documented the choice in `lib/automation.ts`'s own comment rather than hiding it as an implicit assumption. **This is a contract gap worth S0's time**: if S5 picks a different key for its own per-run enforcement (§9.3 says the orchestrator must check the ceiling before each call, in its own dispatch loop, which is code I never saw and could not coordinate with live), the dashboard and the enforcement will silently disagree about where the number lives. Filed as a proposal rather than guessed past. **[S0, 2026-10-23 — ruled, and the gap was already live rather than hypothetical: S5-01 merged first and its ledger reads `run_ceiling_usd` / `day_ceiling_usd` (`ledger.py:157`). The enforcer's names win — the dashboard displays and writes, but the orchestrator is what actually bounds spend, and an unknown key there is indistinguishable from "not set", so it silently takes the code default and the screen would claim a ceiling that is not in force. S0 renamed this boot's keys before merge; S4's text above is left as written. Flagging it instead of guessing past it is why this was caught before it shipped.]**
+
+**B3 — removed, not disabled.** `ItemEditor.tsx`'s `vat_onsite_pct` dropdown is gone from the form entirely (`Draft` type, `draftOf()`, the save payload, and the `<Select>` itself) — not greyed out, not relabelled "reserved." D-019 is explicit that SHOSHO has no on-premises order channel (`order_type` is `delivery | pickup` only) for an on-premises rate to ever apply to, so a disabled-but-visible control would still imply a future use that doesn't exist in the schema's own shape; removing it is the same honesty S4-04 applied to "Senden." `vat_delivery_pct` — the real, already-correct rate — is untouched, and the backend column `vat_onsite_pct` itself is untouched (S2's call, if ever). Two stray `ie.vatOnsite` i18n keys (DE/EN) removed since nothing references them anymore; `tests/menu.test.ts`'s fixture still carries `vat_onsite_pct: 19` on its mock row, which is correct to leave — it is testing the row shape the backend returns, not this editor.
+
+**Guards, tested as guards, inside this boundary.** `/automation` added to `tests/guards.test.ts`'s table of real page/layout modules — the same six assertions every other entry gets (kitchen/driver → their own board, owner/operator admitted, anonymous → `/login`, no-staff-row → `/no-access`, deactivated-owner → `/no-access`), run against the actual `requireRole(["owner","operator"])` call in `app/(shell)/automation/page.tsx`, not a stand-in. This is the control that actually matters per S4-03's finding: a write a row policy denies comes back a silent `200 []`, so a kitchen session that somehow reached this screen would see an empty dashboard rather than a refusal — the route guard is what keeps that from being reachable at all, and every table under `/automation` (§8.8) has no kitchen/driver policy whatsoever, so RLS is the backstop, not the test subject.
+
+**Registry's honesty gap, named rather than hidden.** `isAgentImplemented()` is a hand-maintained `Set` containing exactly `"accounting"` — there is no column anywhere (`agents` or otherwise) that says "has orchestrator code behind it," so this will silently go stale the moment Grow (C6) or Warehouse (C9) ships unless whoever writes that boot remembers to add the key here too. Said in the code comment and here, not left for the next person to discover as a bug.
+
+**Boundary held.** No `apps/automation` (S5-01 live there the whole boot), `apps/web`, `apps/backend`, `apps/e2e`, `apps/infra`, `.github/workflows/**`. No migration, policy, or grant — the spend-ceiling convention above is a read/write of existing `jsonb`, not a schema change. Never wrote `agent_outputs.status`/`reviewer_id`/`reviewed_at`/`review_note` outside `review_agent_output()` — `agent`'s own column grant already prevents it at the database level regardless, but the UI never attempts it either. Did not add `agents` to the realtime publication (that stayed S2's call, already made in migration 33) and created no publication of my own. Did not touch `apps/web/lib/csp.ts` (B2) — real, still open, flagged again rather than fixed, S3's boundary. Did not edit `api-contracts.md`, `security.md`, `decisions.md`, `plan.md`, `sessions.md`. Did not reseed or truncate `shosho-staging`; never asked for or printed the gate credential. 444 tests total (409 inherited + 35 pure-logic + 9 render-smoke); `node (backoffice)`: lint, typecheck, test all clean.
+
+Proposals → `boots/proposed/`: the `agents.config` spend-ceiling key convention (§9.3/§8.8), for S0 to ratify, correct, or hand to S5 to settle together before a second agent's config disagrees with this one. Next S4-adjacent work, not started: `S7-02-S4-backoffice-hardening.md` leftovers, `S7-S4-03-httponly-correction.md`, and whatever S5-01's own report asks for once a real run produces a real output for this screen to actually show. Stopping here, waiting for S0.
 ## 2026-10-22 — S5 Automation — S5-01
 
 **First S5 session ever. `apps/automation` is now a real Python project: an orchestrator loop, a spend ceiling, the Accounting agent, and a health-only FastAPI app.** Verified against a **local** Postgres with migrations 1..34 applied verbatim — staging and production were out of scope and are stated as such below. One real finding came out of it, and it is the reason the first Steuerberater output ships with a gap rather than a number: **the per-rate VAT split §9.1 asks Accounting to report is not derivable from the tables the `agent` role may read.**
@@ -3292,3 +3313,255 @@ rather than buried in a diff.
 the SMS provider plus rate-limiting/Turnstile) — **and now also on finding 4 above.** Phase **C is
 S7-04**, and it inherits two filed items: the `place_order` email-poisoning vector and the
 `settings.draft` reach.
+## 2026-10-22 — S0 Orchestrator — merged #107; D-016's last clause confirmed, S2-07 issued, two untracked owner actions found
+
+**Merged #107** (`7b18ac8`) after asserting title and branch were mine rather than trusting the number.
+`CI` gate plus every required job passed; `e2e` red, which is the advisory job excluded from the gate's
+`needs` by design and cannot be caused by a memory-only PR.
+
+**The owner confirmed D-016's last open clause: accounts are optional and guest checkout survives.** That
+clause had been S0's inference from "name and address can be added later", and both D-016 and the ROADMAP
+said in as many words that phase A was not issuable until it was answered out loud. Recorded in D-016 as a
+confirmation, with the inference kept as history.
+
+**Ruled that D4 does not block phase A, and issued it.** The owner's note said S2-07 "also depends on D4".
+Measured against the decision records instead of accepting it: **D-017's own consequence** says "either SMTP
+lands first, **or the first release is SMS-only**", so SMTP was never an unconditional gate — and phase A's
+scope (identity column, linking rule, self-service RPCs, RLS, the customer-JWT regression test) touches no
+channel at all. So **A is channel-agnostic and was issued as `S2-07-account-foundation.md`**; what D4 and the
+SMS preconditions actually gate is **phase B**, the login UI, which cannot ship without a live channel.
+
+**Two owner actions were on the critical path and tracked nowhere — the worse find of the day.**
+`plan.md` had **zero** references to MessageBird or to Turnstile/rate-limiting, though D-016 has named
+MessageBird since 10-06 and makes rate limiting a *hard precondition of shipping phone OTP*, and D-017 makes
+Turnstile load-bearing. Added as **D14** (MessageBird account + a real DE quote; DE SMS onboarding has lead
+time, so it belongs with D1–D3) and **D15** (Turnstile site key + the dashboard rate-limit values; worst-case
+unthrottled spend **€684.72/month**). This is the same failure as the CRITICAL that sat on the open list: a
+decision recorded in `decisions.md` with no corresponding row in the plan is a decision nobody will act on.
+
+**D-021 — specified the email half of the linking rule, because the schema is asymmetric.** Finding 5 says
+link when "the verified identifier matches the customer row's identifier", which is well-defined for
+`phone` (`text not null unique`) and ambiguous for `email`, which is **nullable with no unique constraint
+anywhere in the 34 migrations** — checked repo-wide. So an email match can return many rows and "the
+matching row" becomes whichever the planner returns first. Ruling: link only on an unambiguous single
+candidate; two or more → fresh row; `NULL` email matches nothing; `anonymised_at` rows are never candidates.
+**The reason this is a safety ruling and not a privacy one** is `kitchen_note`'s own column comment —
+"Allergy / kitchen note — copied to orders.allergy_note on every order" — so a wrong link copies a
+stranger's allergy note onto every future order of a different person. A refusal is recoverable; a silent
+wrong link is not.
+
+**Also ruled in the boot:** `link_my_account()` as an explicit RPC rather than a trigger on `auth.users`,
+because the rule must be able to *refuse* and report "staff merge required" (a trigger cannot signal that)
+and because a trigger cannot be tested with a real customer JWT — which is the coverage this phase exists to
+add. S2 may overturn it with reasons.
+
+**Phase C renumbered S7-03 → S7-04.** The ROADMAP's dependency diagram and section C both name `S7-03` for
+the auth-surface audit, but that ID was spent on "Rule the automation privilege boundary" (#95, merged
+10-16). Same ID, two different phases. Fixed in the ROADMAP and in the plan row.
+
+**Corrected in the ROADMAP while there:** its line "Email OTP has no such constraint and can ship in A ahead
+of the SMS half" has been false since D-017 the next day — the built-in relay caps email at 2/hour
+project-wide. Struck through with the supersession named, rather than deleted.
+
+**Two schema facts measured so the boot would not repeat known misreadings:** `customer_addresses` **already
+exists** (migration 4, full shape), so "address CRUD" is CRUD and RLS over an existing table, not a new one;
+and `customers.auth_user_id` does not exist anywhere, so migration 35 adds it.
+
+## 2026-10-23 — S0 Orchestrator — verified S5-01 claim by claim, ruled D-022, unblocked #108
+
+**Re-measured every load-bearing claim in S5-01's report rather than recording it. All of them held** —
+which is worth writing down, because it is the first report in this project where that was true without
+qualification.
+
+- **28 files / ~3,000 lines** → 28 files changed, **3,059 insertions**.
+- **The structural spend ceiling** → holds, and is **stronger than claimed**. `llm.py` is the only holder
+  of an Anthropic client, `_client` is private, and `complete()` calls `check_before_call()` before the
+  client is even *constructed* (it is lazy, from a factory) — so a refused call does not merely skip the
+  request, it never builds a client. `orchestrator.py` passes a factory, not a client; the only other
+  mentions of "anthropic" in the package are the key in `config.py` and a message string.
+- **Model ids and pricing** → correct, checked against the authoritative model table rather than memory:
+  `claude-opus-5` $5/$25, `claude-sonnet-5` $2/$10, `claude-haiku-4-5` $1/$5, all exact. `estimate_cost`
+  prices output at the full `max_output_tokens`, i.e. deliberately pessimistic — the safe direction for a
+  ceiling. **And a near-miss on my side worth recording:** I was about to flag
+  `thinking={"type": "adaptive"}` as the stale `budget_tokens` shape. It is the opposite — `adaptive` is
+  current and `budget_tokens` is what is now rejected. I checked the reference before writing the finding,
+  which is the only reason it did not become a false correction sent to a session that was right.
+- **`.env.example`'s service-role key** → gone. A grep still matched `service_role` twice, which looked
+  like a contradiction; the two lines are the **comment explaining the removal**. The grep was the
+  hypothesis, the lines were the measurement — my own recurring error mode, caught on myself this time.
+- **63 tests** → exactly 63 `def test_` across 9 files. The stated split ("47 unit plus 16 privilege") is
+  off by one against the files (46 + 17); the total is right and the discrepancy is immaterial.
+
+**The VAT finding is correct on all three legs, and I ruled on it as D-022.** Measured: `order_items` has
+no rate column (migration 5); the rate exists only as `menu_items.vat_delivery_pct` (`numeric(4,2) default
+7`) and is read **live** at `rpc.sql:237` / `update_order_items.sql:119`; `menu_items` carries no grant to
+`agent`. S5 was also right that a grant is not the fix — joining today's rates to a past order reprices a
+filed period.
+
+**What I added to their finding, and it is the sharp half:** `order_items` already snapshots `name`,
+`unit_price_cents` and `line_total_cents` off the menu item, precisely because menu values drift and a
+filed order must not move — `item_id` is even `on delete set null` so a deleted item leaves the line
+intact. **The rate drifts identically and is the one thing not copied.** So this is an existing principle
+applied inconsistently, not a new one, which makes it much harder to argue against. And the sequencing
+nobody had stated: **every order placed before the snapshot column exists loses its true rate the moment
+D9 runs**, irrecoverably. So D-022 lands **before D9**, and D9's row now says so. No backfill — pre-migration
+rows take `null` and the split is stated unavailable, because backfilling from today's `menu_items` is the
+exact repricing error the decision exists to prevent.
+
+**Third note confirmed and filed separately:** the delivery fee's VAT is the literal `v_fee * 19.0 / 119.0`
+at `rpc.sql:359`, readable from no table — so the fee's tax component is not derivable **and D9 cannot
+change it at all**; it needs a code change. Filed to S2 in section B.
+
+**Filed S5's two S1 items** (a real `mypy .` step so the gate can leave pytest; `cache-dependency-path` so
+the one-line `requirements.txt` can go) as section-B rows. Both were reported-not-made, correctly — they
+are S1's workflow.
+
+**Unblocked #108 myself under D-009.** It was `CONFLICTING`/`DIRTY` — the report did not mention that. The
+overlap was exactly `memory/log.md` and `memory/state.md`, both mine, and `apps/automation` did not
+conflict at all. `log.md` is append-only chronology → genuine keep-both, S5's entry first (PR opened
+10:43), mine second (#107 merged 18:21). `state.md` auto-merged because S5 touched only their own row and I
+only the non-row sections — verified both survived rather than assuming. Pushed as a fast-forward of
+`s5-01`, not a force-push.
+
+**`plan.md` section A said "DRAINED — zero open PRs" while four were open.** Refreshed; the drain is
+serial because `strict_required_status_checks_policy` is on.
+
+## 2026-10-23 — S0 Orchestrator — closed D12 on evidence; ruled against launching the S3-04 boot as written
+
+**D12 closed, verified rather than relayed.** The owner said the `RL-014 Philadelphia Deluxe` photo had
+been replaced long ago and asked me to check before closing. The image lives in Supabase storage, not the
+repo, so the only honest check was the live site: `RL-014` is
+`30000000-0000-4000-8000-000000000001`; `https://shos.hellfiresol.com/` serves
+`menu/30000000-0000-4000-8000-000000000001/2.webp` (`200`, 500×500, 17.5 KB) and **I opened the image** —
+a real photograph of salmon Philadelphia rolls, not the generated placeholder. The old `.../1.png` from
+`log.md` 1027 now returns **400**, so it is gone from storage rather than merely unreferenced. Closed in
+`plan.md` D12 and `state.md`'s open-items row 8.
+
+**Ruled against launching the proposed `S3-04` boot as written, because its task 1 already exists in an
+open PR.** #110 (`s3-csp-dev-eval`, open since 2026-10-22) implements the carve-out **exactly** as the
+boot specifies — the same `scriptSrc(nonce)` helper, the production branch byte-identical, the comment
+carried across, mirroring `apps/backoffice/lib/csp.ts:137-140` — plus 42 lines of tests. Launching the
+boot would have S3 write the same three lines a second time on a second branch, which **the boot itself
+forbids** ("Do not invent a second way to do this").
+
+**And #110 already beat the boot's own evidence bar.** The boot demands the production `script-src` be
+proven byte-identical by printing both strings rather than asserting it in a test — "an assertion you
+wrote passes because you wrote it". #110 did better: it ran **real servers**, `next start` on :3911 and
+`next dev` on :3912, and curled the actual headers. That is the measurement the boot asks for, already
+taken.
+
+**What the boot has that #110 does not is task 2, and it is the valuable half.** #110's log entry covers
+the fix, the test changes and a staging re-check; it says nothing about re-running the suite or sorting
+the failures. So the re-scoped boot is the classification only.
+
+**Verified the boot's load-bearing claims before planning to re-issue any of it:**
+- **Its central premise holds.** `apps/e2e/playwright.config.ts:31` really does run
+  `next dev` for `apps/web`, so the CSP that blocks `eval()` is the one every spec runs against. Had it
+  been `next start`, the whole theory would have collapsed — production CSP has no eval problem.
+- **The mechanism explains the evidence it cites.** `expect: { timeout: 25_000 }` matches the quoted
+  "54 × locator resolved to `<button disabled>` across 25 s", and the reasoning that a **pickup** order
+  resolves no delivery zone — so "debounced `quote_order` is slow" cannot explain it — is sound.
+- **Its statistics have aged and must be corrected before reuse.** Measured today: **74** e2e runs since
+  2026-10-15, not 65; **46** failures, not 38; cancellations exactly **27**; and the headline claim is
+  confirmed precisely — there is **no `success` conclusion at all** in that window.
+- **One stale cross-reference caused by my own edit:** the boot points at "`plan.md` section B, row 2
+  (B2)", but I inserted the D-022 VAT-snapshot row at the top of section B yesterday, so that row has
+  moved. A boot that names a row by position breaks whenever the table is edited — name the item, not
+  the index.
+
+## 2026-10-23 — S0 Orchestrator — S2-07 corrected me and was right; D-021 amended before it ever reached `main`
+
+**S2-07 reported four things needing me. All four hold, and two of them are my errors.**
+
+**1. Finding 5's rule does not prevent finding 5's disaster — accepted, and this is the serious one.**
+The rule I ratified in D-021 says link on a phone match when the row "has no other account attached".
+S2-07's objection: **a guest row is unlinked by definition** — `place_order` creates it and no account
+has ever claimed it — so that condition is satisfied by *exactly* the rows a recycled number lands on.
+The test excludes rows claimed by another **account**; it says nothing about rows belonging to another
+**person**. For the dominant case the rule collapses to a phone match alone, which finding 5's own last
+sentence forbids. So the rule did not prevent the disaster it was written to prevent, and I ratified it
+without catching that. **Amended D-021 in place, before it ever reached `main`** — it lives in the still
+-open #109, so there was no need to ship a known-defective decision and supersede it later.
+**Ratified their `kitchen_note is null` tightening** as the interim: strictly tightening, blocks the
+food-safety path specifically, needs no schema change. And recorded their warning that **clearing the
+note on link is not the safe alternative** — if the link is correct, clearing destroys a real allergy
+record. Refusing is recoverable; wrong-link and wrong-clear are not.
+
+**3. "Otherwise start a fresh customer row" is not implementable — accepted.** `customers.phone` is
+`not null unique`, so there cannot be a second row with that phone. Taken with point 1, the rule can
+neither safely link nor legally refuse. The premise underneath it — *a phone number identifies one
+person forever* — is simply false, and recycled numbers are what that falsity is called. Filed as its own
+plan item; it needs a decision before phase B, with the `kitchen_note is null` interim holding until then.
+
+**2. `settings.draft` is reachable by a customer JWT — confirmed by reading the migration, and it is
+worse than B5 recorded.** Migration 32 lines 23-24 are `revoke all on table public.settings from anon;
+grant select (key, value, created_at, updated_at) on public.settings to anon;` — **`anon` only**, so
+`authenticated` keeps the blanket table grant including `draft`. The admitting policy is
+**`settings_public_read`**, `for select to anon, authenticated using (key = any
+(settings_public_keys()))` — **the one `to authenticated` policy with no `is_staff(...)` predicate**,
+because it is the public-read policy. So any authenticated user reads `draft` on the public rows. B5
+recorded this as "leaks to kitchen/driver" and named a different policy; the real reach is **every
+authenticated user**, and phase B creates a whole new class of them. **The migration's own comment states
+the assumption that fails:** "`authenticated` keeps its existing table-level grant, so owner/operator
+continue to…" — it read `authenticated` as *staff*, which was true when written. Ruled as **D-024**: a
+phase-B release blocker, to S7 per D-012, B5 upgraded.
+
+**This is also the one place the ROADMAP's "safe by construction against a second class of authenticated
+user" claim fails** — it rested on "every `to authenticated` policy carries an explicit `is_staff(...)`",
+and `settings_public_read` is the exception. The invariant needs restating with its exception named.
+
+**4. "D-021 does not exist" — correct, and it is my sequencing error, repeated.** D-021 and D-016's
+confirmation live in **#109, still open**. I issued S2-07 telling it to read D-021 as task-2 input. My own
+log already carries the lesson from 10-21: *a boot amendment not committed before the session runs does
+not exist.* I did it again with a decision instead of an amendment. The fix is ordering, not wording:
+**merge the decision before issuing the boot that depends on it.**
+
+**Separately: ruled S4-06's spend-ceiling key as D-023** and renamed it in `s4-06` before merge —
+`run_ceiling_usd` / `day_ceiling_usd`, S5's names, because S5 is the enforcer and an unknown key there is
+indistinguishable from "not set", so the screen would have claimed a ceiling that was not in force. S4
+filed it rather than guessing past it, which is why it was caught. Resolved their proposal in place.
+## 2026-10-23 — S3 Frontend — guest-site CSP dev carve-out (S6-01 finding 0, HIGH, closed)
+
+**Resumed after a long gap and re-oriented before touching anything.** My last local state was a
+days-old, uncommitted merge-in-progress of `origin/main` into `s3-03` (from before PR #87 merged) —
+`origin/s3-03` had since moved 71 commits ahead of my local branch. Checked, not assumed: `gh pr view
+87` showed `MERGED` (2026-10-17T11:33:56Z, merge commit `acddb39`), and `plan.md`'s own tracked item
+confirmed what happened — **S0 authorised me to add this fix inside #87, I never returned (the session
+had gone idle), and S0 merged #87 without it rather than hold complete, verified work hostage to a
+one-liner.** `git merge --abort`'d the stale state, branched a fresh `s3-csp-dev-eval` off current
+`origin/main` rather than reuse `s3-03` (already merged, no reason to touch it again).
+
+**The fix itself, pre-approved in substance by S0 in `plan.md` 2026-10-22** before I ever got to it:
+mirror `apps/backoffice/lib/csp.ts`'s already-shipped `scriptSrc(nonce)` (PR #89, S4-05) exactly —
+`'unsafe-eval'` added to `script-src` only when `process.env.NODE_ENV !== "production"`. Read S4's
+actual shipped code (`origin/s4-05` at the time, now irrelevant since #89 also merged) rather than the
+original proposal's prose, since a sibling implementation that already works is a better spec than a
+description of one that doesn't exist yet. Matched it line for line, including the doc comment and the
+decision not to also touch the top-of-file header comment (the proposal asked for that; S4's shipped
+version didn't do it, and consistency between the two files' comments mattered more than satisfying an
+unexecuted proposal's wish list).
+
+**Verified with real servers, not just asserted — the exact mistake this whole finding is about.**
+`next start` (production) on port 3911: `curl -sI /` shows `script-src 'self' 'nonce-…'
+'strict-dynamic'` — no `'unsafe-eval'`, byte-identical to before this change. `next dev` on port 3912:
+same header carries `'unsafe-eval'`. Both servers killed after. `tests/csp.test.tsx`'s pre-existing
+"never allows eval or inline script" test would have started failing under the suite's own default
+`NODE_ENV` once `scriptSrc` branched on it — caught before it became a surprise: that whole describe
+block's `csp` constant is now built under an explicit `vi.stubEnv("NODE_ENV", "production")` (matching
+what the assertions always meant — "the deployed shape"), and a new sibling describe block
+(mirroring `apps/backoffice/tests/csp.test.ts` byte for byte) pins both the production and dev shapes
+plus "every other directive is untouched by the branch." `tsc`/`eslint`/`vitest` (92/92, 3 new) clean;
+`next build` still all routes `ƒ (Dynamic)`.
+
+**Staging, re-checked after the gap rather than assumed stale.** Order #1005 (placed 2026-10-11, the
+realtime probe from the original S3-03 report) is now `status: picked_up` — final. That isn't the live
+"watch the page update" check I originally asked the owner for (it already happened, I can't rewind
+it), but it does confirm two things: `S1-09`'s deploy-chain fix means staging is genuinely running the
+merged `#87` code (the tracking page's `{!final && …}` footer line is correctly absent now, which only
+happens post-merge), and the order completed through the ordinary operational flow without incident.
+**Still no banner on `banners_live`** (`[]`, re-checked) — that half of the original ask is still open
+and I'm not chasing it further; it needs the owner's five minutes in `/website`, not more code.
+
+**Boundary.** Touched only `apps/web/lib/csp.ts` and `apps/web/tests/csp.test.tsx` — the back-office's
+identical bug is S4's own file and already fixed by S4 in #89; not mine to touch a second time.
+`plan.md`'s B2 row closed. PR: see state.md's S3 row for the number once opened.
