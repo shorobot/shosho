@@ -2994,6 +2994,325 @@ branch before acting rather than trusting the number, and the action turned out 
 `acddb39` (now `e769061`) and "Open PRs: #103 and #104, both green" (now **zero** open — #103/#104/#105 all
 merged). A block whose first line claims nothing in it is unmeasured has to be re-measured to keep saying so.
 
+## 2026-10-23 — S2 Backend — S2-07: the customer-account foundation, and four things the boot got wrong
+
+**Shipped (ROADMAP phase A, `s2-07`, migration 35 — number claimed from `main` at branch time per
+D-014; `main` was `7b18ac8` with 34 migrations, last `…34_agent_role.sql`).** `customers.auth_user_id`
+nullable / unique / `on delete set null`; `link_my_account()`; `get_my_profile` /
+`update_my_profile` / `get_my_orders` plus address CRUD over the **existing** `customer_addresses`
+(migration 4 — no table created, which is the misreading the boot warned about); a
+`for select`-only self policy on `customer_addresses`; and `customer_addresses_one_default_idx`, a
+partial unique index giving at most one default per customer, preceded by a repair that collapses
+any pre-existing duplicate defaults (oldest wins) so the migration cannot fail on live staging data.
+**No channel work of any kind** — no SMTP, no SMS provider, no dashboard setting, no provider key,
+no `config.toml` change. One new contract section, **§9**; §8 untouched.
+
+**I did not overturn the `link_my_account()`-over-trigger ruling, and writing it confirmed both of
+S0's reasons.** The rule has to be able to *refuse* and leave an account deliberately unlinked, and
+`staff_merge_required` is a state the login screen must render, not a log line a trigger could
+whisper. And the whole phase exists to add coverage with a real customer JWT, which an `auth.users`
+trigger cannot be tested with.
+
+### Four things that contradict the boot. All four are in `proposed/S2-contract-request.md`.
+
+**1. D-021 does not exist.** The boot cites it three times as recorded, binding text — *"D-021
+settles the email half"*, *"D-021's email tie-break"*. Measured: `memory/decisions.md` ends at
+**D-020**; `grep -n '^## D-'` returns D-001…D-020 and there is no D-021 anywhere in `memory/`. I
+implemented the rule because the boot states it in full and the boot is the instruction, but §9.2
+presents it as the boot's text rather than citing a decision number that would dead-end for the
+next reader. **Also: D-016's "accounts are optional" clause still carries its unconfirmed marker**
+(*"Confirm before S2-07 is issued"*), and the 2026-10-22 log entry is about D13/TETA+PI/B2 and two
+stale reports — not D-016. The boot says the owner confirmed it on 10-22 and that it is "now
+D-016's recorded text, not an inference"; **it is not recorded anywhere in `memory/`.** I proceeded
+on the boot's authority, and this phase is in any case the half that is safe either way: it adds an
+optional column and changes no guest behaviour.
+
+**2. Finding 5's rule does not prevent the disaster finding 5 describes. This is the important one,
+and it is a food-safety finding.** The rule, carried verbatim into the boot as non-negotiable, is
+"link only when the verified identifier matches **and** that row has no other account attached".
+**A guest row is unlinked by definition** — `place_order` creates every customer row with no
+account — so that condition is satisfied by exactly the rows a recycled number lands on, the link
+succeeds, and `customers.kitchen_note` (*"copied to `orders.allergy_note` on every order"*) goes
+with it. The "no other account attached" guard prevents **account takeover**, which is a different
+threat from **record inheritance**. And the rule as written *does* merge on a phone match alone,
+which its own last sentence forbids.
+
+I did not substitute my judgement for a stated non-negotiable. I added a **third eligibility
+condition that strictly tightens it: `kitchen_note is null`.** The reasoning: the column that makes
+mis-linking a *food-safety* defect rather than a privacy one is exactly `kitchen_note`. Rows without
+one carry order history and saved addresses — the risk the product already accepts, since guest
+checkout has matched profiles by phone since S2-01 and the design's own rule says so. Rows **with**
+one are refused (`staff_merge_required` / `profile_has_kitchen_note`) and audited on the timeline.
+**S0 to ratify or overrule.** Two things to weigh if overruling: clearing the note on link is *not*
+the safe alternative — silently deleting a real allergy note is worse than inheriting a wrong one —
+and link-then-flag-for-staff-reconfirmation is probably the best product answer but needs a
+back-office surface (S4) that does not exist, so it was not mine to invent.
+
+**3. "Otherwise start a fresh customer row" is not implementable for a phone match.**
+`customers.phone` is `text not null unique`, so when the ineligible candidate is the row holding
+that phone, a fresh row cannot be created — it would need the same phone. The boot's done-when item
+*"recycled number → fresh row"* is **not achievable as written**. The outcome is
+`staff_merge_required`; what the tests assert instead is the refusal **plus the property that item
+actually protects** — the stranger's `kitchen_note` provably unreachable by every path that JWT has
+(table, view, and both RPCs), with the note still on the row afterwards so the emptiness is a
+refusal and not an empty table. The email branch *does* still create a fresh row, because the email
+is not unique and the verified phone is free.
+
+**4. `settings.draft` is reachable by a customer JWT — the one place the boot's central premise
+fails, and this phase is what opens it.** The boot says the backend is "already safe by construction
+against a second class of authenticated user, and your job is to preserve that property rather than
+repair it." That is true everywhere I could measure **except here.** Migration 32 named this exact
+pitfall ("RLS is row-level, not column-level") and fixed it **for `anon`** with a column grant,
+deliberately leaving `authenticated`'s blanket grant because "owner/operator continue to see `draft`
+on the rows their existing ROW policies already admit them to" — sound, *while `authenticated` could
+only be staff*. Migration 35 creates the second class, and a customer passes `settings_public_read`
+(`key = any (settings_public_keys())`, which includes `site`), so **a customer reads
+`settings.draft` on the `site` row: the unpublished site copy.** Measured with a real JWT, not
+inferred. **Column privileges cannot fix it** — a customer and an operator are the same Postgres
+role, so narrowing `authenticated`'s column list would also blind the back-office draft editor
+(§6.6 reads `from('settings')` directly). **Reported, not fixed:** the candidate fixes (move `draft`
+to its own staff-only table; or serve public settings through a definer view/RPC and narrow the
+table grant) cross S4's read path and S2-06's design. `banners.draft` is **not** affected —
+`banners` is staff-only and `banners_live` has an explicit column list; S2-06 got that one right.
+**Nothing is exposed in production today** (phase A ships no login, so no customer JWT exists).
+**It must be resolved before phase B ships one.** Carried in CI as an `it.fails` test that starts
+failing the moment someone fixes it.
+
+### Task 5's method had to change, and the change is the point
+
+The boot says to re-run S7's `security_audit_policies` / `_table_grants` / `_function_grants` matrix
+"with a **customer** JWT as a new column". **That cannot work and would prove nothing.** Those
+helpers report `has_*_privilege('authenticated', …)` — a per-**role** fact — and a customer and a
+staff member are the *same* Postgres role (`authenticated`). The grant column would be identical by
+construction. What separates them is RLS predicates and the guards inside functions, so it has to be
+a **behavioural** matrix: real calls with a real customer JWT. **47 surfaces, zero non-refusals** —
+every staff and service RPC, every one of the six reports, 17 staff tables, the `customer_stats`
+view, the private `settings` keys, nine write paths, and both storage buckets.
+
+It also records **which kind** of refusal each surface gives, because this project keeps
+rediscovering that they are not the same thing: staff/service functions **raise 42501**; a table
+`SELECT` returns `[]` with no error; an `INSERT` **raises**; an `UPDATE`/`DELETE` affects **0 rows
+with no error at all**. A test that only checks "no rows came back" cannot tell a refusal from an
+empty table, so every silent case asserts the target is byte-for-byte unchanged afterwards and that
+the data it would have shown demonstrably exists. Every `*_my_*` RPC raises rather than returning an
+empty success, which is why `require_customer_id()` exists alongside `current_customer_id()`.
+
+### Decisions I made and am defending
+
+**Customer-writable fields: `name`, `birthday`, `email`. Nothing else**, and an unknown key raises
+`field_not_writable` rather than being dropped — a silently ignored write is indistinguishable from
+a successful one. `phone` is refused because it is both the verified login identifier and
+`place_order`'s guest upsert key, and it is `unique`, so a write is an attempt to claim an
+identifier. `kitchen_note` because a customer-writable path into the kitchen card is the surface
+this phase exists to protect. `tags` (drives campaign reach), `is_company` (invoicing/VAT),
+`consent_*` (the migration-13 trigger would write a `consent_changed` event with no `source`, which
+is worse than no path — consent gets its own RPC with an explicit source in phase B).
+
+**`email` is writable, and safely** — only a *linked* customer can call `update_my_profile`, and a
+linked row has `auth_user_id is not null`, which the eligibility rule permanently excludes from
+being an email candidate. So a customer cannot poison the email match from their own row. **That
+argument does not cover `place_order`'s `contact.email`**, which a guest can set to anything and
+which lands on an *unlinked* row — a real email-poisoning vector that predates this phase. Filed
+for **S7-04**; the proper fix is an `email_verified_at` column.
+
+**No self SELECT policy on `customers`, and no customer policy on `orders`.** A `select *` on
+`customers` would hand the customer the staff's internal note about them, and whether that is shown
+to them is the owner's decision — `get_my_profile()` serves an explicit field list instead, which
+also means a column added later cannot leak through. For `orders` this is the `report_payments`
+lesson applied: policies are OR-ed and `orders_kitchen_read` is `is_staff('kitchen')` with no row
+restriction, so adding a permissive policy there widens the loosest surface in the schema;
+`get_my_orders()` carries its own guard.
+
+**Address writes go through RPCs, reads through the policy.** `zone_id` is derived server-side from
+the postal code (a client never picks its own delivery zone — `place_order` recomputes it anyway and
+never trusts a saved row), and the one-default rule gets a single enforcement point.
+
+**One index, not two.** The boot asks for `auth_user_id` "unique, indexed"; `unique` creates a
+unique btree index on exactly that column, which is what every lookup needs, so a second
+`create index` would be dead weight that only slows writes. Stated in the migration and here rather
+than silently obeying or silently not.
+
+### B4 and B5 — observed while doing task 4, not fixed
+
+**B4 confirmed.** `orders_kitchen_read` is `for select to authenticated using
+(public.is_staff('kitchen'))` — **no row restriction at all**, so a kitchen JWT reads every order
+ever placed, not just open ones. Policy text is the proof.
+
+**B5 confirmed, and my first measurement of it was wrong — worth recording because the error is
+instructive.** I first tested `settings` *rows* with `key = 'draft'` and found kitchen/driver see
+nothing, and nearly reported B5 as unreproducible. **`draft` is a COLUMN, not a key.** Re-measured
+properly: with a `draft` value on the `site` and `ops` rows, kitchen and driver both read it, because
+RLS admits the row and `authenticated` holds a blanket column grant. That is B5 exactly — and
+chasing it down is what surfaced finding 4 above, which is the same defect one role further out.
+Neither fixed, per the boot.
+
+### What I could NOT verify — stated as not verified, not implied
+
+- **`supabase db push` against `shosho-staging` did not run.** There are no staging credentials on
+  this host (no `.env`, only `.env.example` files) and the CLI needs Docker, which is not available
+  (macOS 12, no container runtime). **This remains open and is the one done-when item I cannot
+  close locally** — though CI's `backend (supabase)` job now covers the thing that matters most about
+  it (see below).
+- **I could not run the vitest suite, `supabase db lint` or `supabase gen types` locally** — all
+  three need the Docker-based stack. `tsc --noEmit` passes on `apps/backend`.
+
+**What CI then proved, which I could not — and one thing it caught.** `supabase db reset` on the real
+stack **applied all 35 migrations and the committed seed with no error**, on PostgreSQL **17** rather
+than my local 16.2. That closes the gap I flagged about the version difference, and it is the first
+independent confirmation of the local result.
+
+**Then the suite itself ran: 236 of 238 passed, and both failures were in my own harness, not in
+the migration.** All 20 pre-existing test files passed unchanged. The two harness bugs:
+
+- **The `set_order_status` probe looked up an order id from a possibly empty table.** `.single()`
+  yields `undefined`, PostgREST *drops* an undefined argument, and the call then fails overload
+  resolution ("Could not find the function") instead of reaching the guard — a harness artefact
+  reported as a non-refusal. Fixed with a literal id, after measuring that the role guard really
+  does fire before any row lookup (`not_staff` at `set_order_status` line 17,
+  `forbidden_for_role` at `update_order_items` line 28).
+- **The "unconfirmed identifiers" case could not get a JWT at all:** GoTrue refuses
+  `signInWithPassword` for an unconfirmed email. The helper created the user unconfirmed and *then*
+  tried to sign in. Fixed by always creating confirmed, signing in, and clearing the stamp
+  afterwards — the token is already issued, and everything under test reads `auth.users` live, so
+  it sees exactly the state the case is about.
+
+It also caught something I had no way to see: **`supabase db lint` (plpgsql_check) failed on exactly
+one function, `get_my_profile`.** Not a defect in the SQL — plpgsql_check *plans* each SQL statement,
+`get_my_profile` called `require_customer_id()` **inline inside** its `select`, the planner evaluates
+a `stable` zero-argument function while preparing that statement, and the deliberate
+`no_customer_account` raise therefore fired during static analysis (there is no JWT at lint time).
+CI runs `--fail-on warning`, so it failed. The fix is to resolve the id into a variable before the
+query — **which is already what the other six functions in this section do**, and none of them was
+reported, so the pattern is proven by six examples rather than assumed. `get_my_profile` was simply
+the one that was written differently from its siblings.
+- **`types/database.ts` was hand-edited**, because `supabase gen types` shells out to a Docker
+  container. I matched the generator's observed conventions (alphabetical, `Returns: undefined` for
+  `void`, `Relationships: []` for cross-schema FKs — the precedent is `staff.id` → `auth.users`) and
+  verified the function set exactly: **57 non-trigger functions in the catalog, 57 in the file, zero
+  diff either way.** Formatting was unverified, and I said CI's `db:types` check was the authority.
+  **It was, and the hand-edit was substantively right and cosmetically wrong:** all 12 functions,
+  all three `customers` blocks, the ordering, `Returns: undefined`, `Relationships: []` — correct.
+  The only two differences in the whole file were line wrapping, on `get_my_orders` and
+  `update_my_address`, where the generator breaks an entry across lines and I had kept it on one
+  (its width threshold is tighter than I estimated). **Resolved by taking CI's own uploaded
+  `backend-types` artefact verbatim**, which is the right way round: the generator is the authority,
+  not my reconstruction of it. Worth knowing for the next session on this host — the artefact exists
+  on every run of the `backend (supabase)` job, so a Docker-less session can still get the real file
+  instead of guessing.
+
+**One unverified deployment assumption, flagged rather than discovered later.**
+`my_verified_identifiers()` is the **first function in this schema to read `auth.users`** — migration
+2 only *references* it in a foreign key (`staff.id`), which needs `REFERENCES`, not `SELECT`. A
+`security definer` function runs as its owner, and whether the migration owner holds `select` on
+`auth.users` is a property of the Supabase project, not of the migration, so it could not be checked
+without staging access. It is the standard Supabase pattern and is expected to work. If it does not,
+the function raises `auth_users_unreadable` **naming the exact grant to apply**, rather than
+surfacing `permission denied for table users` from inside a login call — a deliberate choice to make
+the one thing I could not test say what to do when it fails.
+
+**What I verified instead, and it is a real verification, not a grep.** A local PostgreSQL **16.2**
+(the `pgserver` wheel) with a hand-written Supabase shim — `auth`/`storage`/`realtime`/`vault`/`cron`
+schemas, the three roles, `auth.uid()` defined exactly as Supabase defines it, and Supabase's
+*default privileges* reproduced so the grant proofs mean something. **All 35 migrations and the
+committed `seed.sql` apply clean from an empty database.** A customer JWT is simulated the way
+PostgREST does it — `set role authenticated` plus `request.jwt.claims` — which makes the RLS and
+function-guard results faithful. Every claim in this entry was produced that way: the twelve linking
+cases, the self-service scoping, the one-default rule (including the index refusing a second default
+even with RLS out of the way), the 47-surface refusal matrix, and guest checkout end to end through
+`place_order` as `anon`. Two caveats stated rather than glossed: **PG 16.2, not the 17 in
+`config.toml`** (identical for grant, column-privilege and RLS behaviour), and PostgREST's own layer
+is not in the loop, so the vitest suite remains the thing that proves the HTTP shapes.
+
+**Guest checkout is proved unchanged, not asserted** — the clause the owner reportedly just
+confirmed, and the boot rightly said it needs evidence. As `anon`: `place_order` creates a customer
+row with `auth_user_id` **null**, saves the checkout address as the default, a repeat order on the
+same phone upserts onto the same row rather than duplicating it, `get_order_by_token` still works,
+and that same guest row then links cleanly later and the account sees its own prior orders and saved
+address — which is the entire point of the feature.
+
+### Three defects I found in my own work after the first push, and what CI caught
+
+Recorded because the useful half of a report is the part that went wrong.
+
+**CI caught one thing I could not: `apps/backoffice/tests/crm.test.ts` builds a complete `Customer`
+object literal**, so migration 35's new column made it incomplete and the backoffice typecheck
+failed. One line (`auth_user_id: null`, the guest case that fixture already represents). I could not
+have found this locally — the backoffice's dependencies are not installed in this worktree — which
+is a concrete argument for not treating "my own app's typecheck passes" as "the monorepo's does".
+`apps/backoffice/tests/` is not on this boot's forbidden list (`apps/backoffice/e2e/` is, as S6's
+fence), and a fixture repair is the mechanical consequence of a schema change rather than front-end
+work, so I fixed it rather than leaving CI red.
+
+**`link_my_account()` had two races.** It is a login endpoint, so concurrent calls are normal — and
+`place_order` upserts customers **by phone** and is the busiest path in the system, so a guest order
+can create a row on the same phone between my eligibility check and my insert. Either race gave the
+loser a raw `23505` on a login screen. Fixed with `for update` on both candidate selects (so two
+calls cannot both evaluate one candidate as unlinked and both claim it) and a `unique_violation`
+handler on the fresh-row insert that returns `already_linked` if this uid now has a profile and
+otherwise `staff_merge_required` / `concurrent_conflict` — refusing rather than retrying into a row
+whose eligibility was never evaluated. **Stated honestly: the handler is reasoned and the locks are
+verified, but I did not actually produce the interleaving**, so that path is correct by construction
+rather than by test.
+
+**`get_my_orders` paginated on a non-total sort.** `order by created_at desc` alone, with
+`limit`/`offset` — and `now()` is transaction-stable, so orders placed in one transaction tie and
+the tie-break is whatever the plan produces: a page can repeat a row or skip one. Found by actually
+paging through three orders written in one transaction and seeing them come back in insertion order
+instead of newest-first. Now `created_at desc, number desc` (`number` is a unique sequence, so the
+order is total), with a test that writes three orders sharing a `created_at` and asserts each row
+appears on exactly one page.
+
+**A TOCTOU in the email branch — and I nearly shipped a broken fix for it, by grepping instead of
+reading.** The branch did `count(*)` in one statement and then `select * into v_cand` in another.
+Two snapshots: the count can say 1, a second row with that email can arrive, and **plpgsql
+`SELECT INTO` without `STRICT` silently takes the FIRST of two rows** — so it would link on an email
+the rule calls ambiguous, which is the one thing the tie-break exists to prevent. Fixed by counting
+and identifying in a single statement (a CTE returning `count(*)` and the id) and then locking that
+id by primary key.
+
+**My first attempt at that fix used `min(id)`, and `min(uuid)` does not exist before PostgreSQL 18.
+Every call to `link_my_account()` raised.** I then "verified" it with a grep for outcome strings,
+saw the CASE headers scroll past, and reported "all cases still correct" — while the function was
+dead. It was caught only because I ran the two email cases directly afterwards and read the whole
+output. That is **[[feedback-measure-dont-grep]] committed by me, in the session that quotes it**:
+a grep for the strings you expect cannot see an error, because an error prints different strings.
+The re-verification now enumerates every `ERROR:` every proof script raises and accounts for each
+one, rather than looking for the successes. (`array_agg(id)[1]` is the portable aggregate.)
+
+**And one documentation error in my own §9.3:** it claimed "clearing a field is not expressible in
+this phase". Measured, it is — an absent key leaves a field alone, an explicit JSON `null` clears
+`email` or `birthday`, and an empty `name` raises `invalid_input` because `customers.name` is
+`not null`. The behaviour is the right behaviour; the sentence was wrong. Corrected, with tests for
+all three.
+
+### CI, finally: everything mine is green; the one red check is not mine, and that is measured
+
+`backend (supabase)` **passes in full** — `db reset` (all 35 migrations + the seed, from scratch,
+on PostgreSQL 17), `db lint`, seed idempotency, typecheck, **the whole vitest suite**, and the
+generated-types diff. `CI`, `infra`, `node (web)`, `node (backoffice)`, `python (automation)` and
+`plan` all pass.
+
+**`e2e (apps/e2e)` fails — and it fails identically on `main`.** Not asserted, diffed: `main`'s
+latest run is **16 failed / 15 passed**, my branch is **16 failed / 15 passed**, and the sixteen
+failing test titles are **the same sixteen, byte-for-byte** (`diff` of the two sorted lists is
+empty). Every one is a guest-site UI-text assertion — "We don't deliver to this address",
+`sold out today|paused`, "Unavailable.", the design-README board checks — and none touches
+`customers`, `auth_user_id` or any function in migration 35. The workflow has also failed on **every
+branch** for the last two days (`main`, `s0-work`, `s5-01`, `s4-06`, `s3-csp-dev-eval`, `s0-xff`),
+which matches `state.md`'s existing note about PR #77's `e2e` job. `apps/e2e/` is S6's fence, so
+this is **reported and not touched**; the `guest_realtime` flake-rate gate inside the same job passes
+25/25.
+
+**Boundaries kept:** no front-end feature work, no `apps/e2e/` or `apps/backoffice/e2e/`, no other
+session's worktree, no bonuses, migrations 1–34 untouched, `docs/design/README.md` and the
+twelve-rule list untouched (D-016 puts that in phase B, with the login), and B4/B5 left alone. The
+one file I touched outside my fence is the backoffice test fixture above, and it is named here
+rather than buried in a diff.
+
+**Next:** phase **B (S3-04)** still blocked on the owner resolving a channel (D4/SMTP per D-017, or
+the SMS provider plus rate-limiting/Turnstile) — **and now also on finding 4 above.** Phase **C is
+S7-04**, and it inherits two filed items: the `place_order` email-poisoning vector and the
+`settings.draft` reach.
 ## 2026-10-22 — S0 Orchestrator — merged #107; D-016's last clause confirmed, S2-07 issued, two untracked owner actions found
 
 **Merged #107** (`7b18ac8`) after asserting title and branch were mine rather than trusting the number.

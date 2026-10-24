@@ -80,6 +80,9 @@ orders/customers regardless — never run it against production.
 | 30 | `…30_report_payments.sql` | `report_payments(from, to)` — per payment_method × payment_status; owner/operator only (narrower than the other four `report_*`), sourced from `orders` not `payment_jobs` so a cash refund is never missed |
 | 31 | `…31_banners.sql` | `banners` (owner/operator only, `draft jsonb`), `banners_live` view (the only anon-reachable surface), storage bucket `site` |
 | 32 | `…32_publish_and_funnel_fix.sql` | `settings.draft` + column-level `anon` grant narrowing, `site_publications`, `publish_site()` (owner only); `report_funnel` window fix (the "200 %" defect) |
+| 33 | `…33_agent_runtime.sql` | **S2-08** — D-020's agent runtime: registry (`agents`), claimable task queue (`agent_tasks`), one `agent_runs` row per invocation, ordered `agent_run_logs`. Schema and contract only. api-contracts §8.8 |
+| 34 | `…34_agent_role.sql` | **S2-09** — the dedicated non-BYPASSRLS `agent` Postgres role (S7-03's ruling, docs/security.md §9): policies keyed on `current_user = 'agent'`, never layered on `is_staff()`; `agent_outputs` + `review_agent_output()` (the §9.6 approval state) |
+| 35 | `…35_customer_accounts.sql` | **S2-07** — `customers.auth_user_id` (nullable, unique, `on delete set null`); `link_my_account()` (the finding-5 linking rule: phone then email, never a row that is already linked, anonymised, or carries a `kitchen_note`); `get_my_profile` / `update_my_profile` / `get_my_orders` + address CRUD, all scoped to `auth.uid()` and taking no customer id; `customer_addresses_self_read`; `customer_addresses_one_default_idx` (at most one default per customer). api-contracts §9 |
 
 Adding a migration: `supabase migration new <slug>` → edit → `pnpm db:reset` → `pnpm db:types` → `pnpm test`.
 Never edit an applied migration file once it is on `main`; add a new one.

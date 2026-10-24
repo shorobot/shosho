@@ -640,6 +640,7 @@ export type Database = {
       customers: {
         Row: {
           anonymised_at: string | null
+          auth_user_id: string | null
           birthday: string | null
           consent_email: Json | null
           consent_phone: Json | null
@@ -656,6 +657,7 @@ export type Database = {
         }
         Insert: {
           anonymised_at?: string | null
+          auth_user_id?: string | null
           birthday?: string | null
           consent_email?: Json | null
           consent_phone?: Json | null
@@ -672,6 +674,7 @@ export type Database = {
         }
         Update: {
           anonymised_at?: string | null
+          auth_user_id?: string | null
           birthday?: string | null
           consent_email?: Json | null
           consent_phone?: Json | null
@@ -1755,6 +1758,7 @@ export type Database = {
         Args: { customer_id: string; payload?: Json; type: string }
         Returns: Json
       }
+      add_my_address: { Args: { payload: Json }; Returns: Json }
       anonymise_silent_customers: { Args: { months?: number }; Returns: number }
       auth_role: {
         Args: never
@@ -1816,6 +1820,8 @@ export type Database = {
         }
       }
       current_actor: { Args: never; Returns: Record<string, unknown> }
+      current_customer_id: { Args: never; Returns: string }
+      delete_my_address: { Args: { p_id: string }; Returns: Json }
       enqueue_payment_job: {
         Args: {
           p_action: Database["public"]["Enums"]["payment_job_action"]
@@ -1890,6 +1896,11 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      get_my_orders: {
+        Args: { p_limit?: number; p_offset?: number }
+        Returns: Json
+      }
+      get_my_profile: { Args: never; Returns: Json }
       get_order_by_token: { Args: { token: string }; Returns: Json }
       is_service_request: { Args: never; Returns: boolean }
       is_staff: {
@@ -1897,9 +1908,26 @@ export type Database = {
         Returns: boolean
       }
       kitchen_pause: { Args: { paused: boolean }; Returns: Json }
+      link_my_account: { Args: never; Returns: Json }
+      log_account_link: {
+        Args: {
+          p_customer_id: string
+          p_outcome: string
+          p_reason: string
+          p_uid: string
+        }
+        Returns: undefined
+      }
       menu_item_on_sale: {
         Args: { item: Database["public"]["Tables"]["menu_items"]["Row"] }
         Returns: boolean
+      }
+      my_verified_identifiers: {
+        Args: never
+        Returns: {
+          email: string
+          phone: string
+        }[]
       }
       normalize_phone: { Args: { raw: string }; Returns: string }
       order_attempt_items_ok: { Args: { items: Json }; Returns: boolean }
@@ -2005,6 +2033,7 @@ export type Database = {
         }[]
       }
       reports_guard: { Args: never; Returns: undefined }
+      require_customer_id: { Args: never; Returns: string }
       resolve_segment: {
         Args: {
           p_channel: Database["public"]["Enums"]["campaign_channel"]
@@ -2083,6 +2112,7 @@ export type Database = {
           tablename: string
         }[]
       }
+      set_my_default_address: { Args: { p_id: string }; Returns: Json }
       set_order_status: {
         Args: {
           new_status: Database["public"]["Enums"]["order_status"]
@@ -2094,6 +2124,11 @@ export type Database = {
       settings_public_keys: { Args: never; Returns: string[] }
       settings_staff_keys: { Args: never; Returns: string[] }
       shop_open_at: { Args: { ts: string }; Returns: boolean }
+      update_my_address: {
+        Args: { p_id: string; payload: Json }
+        Returns: Json
+      }
+      update_my_profile: { Args: { payload: Json }; Returns: Json }
       update_order_items: {
         Args: { items: Json; order_id: string }
         Returns: Json

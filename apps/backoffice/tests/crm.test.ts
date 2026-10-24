@@ -25,6 +25,9 @@ function customer(p: Partial<Customer> = {}): Customer {
     consent_push: null,
     consent_phone: null,
     anonymised_at: null,
+    // [S2-07] migration 35: optional account link. null = guest-created profile, the default
+    // and the case this fixture represents.
+    auth_user_id: null,
     created_at: "2024-03-12T10:00:00.000Z",
     updated_at: "2026-10-01T10:00:00.000Z",
     customer_addresses: [],
