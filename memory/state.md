@@ -5,8 +5,23 @@ Last update: 2026-10-21 (S0 — restart snapshot; S5-01 and S4-06 issued; `plan.
 
 ## SNAPSHOT — 2026-10-21, taken for a session restart
 Read this first; everything below it is detail, and some of that detail is older than this block.
-**Nothing here is a claim S0 has not measured.** `main` = `e769061` (re-measured 2026-10-21; the
-snapshot was taken at `acddb39`, before #103/#104/#105 merged). Authoritative companion:
+**Nothing here is a claim S0 has not measured.** `main` = `61c6ee4` (2026-10-24, after the five-PR drain:
+#108 `ad80f67` · #110 `47fd562` · #106 `c0fe345` · #109 `084df37` · #111 `61c6ee4`). **Zero open PRs.**
+
+**New since the last snapshot, all merged and all on staging:** `apps/automation` exists as a real
+Python project with a **structural** spend ceiling (S5-01); the back-office has **`/automation`** —
+queue, runs, the human approval screen, spend vs ceiling, registry (S4-06); the guest site's dev CSP
+carve-out closed **B2** (S3, #110); and **customer accounts phase A** is in the database — migration
+**35**, `customers.auth_user_id`, `link_my_account()` under the amended finding-5 rule, the
+self-service surface and its RLS (S2-07).
+
+**Migration 35 is verified live, not just green in CI** — which is the gap S2-07 explicitly said it
+could not close (no staging credentials on their host). `Migrate staging` passed on `61c6ee4`, and S0
+then probed the deployed PostgREST with the public anon key: `link_my_account` answers
+**`42501 permission denied for function`** while a deliberately invented function answers
+**`PGRST202 could not find the function`**. Two distinguishable outcomes, and ours is "exists but you
+may not call it" — so the function is really in the live database and its grant is exactly as the
+migration wrote it. Authoritative companion:
 **`/memory/plan.md`** — the single tracked plan, with every open item and who owns it.
 
 **Live on staging.** Guest site `https://shos.hellfiresol.com/` — menu, cart, 3-step checkout, tracking
