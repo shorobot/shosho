@@ -49,6 +49,12 @@ Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87
   `docs/security.md` needed opposite calls in two hunks of the same file: one side was a stale finding the
   PR existed to correct (take the PR's), the other was two unrelated pieces of S7 work (take both).
 
+## A-bis. The one CRITICAL — open since 2026-09-20, found 2026-10-28
+
+| | What | Who | Why it exists |
+|---|---|---|---|
+| `[ ]` | **`anon` reads `menu_items.cost_cents` on the live site** — cost price and margin, to anyone with `curl` and the public anon key | **S7** rules, **S2** implements | **D-025.** `items_public_read` is correct at the row level; RLS does not filter columns, and `grant select (…)` appears **exactly once** in 35 migrations (`settings`, migration 32) — every other public-read table was never narrowed. Six tables carry an un-staffed public-read policy; `menu_items` is the one with money on it. **Measured live, with controls** (`settings?select=draft` → `42501`; `customers`/`orders` → `[] 200`). **Scope stated honestly: staging, seed data — the numbers are fictional, the mechanism is not.** Fix before production; **D-024 is the same defect class from the other side** and one sweep closes both |
+
 ## B. Small, named, unblocked — all but the first are one file
 
 | | What | Who | Why it exists |

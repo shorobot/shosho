@@ -223,3 +223,18 @@ Consequences:
 - Column grants cannot fix it alone (S2-07's words, confirmed): the fix is to revoke the blanket `authenticated` grant and re-grant the public columns, mirroring what was done for `anon` — S7 to rule, S2 to implement.
 - **B5 is upgraded** from "reaches kitchen/driver" to "reaches every authenticated user" and from an open item to a phase-B blocker.
 
+## D-025 — RLS is row-level: every publicly-readable table needs its sensitive columns narrowed by GRANT, and only `settings` ever got that
+Status: accepted 2026-10-28 (S0, found while scoping the D-024 boot; measured live before recording)
+Decision: treat "a public-read policy plus a sensitive column" as a **defect class**, not as one bug. **S7 rules the sweep, S2 implements it**, per D-012. It must be closed **before production**, and `menu_items` before anything else.
+Why, measured against the live database rather than reasoned about:
+- **`anon` can read `menu_items.cost_cents` today.** With the public anon key the guest site ships in every page view: `GET /rest/v1/menu_items?select=sku,base_price_cents,cost_cents` returns `200` with real values — Onigiri Trio 750/**210**, Misosuppe 320/**60**, Wakame-Salat 450/**90**. That is the shop's cost structure and margin, to anyone with `curl`. The JWT was confirmed to carry `role: anon`.
+- **The cause is structural, not a typo.** `items_public_read` is `for select to anon, authenticated using (public.menu_item_on_sale(menu_items))` — correct at the **row** level. But RLS does not filter columns, and a role with a blanket table grant gets **every column of every row the policy admits**. Repo-wide sweep: `grant select (…)` appears **exactly once** in all 35 migrations (`settings`, migration 32). Every other public-read table never had its columns narrowed.
+- **Six tables carry a public-read policy admitting `anon, authenticated` with no `is_staff(…)` test**: `settings`, `delivery_zones`, `menu_categories`, `menu_items`, `option_groups`, `options`. `menu_items` is the one with money on it (`cost_cents`) and staff text (`kitchen_note`).
+- **The technique is already proven in this codebase** — `settings?select=draft` as `anon` returns `42501` naming the exact missing privilege. So the fix is known-good and copyable; it was simply applied once.
+- **Controls, so the result is not over-read:** `customers` and `orders` return `[] 200` for `anon` — those are protected at the row level and are not part of this finding.
+Consequences:
+- **Honest scope, stated rather than inflated: this is staging with seed data.** The leaked numbers are fictional. The *mechanism* is real and production would ship the same schema, so this is "fix before production", **not an incident now**. Recording it as CRITICAL-by-design and not as a live breach.
+- **D-024 is the same defect class seen from the other side** — there the over-broad grant belongs to `authenticated` and the column is `settings.draft`. One sweep should close both; they are not two unrelated items.
+- The sweep must ask, per table, *which columns are actually public*, and narrow by grant — not add more policies. Policies cannot express "this column".
+- **`vat_onsite_pct` is also exposed** and is dead per D-019/B3; the sweep is a natural moment to have S2 drop it rather than narrow it.
+

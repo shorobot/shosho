@@ -3601,3 +3601,46 @@ the HTML of every page view. Reading it from our own live page is the cheapest w
 assertion about a deployment from this seat, and it needs no credential anyone has to hand over. Pair
 any such probe with a **control** (here, the invented function); without one, a single error response
 cannot tell "deployed and refusing" from "not deployed at all".
+
+## 2026-10-28 — S0 Orchestrator — found a live anon data exposure while scoping the D-024 boot; D-025, S7-04 issued
+
+**Corrected the two stale session rows first.** S1 had said `in progress` on `S1-09` since that boot
+merged on 10-17, and S3 `in progress` on the CSP carve-out after #110 merged on 10-24. Both sessions had
+stopped; a row claiming "in progress" over merged work is the same stale-open-item failure that has cost
+time twice before.
+
+**Then, scoping the D-024 boot, I asked whether the same defect shape existed elsewhere — and it did,
+live.** The question was cheap: D-024 is "a public-read policy plus a column that should not be public",
+so how many tables have that shape? Repo-wide, `grant select (…)` appears **exactly once** in 35
+migrations (`settings`, migration 32), while **six** tables carry a public-read policy admitting
+`anon, authenticated` with no `is_staff(…)`. One of them, `menu_items`, has money on it.
+
+**Measured against the deployed site rather than reasoned about.** With the public anon key the guest
+site ships in every page view: `menu_items?select=sku,base_price_cents,cost_cents` → `200`, real values —
+750/**210**, 320/**60**, 450/**90**. The shop's cost structure and margin, to anyone with `curl`.
+Confirmed the JWT carries `role: anon` before claiming it.
+
+**With controls, because a single response is not a measurement.** `settings?select=draft` → **`42501`**
+(the one table ever narrowed — so the technique is proven, it was simply used once); `customers` and
+`orders` → `[] 200` (protected at the row level, not part of this finding). My first control attempt was
+useless — I queried `staff.email`, which does not exist, and got a `400` about the column rather than a
+refusal. A control that fails for the wrong reason proves nothing; I replaced it.
+
+**Scope stated honestly, and this is the part I want on record.** This is **staging with seed data** —
+the leaked numbers are fictional. The mechanism is real and production would ship the same schema, so it
+is **fix before production, not an incident now**. Recorded as CRITICAL-by-design, not as a breach.
+Inflating it would have been easy and wrong.
+
+**Ruled as D-025:** "public-read policy + sensitive column" is a **defect class**, not one bug. **D-024 is
+the same defect from the other side** — there the over-broad grant is `authenticated`'s and the column is
+`settings.draft` — so one sweep closes both rather than two items drifting apart.
+
+**Issued `S7-04-column-grants-sweep.md`** instead of the narrow D-024 boot I was asked for, and said why:
+a boot that fixed `settings.draft` alone would have left `cost_cents` open. S7 rules and audits; the
+migration is S2's (D-012). The boot carries the measurements so S7 does not re-derive them, requires a
+**control** on every probe, and requires the "safe by construction" invariant to be restated **with its
+exception named** — because that claim, repeated from the customer-accounts ROADMAP, is what made this
+class invisible.
+
+**Worth keeping as method:** the finding came from asking "is this one bug or one *shape*?" before
+writing the boot. The sweep cost one grep and two curls.
