@@ -3657,3 +3657,57 @@ built the boot's load-bearing test around it: change a rate *between* placing an
 reproduces the order's own tax. Also told S2 explicitly **not** to tidy the discount proration or the fee
 literal while in there — a rounding change would move historical totals — and to prove `vat_cents` is
 unchanged for existing orders as integers.
+
+## 2026-10-28 — S0 Orchestrator — TETA+PI applied D13; ran the promised external re-verify
+
+**They applied it on 2026-10-22 and extended it to `CF-Connecting-IP`, for the reason we gave.** Live on
+both our vhosts, `:80` and `:443`: `X-Forwarded-For $remote_addr` **and** `CF-Connecting-IP $remote_addr`,
+overwrite form, no `$proxy_add_x_forwarded_for` left anywhere on the box. Twelve proxying blocks across
+six vhosts, one clean reload. They re-verified independently of the session that made the change, and
+flagged their own six-day handoff delay rather than letting it pass.
+
+**Ran the re-verify we promised. Results, with the exact failure modes rather than "it's fine":**
+
+| probe | curl rc | what it means |
+|---|---|---|
+| our `shos` `:443` at the origin | 0 / **200**, 107 156 B | serves, and the body is **ours** (SHOSHO, Philadelphia) |
+| our `bo-shos` `:443` | 0 / **401**, 172 B | the gate, as expected |
+| **unknown SNI** `:443` | **35** | TLS handshake rejected — no default vhost answers for a name the box does not know |
+| **bare IP** `:443`, no SNI | **35** | same |
+| **invented `Host:`** `:80` | **52** | empty reply — the default block closes without responding |
+
+**Their default-reject blocks pass.** This is the check that caught both cross-tenant findings before, and
+it is worth restating why it is not redundant: a vhost answering correctly **for its own name** tells you
+nothing about what the box does with a name nobody configured. Here, nothing.
+
+**A side result worth recording: `infra-access.md`'s long-standing "known issue" is gone.** It said CF hits
+origin `:443` where the default vhost is hellfire-apex, so `https://shos.hellfiresol.com/` *may serve the
+hellfire site*. It does not — `:443` returns our page, and `:80` and `:443` are byte-identical in length
+(107 156). The bare-IP probe now fails the handshake rather than serving a neighbour's default.
+
+**What this probe did NOT establish, stated plainly because it would be easy to imply otherwise:** it does
+**not** confirm the sanitisation itself. Our only consumer of those headers is
+`apps/backoffice/lib/csp.ts`'s `isSecureContext()`, which sits **behind the basic-auth gate** and reads
+them **presence-only** — so a forged header produces no externally observable difference, and `apps/web`
+reads none of them at all. What we verified is **no regression** and **their default-reject behaviour**.
+Confirming the overwrite itself would need either the gate credential or a reading of their nginx, and
+`/etc/nginx` is do-not-touch. Their own independent re-verify is the evidence for that half.
+
+**They acted on our D-018 correction, and said so.** They had justified the work partly as "a per-IP
+limiter is the likely future consumer"; our correction retired that motive, and rather than let a wrong
+rationale propagate into their deployment docs they rewrote the task's reasoning before handing it to the
+worker. Their standing justification is their own — `app` and `stats` are their vhosts and their API does
+key limiters on the client address.
+
+**Their finding, and the lesson is better than the finding.** `stats.tetapi.dev` (GoatCounter) was **not**
+latent as recorded: it reads `X-Forwarded-For` unconditionally, has no trusted-proxy flag, and keys rate
+limits, visitor hashing and GeoIP on it — so with the append form a forged entry stayed first, and that
+one was **live** until 2026-10-22. Their words, worth keeping verbatim in spirit: *"third-party binary,
+read not confirmed by inspection" is not the same as "does not read it"* — they had let the first stand in
+for the second for five days. **Our own `csp.ts` reading was confirmed by inspection**, so our "presence
+only" claim is of the second kind, not the first.
+
+**Operational caution recorded in `infra-access.md`:** fail2ban's `ignoreip` currently lists only the
+Cloudflare ranges, which **overrides** its built-in `127.0.0.1/8 ::1`, so loopback is no longer ignored.
+Any session wanting to loop requests at the origin **from on the box** must tell `teta-pi-e0` first or we
+ban ourselves. External probing from our own machines is unaffected. **D13 is closed.**
