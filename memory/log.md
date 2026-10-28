@@ -3711,3 +3711,17 @@ only" claim is of the second kind, not the first.
 Cloudflare ranges, which **overrides** its built-in `127.0.0.1/8 ::1`, so loopback is no longer ignored.
 Any session wanting to loop requests at the origin **from on the box** must tell `teta-pi-e0` first or we
 ban ourselves. External probing from our own machines is unaffected. **D13 is closed.**
+
+**Addendum — the domain question answered, and S0's own sequencing advice was wrong because of it.**
+Asked the owner rather than assuming whose `hellfiresol.com` is; it is **their own umbrella**, not a third
+party. `infra-access.md` lists "hellfire (hellfiresol.com)" beside TETA+PI in a way that reads like a
+separate company, and that framing led me to call the domain *"the slowest item on the launch path, start
+it first"*. **With the Cloudflare zone already in the owner's hands, registering a launch domain is
+same-day — it is now one of the fastest items, not the slowest.** Corrected in draft D-026 and the
+misleading line clarified in `infra-access.md` rather than deleted, since the *hosting* co-tenancy it
+describes is real.
+
+**Which moves the real long pole into view: `D9` (the Steuerberater) is blocked on `S2-08`, and `S2-08` is
+issued but not launched.** Everything on the host path runs on our clock; D9 runs on an external person's.
+So the highest-leverage action available right now is launching S2-08 — not provisioning anything.
+Asking the question was worth more than the answer: the wrong premise had produced a wrong priority.

@@ -6,6 +6,7 @@ Owner of this file: S0. S1 DevOps reads it before any server work. **No secrets 
 ## Server
 - DigitalOcean, Frankfurt (EU). `164.90.235.66`. 1 vCPU / 2 GB RAM / 50 GB.
 - Shared with TETA+PI (tetapi.dev, admin) and hellfire (hellfiresol.com). SH.OS is an isolated co-tenant.
+- **`hellfiresol.com` is the OWNER'S OWN umbrella — confirmed by them 2026-10-28, not a third party.** The line above reads like a third-party co-tenant and misled S0 into framing a blocker that did not exist; it is kept as written because the *hosting* co-tenancy is real, but the **domain** is the owner's and its Cloudflare zone is theirs. Consequence: no third-party dependency on our hostnames, staging can stay on `shos.hellfiresol.com` indefinitely, and any new launch domain is a same-day change the owner can make.
 - Administered by TETA+PI manager. We do NOT administer the host.
 
 ## Our access

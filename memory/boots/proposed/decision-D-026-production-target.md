@@ -16,21 +16,25 @@ hard, but because no one framed the choice.
 
 **So the pipeline is not the blocker. Four things it points at do not exist.**
 
-## The question that has to be answered first, and it is not technical
+## The domain — ANSWERED by the owner 2026-10-28, and it removes a blocker
 
-**Whose domain is `hellfiresol.com`?** `infra-access.md` lists "hellfire" as a co-tenant alongside
-TETA+PI, which reads as a third party — but HELLFIRE is also the owner's own portfolio umbrella covering
-three projects, SHOSHO among them. **S0 does not know which, and will not assume.**
+**`hellfiresol.com` is the owner's own umbrella.** `infra-access.md` lists "hellfire" beside TETA+PI in a
+way that reads like a third party; it is not. S0 asked rather than assumed, which was right — the two
+readings had different consequences.
 
-It matters either way, and the answer changes only *how awkward* it is:
-- **If it is a third party's**: a restaurant cannot launch on someone else's domain at all.
-- **If it is the owner's umbrella**: it still means the restaurant's public address is a subdomain of a
-  holding-company name. Customers type it, see it in receipts, and it appears in every e-mail the shop
-  ever sends.
+**What this settles:** there is no third-party dependency on our public hostnames. Staging can stay on
+`shos.hellfiresol.com` indefinitely, and the Cloudflare zone is already the owner's, so DNS for any new
+name is a change they can make themselves.
 
-Either way **SHOSHO has no domain of its own**, and nobody has raised that as an owner action. It has real
-lead time — registration, DNS, a Cloudflare zone, and for e-mail later, SPF/DKIM. It should start before
-the host decision, because it is slower and it blocks nothing else.
+**What it does not settle, and it is now a product question rather than a blocker:** whether the
+restaurant launches as `shos.hellfiresol.com` or on its own name. Customers type the address, read it on
+receipts, and will see it in the `From:` of every e-mail the shop sends once SMTP exists (D4). A German
+restaurant on a holding company's subdomain reads as a staging URL to the people it is for.
+
+**S0's correction to its own advice, recorded because the first version was wrong:** the earlier draft
+called the domain "the slowest item, start it first". **That was premised on not knowing who owned it.**
+With the zone already in the owner's hands, registering e.g. a `.de` is same-day, not weeks. The domain is
+now one of the *fastest* items on this path, and the long pole is elsewhere — see below.
 
 ## What production needs, concretely
 
@@ -67,11 +71,20 @@ once, and because the cost difference against B is small next to the cost of rew
 is the better answer later, if the back-office ever needs to scale independently — it is not that yet.
 
 **Sequence**, each item blocking only what follows it:
-1. **Owner: answer the domain question**, then register/point the real one. Slowest, start now.
-2. **Owner: choose the host** (A unless there is a reason for B).
-3. S1 provisions it and fills `PROD_*` + the "production" Environment.
+1. **Owner: choose the host** (A unless there is a reason for B). Now the first decision, since the domain
+   turned out to be fast.
+2. **Owner: register the launch domain** when the restaurant's public name is settled — same-day, the zone
+   is already theirs. Not a blocker for 1, 3 or 4.
+3. S1 provisions the host and fills `PROD_*` + the "production" Environment.
 4. S7 runs F2, after `S7-04` lands.
 5. First `v*` tag, owner approves the Environment gate, deploy.
+
+## The actual long pole is not on this list, and it is already blocked on us
+**D9** — the real 7 %/19 % rates, set with the Steuerberater — is the slowest thing between here and a
+*legal* launch, because it needs an external human with their own calendar. **D9 is blocked on `S2-08`**
+(the VAT-rate snapshot), which is written and issued but **not yet launched**. So the single
+highest-leverage action available right now is launching that session: it unblocks a conversation that
+runs on someone else's clock. Everything on the host path runs on ours.
 
 **Not on this path and should not be allowed onto it:** customer accounts, push, marketing sends, agents,
 Lieferando/Wolt, Meta. Guest ordering plus payments is a launchable product; the rest is after.
