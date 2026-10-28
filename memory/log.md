@@ -3601,3 +3601,97 @@ the HTML of every page view. Reading it from our own live page is the cheapest w
 assertion about a deployment from this seat, and it needs no credential anyone has to hand over. Pair
 any such probe with a **control** (here, the invented function); without one, a single error response
 cannot tell "deployed and refusing" from "not deployed at all".
+
+## 2026-10-28 — S2 Backend — S2-08 (VAT snapshot): D-022 shipped, D9 unblocked (PR #115)
+
+**Branch `s2-08-vat-snapshot`, not `s2-08`.** `origin/s2-08` already exists and is **merged** — it was
+the agent-runtime task, which this repo also calls S2-08. The boot said `checkout -f -B s2-08`; doing
+that would have force-pushed over a merged branch. The same collision is live in `state.md`'s S2 row,
+where "S2-08" already means the agent runtime. Worth renaming one of them, S0's call.
+
+**Migration 36.** `order_items.vat_pct numeric(4,2) null` and `orders.delivery_fee_vat_pct
+numeric(4,2) null`, both commented. `quote_order` emits the per-line rate **in the same
+`jsonb_build_object` as the line, in the same loop iteration that accumulates it into
+`v_vat_lines`** — so the rate used and the rate recorded are one read. `place_order` writes it in the
+same statement as the line. `update_order_items` resolves each line's rate from the order's own
+snapshot and **joins `menu_items` nowhere**.
+
+### What contradicts the boot — one thing, and it is small
+The boot's task 3 says "read the snapshot instead of joining `menu_items`". Taken literally that is
+impossible for a position **added** during an edit: it has no snapshot. The resolution shipped is
+`coalesce(order's snapshot, the freshly quoted rate)`, which satisfies the letter anyway — the live
+rate arrives **via the quote that priced the line**, so `update_order_items` genuinely joins
+`menu_items` nowhere. Everything else in the boot's reading of the two call sites was accurate,
+including the claim that `update_order_items` is the sharper half. **S0's measurements all held**:
+35 migrations, no vat column on `order_items`, the rate only on `menu_items.vat_delivery_pct`, the
+fee literal at `rpc.sql:359`, `orders` carrying only the aggregate.
+
+### Measured, not asserted
+No container runtime on this host, so the harness was rebuilt per
+`reference-local-postgres-on-this-mac`: **PostgreSQL 16.2** via the `pgserver` wheel, all 36
+migrations + the committed seed, applied **both incrementally and from scratch**. Fixture
+deliberately set to **mixed 7 / 19 rates** so the proration arithmetic is actually exercised — with
+everything at the seeded 7 the test would barely discriminate.
+
+- **The test this boot exists for:** order placed at 7 %, menu item moved to 19 %, edited with the
+  same positions → `vat_cents` **223 unchanged**, snapshot still `7.00`. **The live-join answer the
+  old code gave is 477.** The committed test asserts that 477 ≠ 223, so a regression cannot pass it
+  by accident — `tests/vat_snapshot.test.ts`.
+- A position **added** during that edit takes today's rate (19) while the existing line keeps its
+  own (7).
+- **`vat_cents` byte-identical**: 11 sample quotes (mixed rates, percent promo, pickup discount,
+  three zones, free-delivery threshold, options, a 7× odd-cents line) match the pre-change baseline
+  **exactly** on both databases; all **11 pre-migration orders re-edit with `vat_cents` unmoved**
+  (0 moved, 0 errors). Proration and rounding untouched.
+- The fee literal `19.0 / 119.0` → `v_fee_vat_pct / (100 + v_fee_vat_pct)`: verified **equal as
+  numerics**, not merely after rounding, across 0–2000 cents.
+- The stored `vat_cents` is **re-derivable from the snapshot alone**, no `menu_items` read.
+- **The `agent` role reads both new columns with no new grant** — migration 34's grants are
+  table-level, so new columns are included — while `menu_items` stays `42501`. So D-022's premise is
+  unchanged **and S5-01 needs no grant work**; that is the thing this unlocks for them.
+
+### Not verified, stated as such
+The **vitest suite, `supabase db push`, `db lint` and `gen types` could not run here** — all four
+shell out to Docker. CI's `backend (supabase)` job is the authority. `types/database.ts` is
+**hand-edited**; expect to replace it from the `backend-types` artefact if the generator wraps
+differently. I also have **no measurement against the live database** — S0's PostgREST probe is the
+only thing that can make that claim.
+
+### Two defects of my own, caught before commit
+1. **`jsonb_agg` without an explicit `ORDER BY`** does not guarantee line order, and line order
+   drives the inserted rows' `created_at`, the returned `items` array and the Detail screen's
+   before/after diff. Fixed with `with ordinality` + `order by ord`, proven preserved through a
+   reordering edit. It was *incidentally* right in testing, which is exactly why it needed fixing.
+2. A null resolved line rate would have been **silent and monetary**: SQL `sum()` skips nulls, so one
+   unrated line would quietly contribute **0 VAT** to a filed order. Added a `vat_rate_unresolved`
+   raise — unreachable by construction, asserted because the failure mode is money.
+
+**And a method failure worth recording, because it is [[feedback-measure-dont-grep]] again, verbatim.**
+I ran `npx tsc` and reported "typecheck exit=0". It was not: `npx` had fetched the **decoy `tsc`
+package** ("This is not the tsc command you are looking for"), `head -20` swallowed the banner, and
+`$?` captured **`head`'s** exit status, not the compiler's. The real `./node_modules/.bin/tsc` does
+pass — but I had claimed it on evidence that could not have shown a failure. Later in the same
+session I filtered a proof run with `grep -E "^NOTICE"` and got **nothing**, because psql prefixes
+every notice with `psql:/path:line:`. Reading the raw output showed all 11 cases passing. Second
+instance in one session: **a filter written from the expected output cannot see the unexpected one.**
+`$?` after a pipeline is the *last* command's, so `cmd | head; echo $?` can never report cmd failing.
+
+### Filed, not decided — both tax judgements, for the Steuerberater already in the loop for D9
+1. **The fee's rate is still a literal 19** in `quote_order`, readable from no table. Unlike the
+   per-item rates **D9 cannot change it at all** — it needs a code change. Snapshotted so the fee's
+   tax component is at least derivable; whether 19 % is right for a delivery fee is not mine.
+2. **Rounding the split per rate does not always sum to the stored `vat_cents`** — measured **1 ct**
+   apart on **3 of 11** samples, because `vat_cents` is rounded once at the end. An invoice showing
+   tax per rate must pick one of the two. Not fixed: it would move historical totals, which the boot
+   forbids and which is the right call.
+
+### What the split now makes possible, and what it still cannot answer
+From migration 36 forward: the per-rate net/tax split per order, derivable from `order_items` alone,
+readable by the `agent` role today. **For the pre-migration window it answers nothing** — and that is
+the honest state, not a gap to close. There is **no backfill** and must not be: joining today's
+`menu_items` reprices a filed period, which is the exact error D-022 exists to prevent, and it would
+look like completeness. S5-01's `available: false` with its reason stays correct for that window.
+
+**Next:** D9 unblocks the moment this merges — the owner can set the real rates without destroying
+history. S4 (Berichte) and S5-01 (Accounting) can both revisit their interim behaviour. **Migration
+number 36 needs S0's coordination**: `S7-04-column-grants-sweep.md` will also produce a migration.
