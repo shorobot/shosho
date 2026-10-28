@@ -3725,3 +3725,30 @@ describes is real.
 issued but not launched.** Everything on the host path runs on our clock; D9 runs on an external person's.
 So the highest-leverage action available right now is launching S2-08 — not provisioning anything.
 Asking the question was worth more than the answer: the wrong premise had produced a wrong priority.
+
+**Addendum — TETA+PI closed the half we said was theirs, by measurement, and it had a consequence for us.**
+They stood up a throwaway echo listener on a loopback-only block (ports outside both our ranges, removed
+in the same session) and read what actually arrives at an upstream. Three rows: **before any fix**, a
+forged `CF-Connecting-IP`, `CF-Ray` and `X-Forwarded-For` all arrived **verbatim** — so our
+`isSecureContext()` really was being fed a client-controlled value, harmless for the reasons we gave but
+real, and our inference is now confirmed empirically rather than reasoned. **With `$remote_addr` and an
+untrusted peer**, the forgery is replaced by `127.0.0.1`, not appended. **With a trusted CF peer**, the
+genuine client IP survives, because `real_ip_module` has already lifted it out of the header before
+`proxy_set_header` runs — the overwrite is idempotent for real CF traffic and sanitises only
+direct-to-origin. That third row was the one that could have broken us and they insisted on measuring it.
+
+**So neither probe was sufficient alone and both were needed:** ours proved no-regression plus their
+unknown-name behaviour, theirs proved the sanitisation. Saying so rather than letting the green stand in
+for both is what made the split visible.
+
+**And it changed something in our code that they could not see.** `proxy_set_header` sets a header
+unconditionally, so `cf-connecting-ip` is now present on **every** request reaching the app through their
+nginx, including a plaintext direct-to-origin one. `csp.ts:100`'s comment — *"Arrived through Cloudflare,
+so the public hop was https"* — is therefore **no longer true**: presence now means "arrived through their
+nginx", which is all production traffic, and `isSecureContext()` returns `true` unconditionally there.
+The direction is the safe one by the file's own stated criterion, and practical impact is ~nil. But the
+comment is load-bearing and now misleads, and the documented "residual gap" is closed by accident.
+**Filed to S4 (owner of the file) and S7 (D-012) as `proposed/S4-S7-isSecureContext-premise-retired.md`,
+labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
+observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
+one, which restores the distinction at no cost.
