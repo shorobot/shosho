@@ -1100,6 +1100,7 @@ export type Database = {
           qty: number
           unit_price_cents: number
           updated_at: string
+          vat_pct: number | null
         }
         Insert: {
           created_at?: string
@@ -1113,6 +1114,7 @@ export type Database = {
           qty: number
           unit_price_cents: number
           updated_at?: string
+          vat_pct?: number | null
         }
         Update: {
           created_at?: string
@@ -1126,6 +1128,7 @@ export type Database = {
           qty?: number
           unit_price_cents?: number
           updated_at?: string
+          vat_pct?: number | null
         }
         Relationships: [
           {
@@ -1168,6 +1171,7 @@ export type Database = {
           created_at: string
           customer_id: string | null
           delivery_fee_cents: number
+          delivery_fee_vat_pct: number | null
           discount_cents: number
           distance_km: number | null
           driver_id: string | null
@@ -1213,6 +1217,7 @@ export type Database = {
           created_at?: string
           customer_id?: string | null
           delivery_fee_cents?: number
+          delivery_fee_vat_pct?: number | null
           discount_cents?: number
           distance_km?: number | null
           driver_id?: string | null
@@ -1258,6 +1263,7 @@ export type Database = {
           created_at?: string
           customer_id?: string | null
           delivery_fee_cents?: number
+          delivery_fee_vat_pct?: number | null
           discount_cents?: number
           distance_km?: number | null
           driver_id?: string | null
