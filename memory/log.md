@@ -3644,3 +3644,16 @@ class invisible.
 
 **Worth keeping as method:** the finding came from asking "is this one bug or one *shape*?" before
 writing the boot. The sweep cost one grep and two curls.
+
+**Addendum, same day — issued `S2-08-vat-rate-snapshot.md`, and found that D-022 understated itself.**
+Writing the boot meant reading the two VAT call sites properly rather than from the decision's summary.
+`quote_order` (`rpc.sql:237`) accumulates gross-inclusive VAT per line and then, at `:357-359`, applies
+the discount proportionally and adds the fee's VAT as the literal `v_fee * 19.0 / 119.0`. But
+**`update_order_items.sql:119` repeats that formula by joining `menu_items` live** — so an operator
+editing an existing order **today** already recomputes its tax against today's rates. After D9 that would
+silently rewrite the tax on a filed order through an ordinary back-office action. D-022 had framed the
+repricing as a future reporting hazard; it is **already live on a write path**. Amended the decision and
+built the boot's load-bearing test around it: change a rate *between* placing and editing, prove the edit
+reproduces the order's own tax. Also told S2 explicitly **not** to tidy the discount proration or the fee
+literal while in there — a rounding change would move historical totals — and to prove `vat_cents` is
+unchanged for existing orders as integers.
