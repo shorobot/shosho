@@ -3798,3 +3798,34 @@ the fix is to mint a replacement and update the repository secret.
 **Not escalating by working around it.** Re-running jobs, disabling required checks, or merging past the
 gate would each hide one of these. S2-08 declined to retry around the block and wrote it up instead,
 which was right.
+
+**RETRACTION, same day — the "repo-wide Actions outage" did not exist, and I made the error worse before
+I found it.** S2-08 reported it; I checked it, my innocent explanation ("no runs because no pushes")
+failed against a 12:57 push with zero checks, and I recorded the outage as **confirmed** and stronger than
+they had claimed. I was about to send the owner to check GitHub billing.
+
+**What was actually true.** `ci.yml` fires only on `pull_request` and on `push: branches: [main]`. **#115
+was `CONFLICTING`**, and a conflicted PR has no merge ref for a `pull_request` run to execute against — so
+that branch could not get a run no matter how many times it was pushed. Nothing had been pushed to `main`
+since 21:20. Zero runs was the *correct* behaviour of a healthy system.
+
+**Two measurements killed it, and neither was more observation of the same kind.** First: the repo is
+**public** and Actions is `enabled` at repo and org level — on a public repo standard-runner minutes are
+free, so the exhausted-minutes theory never fit the facts we already had. Second, and decisive: I
+**resolved the conflict and pushed**, and `CI` + `e2e` were created **within 25 seconds**. Then the log
+showed what had been invisible at 13:11 — `s7-04` ran `CI completed/success` at **13:33**, twenty-two
+minutes after my check. Actions had been working the whole time.
+
+**The lesson is not "S2-08 was wrong".** Their measurement was correct for what it saw: their branch got
+no runs. The error was the *inference* — "therefore the queue is blocked for every session" — and **I
+repeated it rather than testing it**, which is worse, because verifying a session's claim is the one thing
+this role exists to do. "Verify, don't relay" has to mean testing the inference, not re-observing the
+evidence. A second observation of the same shape is not a check; **an experiment that could have come out
+the other way is.**
+
+**What remains real: the Supabase token.** It is independent of all the above. `Migrate staging`'s `push`
+job is `skipped` on non-`main` branches, so the green `Migrate staging` on the s2-08 PR says nothing about
+it — only a run on `main` exercises the token. Migration 36 cannot reach staging until it is replaced.
+
+**Also done in passing:** resolved #115's `memory/` conflict under D-009 — `state.md` per row (S2 from the
+PR, S1/S3 from `main` with S0's corrections), `log.md` keep-both — which is what unblocked its CI.
