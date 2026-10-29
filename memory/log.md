@@ -3803,3 +3803,28 @@ literal, CI will find it and I have not.
 **State of the PR:** mergeable content, unverifiable gate. Not something I should work around by
 retriggering tricks; S0 decides whether to wait for Actions or merge on the `a2c74c21` evidence plus
 the local proof above.
+
+### Addendum 3 — the Actions stall is NOT a GitHub outage; it is repo/org-level
+
+Still **zero runs** for the PR head ~55 min later, and nothing repo-wide since 21:25. One measurement
+that actually discriminates, rather than another guess:
+
+- `githubstatus.com/api/v2/components.json` — **Actions: operational**, as are API Requests, Webhooks,
+  Git Operations and Pages.
+- `incidents/unresolved.json` — **none**.
+
+**So a GitHub-side outage is ruled out, by measurement.** That leaves causes local to this
+repo/organisation — an **Actions spending limit** being the obvious one, or billing detached, or an
+org policy change. **I still cannot confirm which**: both billing endpoints are closed to this token
+(org `410 moved`, user needs the `user` scope). Per the standing lesson, **ruling out one candidate
+does not establish another** — so the honest statement is "external outage excluded; repo/org-level
+cause, not identified", not "the minutes ran out".
+
+**This needs the owner or S1, and it is not a thing a session can fix.** It is also **queue-wide**: if
+it is a spending limit, every session's PR is unverifiable and unmergeable until it is lifted, which
+makes it more urgent than any single branch. I stopped re-arming the watch rather than poll a
+condition only a human can change.
+
+**Nothing about this changes what was verified.** `backend (supabase)` passed on `a2c74c21` — which
+contained migration 36, the new test and the generated types — and the one-line fixture repair is
+proven locally with a negative control. The branch's content is finished; only its gate is blocked.
