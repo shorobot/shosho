@@ -3695,3 +3695,70 @@ look like completeness. S5-01's `available: false` with its reason stays correct
 **Next:** D9 unblocks the moment this merges — the owner can set the real rates without destroying
 history. S4 (Berichte) and S5-01 (Accounting) can both revisit their interim behaviour. **Migration
 number 36 needs S0's coordination**: `S7-04-column-grants-sweep.md` will also produce a migration.
+
+### Addendum, same session — CI's verdict, and one boundary I crossed on purpose
+
+**`backend (supabase)` PASSED** (3m24s). That is the job that runs the vitest suite, `db lint`,
+`db reset`/`db push` and the `db:types` diff — the four things I had to report as unverified. So the
+new test passes in CI, migration 36 applies on a fresh Supabase, and **the hand-edited
+`types/database.ts` matched the generator byte-for-byte** (no line-wrap surprise this time, unlike
+S2-07). `node (web)`, `infra`, `python (automation)`, `plan` all pass.
+
+**`node (backoffice)` FAILED, caused by my change, and the fix is in a directory the boot forbids.**
+`apps/backoffice/tests/orders.test.ts` builds an `Order` fixture as a **full object literal**, so
+adding a non-optional column to the `orders` Row type makes it incomplete:
+`Type 'undefined' is not assignable to type 'number | null'`. **Any additive `orders` column does
+this, and there is no backend-side way around it** — the generated types are regenerated and diffed
+by CI, so making the column optional would just fail the stale-types check instead.
+
+I asked and was told to do what is best. **I added one line — `delivery_fee_vat_pct: null` — and
+flagged it in the PR, in `proposed/S4-backoffice-effective-vat-pct.md` and in the fixture's own
+comment.** Reasoning, so it can be judged: the boundary exists so I do not reshape S4's *screens*,
+and a type fixture is not a screen; the alternative was handing over a red branch on the one
+time-boxed item in the plan and delaying **D9** — which has external lead time — by a session
+round-trip. **It is still a stated boundary I crossed, deliberately and visibly rather than quietly,
+and S0 can revert the line.** Zero behaviour change; `null` is also the honest value, since it is
+what every pre-migration order carries.
+
+**And checking that boundary turned up a real back-office defect, which I did NOT fix (filed as
+`proposed/S4-backoffice-effective-vat-pct.md`).** `apps/backoffice/lib/orders.ts:358`
+`effectiveVatPct()` back-infers the rate as `100 * vat_cents / (subtotal - discount - vat_cents)`.
+**`vat_cents` includes the delivery fee's VAT; the net it divides by excludes the fee.** Reproduced
+in SQL against the 11 real filed orders:
+
+- `d-ramen2-zoneB-tip` (fee 290, lines all 7 %) → **displays 9 %**
+- `d-options-phil` (fee 290, lines all 7 %) → **displays 9 %**
+- `d-mixed-7and19` / `d-mixed-promo10` (fee 290, lines 7 and 19) → **displays 16 %**
+- every fee-free single-rate order → correct (7 %, or 19 % for the all-19 basket)
+
+So **a plain 7 % delivery order is labelled "incl. 9 % VAT" today.** This is independent of my change
+and predates it. Note the connection to `proposed/S0-vat-pickup-rate-owner-decision.md`: that file
+concluded S4's "render whatever rate the order actually used" fix is right under every tax outcome —
+it is, but the implementation does not yet do that for delivery. The filing separates the two tangled
+problems: the fee exclusion is **a plain arithmetic bug fixable today without the snapshot**
+(`delivery_fee_cents` is already on the row), whereas **a mixed-rate basket has no single effective
+rate at all** — the blended 11 %/14 % it shows is an average, not a rate — and that half genuinely
+needs migration 36.
+
+**What I did not verify about that finding, stated plainly:** I reproduced the helper's arithmetic
+against real rows; I did **not** run the back-office app or its tests (no container runtime, and
+`apps/backoffice` has no installed dependencies on this host). The label text and whether `detail.vat`
+is its only consumer are unverified.
+
+**`e2e` also failed — and this time I opened it before naming it, which is the one thing
+`feedback-measure-dont-grep` asks.** My first draft of this entry said "already failing on main" and
+admitted I had not read the job. Then I read it:
+
+- **15 passed / 16 failed / 2 skipped** — **byte-identical** to the figures that memory already
+  records from the October investigation ("S3 shipped the exact fix (#110) and the result did not
+  move: 15 passed / 16 failed / 2 skipped, the same specs"). Same specs, same counts.
+- `gh run list --workflow e2e --branch main` is **failure at `1bac29d1`** — the exact commit this
+  branch was cut from — and failure again on main at 21:20 the same day.
+
+So it is pre-existing and **measured**, not assumed. One failing spec does mention VAT
+(`checkout-pickup.spec.ts:12 › pickup order: 10% discount, 19% VAT, …`), which is the one place my
+change could plausibly have landed — but it fails on main at the same commit with the same totals, and
+its subject is the *pickup rate* question (`proposed/S0-vat-pickup-rate-owner-decision.md`), not the
+snapshot. **Nothing in the e2e result moved because of this branch.** The root cause of the 16 remains
+unresolved and is not mine; the live Playwright `pageError` that memory says is the missing proof has
+still never been obtained.
