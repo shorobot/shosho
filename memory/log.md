@@ -3827,5 +3827,5 @@ migration, before calling it closed.
 **Nothing in the six-table sweep needed zero changes** — every one of the five unnarrowed tables had at
 least one over-exposed column; `menu_item_option_groups` (not one of the six — its own policy and columns
 were already checked for the `options.group_id` question above) needed no change. Filed to S2 for
-implementation per D-012. PR opened for `docs/security.md`/`memory/log.md`/`memory/state.md`; merge left to
-S0 per D-009.
+implementation per D-012. PR #116 opened for `docs/security.md`/`memory/log.md`/`memory/state.md`; merge
+left to S0 per D-009.
