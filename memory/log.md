@@ -3752,3 +3752,49 @@ comment is load-bearing and now misleads, and the documented "residual gap" is c
 labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
 observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
 one, which restores the distinction at no cost.
+
+## 2026-10-29 — S0 Orchestrator — two independent blockers, one of them nobody had spotted
+
+**S2-08 reported the CI outage. Verified it, and my attempt to explain it away failed — which made their
+claim stronger, not weaker.** My first hypothesis was innocent: Actions creates runs on pushes, so "no
+runs" might just mean "no pushes". Measured instead of assumed: `s2-08-vat-snapshot` was pushed at
+**2026-10-29T12:57:31Z** and has **zero checks**, while the last run created repo-wide was
+**2026-10-28T21:25:46Z**. A push produced no run. **The outage is real**, it is repo-wide, and with
+`strict_required_status_checks_policy` on it blocks every merge from every session. Cause unmeasured —
+S2-08's exhausted-minutes hypothesis is plausible and neither of us can reach the billing endpoints, so
+it stays a hypothesis. They were right to say so rather than name it.
+
+**Their CI claim is accurate, and I checked it at job level rather than run level.** The `CI` workflow on
+`a2c74c2` shows `completed/failure`, which would read as a contradiction — it is not. Per job:
+`backend (supabase)` **success**, `node (web)` success, `infra` success, `python (automation)` success,
+and `node (backoffice)` **failure**. So their statement — that `backend (supabase)` passed on a commit
+already containing the migration, the new test and the types — is **true**, and that job is exactly the
+one covering vitest, `db lint`, `db push` and the generated-types diff. The failing job is the
+back-office one, which is the red they described crossing a boundary to fix.
+
+**What they could not verify, stated as they stated it:** the fix for that failure is on `22c9e0a`, pushed
+at 12:57, and **no CI has run on it**. Their local negative control (without the line the stand reproduces
+CI's exact error; with it, clean) is the only evidence it works. That is good method and it is not CI.
+
+**The thing nobody spotted, and it is the more consequential of the two.** `Migrate staging` on `main`
+(`b898ae4`, my #114 merge) **failed at 21:25**, and I opened the artifact rather than inferring from the
+status — the lesson I have now been burned by twice. The cleanup tail is noise; the real line is:
+```
+Unexpected error retrieving remote project status: {"message":"Invalid access token"}
+```
+**`SUPABASE_ACCESS_TOKEN` is invalid** — not missing. The workflow's own guards for "secret missing"
+passed, so the secret exists and Supabase is rejecting it. **Consequence: migration 36 cannot reach
+staging even after Actions comes back.** Two blockers, not one, and fixing the Actions one alone would
+leave the deploy chain silently broken in the way S1-07 already taught us to fear.
+
+**Narrowing the token's window, because it is cheap and useful:** the same workflow **succeeded** on the
+s2-08 branch at 21:02, 21:04 and 21:06, and **failed** on `main` at 21:25. So the token went invalid
+inside that ~19-minute window — which is also when run creation stopped. **The correlation is a fact; a
+common cause is not.** They are different vendors, and the most ordinary explanation is account
+housekeeping on both sides rather than one event. **`D11` is an open owner action to revoke the
+2026-09-20 Supabase personal access token** — if that was acted on last night, it is the whole story, and
+the fix is to mint a replacement and update the repository secret.
+
+**Not escalating by working around it.** Re-running jobs, disabling required checks, or merging past the
+gate would each hide one of these. S2-08 declined to retry around the block and wrote it up instead,
+which was right.

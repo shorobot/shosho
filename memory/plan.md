@@ -49,6 +49,13 @@ Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87
   `docs/security.md` needed opposite calls in two hunks of the same file: one side was a stale finding the
   PR existed to correct (take the PR's), the other was two unrelated pieces of S7 work (take both).
 
+## A-ter. BLOCKED 2026-10-29 — two independent blockers, both owner-side
+
+| | What | Who | Evidence |
+|---|---|---|---|
+| `[!]` | **GitHub Actions creates no runs, repo-wide** | **owner** (billing), then S1 | Last run created **2026-10-28T21:25:46Z**. `s2-08-vat-snapshot` pushed **2026-10-29T12:57:31Z** → **zero checks**. A push produced no run, so this is not "nothing was pushed" — S0 tested that explanation and it failed. **With the strict policy on, no PR from any session can merge until this is fixed.** Cause unmeasured: exhausted minutes is plausible, neither S2 nor S0 can reach the billing endpoints, so it stays a hypothesis |
+| `[!]` | **`SUPABASE_ACCESS_TOKEN` is invalid — `Migrate staging` is broken on `main`** | **owner** (mint a token), then S1 (update the secret) | `Migrate staging` on `b898ae4` failed with `Unexpected error retrieving remote project status: {"message":"Invalid access token"}`. **Not missing** — the workflow's own "secret missing" guards passed. **Migration 36 cannot reach staging even once Actions returns.** Window narrowed: the same workflow succeeded on the s2-08 branch at 21:02/21:04/21:06 and failed on `main` at 21:25. **`D11` below is an open action to revoke exactly this token** — if it was acted on, that is the cause and the fix is a replacement |
+
 ## A-bis. The one CRITICAL — open since 2026-09-20, found 2026-10-28
 
 | | What | Who | Why it exists |
