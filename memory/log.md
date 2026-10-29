@@ -3762,3 +3762,44 @@ its subject is the *pickup rate* question (`proposed/S0-vat-pickup-rate-owner-de
 snapshot. **Nothing in the e2e result moved because of this branch.** The root cause of the 16 remains
 unresolved and is not mine; the live Playwright `pageError` that memory says is the missing proof has
 still never been obtained.
+
+### Addendum 2 — GitHub Actions stopped creating runs repo-wide; what is and is not verified
+
+**All four commits are pushed** (`local == origin == PR head == 789b670`, 0 ahead / 0 behind). But
+**no workflow run exists for the last three shas** (`c9fa511`, `9d48661`, `789b670` — 0 runs each),
+and `gh pr checks 115` says *"no checks reported on the branch"*. **Repo-wide, the newest run of any
+workflow is 21:25 on `main`** — nothing since, from any branch or session. Actions is `enabled: true`
+with every workflow `active`.
+
+**I do not know the cause and am not going to name one.** The obvious candidate is an Actions
+spending limit, but **both billing endpoints are unreachable with this token** (org endpoint `410
+moved`, user endpoint needs the `user` scope), so that is a hypothesis with no measurement behind it —
+exactly the thing [[feedback-measure-dont-grep]] is about. It is also not mine: Actions health is
+S1's. **S0/S1 should check the repo's Actions billing**, because if it is a spending limit then **no
+session's PR can be verified or merged** until it is lifted, which is a queue-wide stop and not a
+property of this branch.
+
+**What IS verified, precisely.** The passing `backend (supabase)` job ran on **`a2c74c21`**, which
+already contained migration 36, `tests/vat_snapshot.test.ts` and the hand-edited `types/database.ts`.
+So the substantive work — vitest, `db lint`, `db reset`/`db push`, and the `db:types` diff — **is
+confirmed by CI**. That claim does not depend on the runs that never happened.
+
+**What is NOT verified by CI: the fixture repair** (`c9fa511`), because no run was ever created for
+it. Rather than leave it on reasoning, I measured it locally with a harness and **a negative
+control**:
+
+- Replicated `apps/backoffice/lib/types.ts`'s `Order` (`OrderRow & {order_items, order_events}`)
+  against the **real generated `database.ts`**, and fed it the **real fixture literal extracted from
+  the repo file** — not a retyped copy.
+- **With my line: `tsc` exit 0, zero output.**
+- **Negative control, my line deleted: exit 2, reproducing CI's error exactly** — `TS2322`,
+  `delivery_fee_vat_pct`, `'undefined' is not assignable`.
+
+So the harness **discriminates**, which is the half that makes it evidence rather than decoration.
+What it still does not cover: the rest of `apps/backoffice`'s typecheck (its own deps are not
+installed on this host) and its vitest suite. If anything else in that app reads the `orders` Row as a
+literal, CI will find it and I have not.
+
+**State of the PR:** mergeable content, unverifiable gate. Not something I should work around by
+retriggering tricks; S0 decides whether to wait for Actions or merge on the `a2c74c21` evidence plus
+the local proof above.
