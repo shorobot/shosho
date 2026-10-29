@@ -68,6 +68,16 @@ No table in `public` is missing `ENABLE ROW LEVEL SECURITY`; `storage.objects` a
 `realtime.messages` (owned by Supabase's own extensions, not our migrations) are asserted — not
 assumed — to have RLS on, by `security.test.ts`.
 
+**The table above is the ROW picture only — it is not the COLUMN picture, and as of this sweep
+(S7-04, 2026-10-29) they disagree for five of these rows.** `delivery_zones`, `menu_categories`,
+`menu_items`, `option_groups` and `options` carry a correct `anon`-admitting row policy and an
+**unnarrowed** column grant, so `anon` reads every column of every admitted row — `menu_items`
+worst of all (`cost_cents`, `kitchen_note`, `station`, `vat_delivery_pct`, `vat_onsite_pct`,
+`stock_remaining`, `available`, `stoplist_until`). `settings` is the one row in this group already
+narrowed for `anon` (migration 32) — see rule 10 below for the `authenticated` side of that same
+table, which this sweep also closes. Full measurement, exact grants and the fix S2 must apply (a
+plain rewrite of `menu_items_on_sale` would have broken the storefront) are in §5.
+
 ### 2.1 Views and other `security_invoker` objects (S7-02 sweep)
 
 **The rule (see §4.7): a `security_invoker` view is only as tight as the loosest policy among
@@ -80,7 +90,7 @@ policy on each join.
 | Object | `security_invoker` | Joins | Loosest join policy | Verdict |
 |---|---|---|---|---|
 | `customer_stats` (migration 24) | `true` | `customers` (driving table, `left join orders`) | `customers_staff_all` — owner/operator only, **no kitchen/driver read policy exists at all** | **Safe.** The driving table's own restriction means kitchen/driver get zero `customers` rows before the join to `orders` ever runs — an empty left-hand side cannot be widened by what it's joined to. Confirmed structurally; not yet confirmed with a live kitchen JWT this boot (§8). |
-| `menu_items_on_sale` (migration 8) | `true` | `menu_items` only | `items_staff_read` (owner/operator/kitchen full catalogue) / `items_public_read` (anon/driver: on-sale only) | **Safe.** Single-table view over non-PII menu data; the join concern doesn't apply (nothing to compose against). |
+| `menu_items_on_sale` (migration 8) | `true` (ruled to become `false` — §5, D-025) | `menu_items` only | `items_staff_read` (owner/operator/kitchen full catalogue) / `items_public_read` (anon/driver: on-sale only) | **Safe from the join-composition risk this row checks** — single-table view, nothing to compose against. **Not safe on the separate column-exposure axis**: today's `select i.*` hands `anon`/`authenticated` every `menu_items` column, `cost_cents` included (§5). S7-04 ruled the fix (explicit column list, `security_invoker = false`, same pattern as `staff_directory`/`banners_live` below); not yet applied — S2's. |
 | `staff_directory` (migration 21) | `false` (security definer, `security_barrier`) | none — queries `staff` as its own owner | n/a — the view's own `where auth_role() is not null` is the only gate, by design | **Safe, and correctly not `security_invoker`**: the comment explains why (the view must see rows the caller's own `staff` RLS would hide). Explicit 4-column list keeps `staff.phone` (and anything added later) behind the base table's owner/operator policy. |
 | `banners_live` (migration 31) | `false` (security definer, `security_barrier`) | none — queries `banners` as its own owner | n/a — the view's own `where active and in-window` is the gate | **Safe**, same reasoning as `staff_directory`. Explicit column list excludes `draft`. |
 | `report_payments` (migration 30) | n/a — not a view | function reads `orders` (kitchen: role-only, no row bound) `left join payment_jobs` | — | **Safe, and the file's own comment names exactly this sweep's rule as the reason**: a `security_invoker` view here would have let kitchen see every order's payment method/status through the `orders` join. Built as a `security definer` function with an explicit owner/operator-only guard instead. |
@@ -188,8 +198,179 @@ that page, not a one-time check.
    state-changing RPC that can silently no-op instead of raising, is the regression to watch for —
    not the existing `customers`/`orders` shape, which is intentional and documented here precisely so
    the next person doesn't have to re-derive it from reading RLS text the way this boot did.
-
+10. **"Every `to authenticated` policy carries an explicit staff guard" is false as stated — the
+    true invariant has a named exception.** The customer-accounts ROADMAP claimed the backend was
+    "safe by construction against a second class of authenticated user" on the strength of that
+    sentence. Swept live (S7-04, 2026-10-29): every `to authenticated` policy in `public` is one of
+    three shapes — (a) an explicit `is_staff(...)` / `auth_role() is not null` guard (the large
+    majority); (b) a **self** guard bound to the caller's own identity (`staff_self_read`'s
+    `id = auth.uid()`, `customer_addresses_self_read`'s `customer_id =
+    current_customer_id()`) — safe for a different reason, not because it checks staff, but
+    because it can only ever return the caller's own row; (c) **`settings_public_read`** — `using
+    (key = any (settings_public_keys()))`, admitting `anon, authenticated` with neither guard. That
+    is the one real exception, and it bites specifically through a column grant: `authenticated`'s
+    unnarrowed table grant on `settings` includes `draft`, so *any* authenticated role — kitchen,
+    driver today (a separate, already-filed, still-open Medium finding below), **any customer once
+    phase B exists** — reads it on the same rows `settings_public_read` admits (D-024). Fixed for
+    the customer case this sweep by narrowing the POLICY, not the column grant: `settings_public_read`
+    now reads `to anon` only (§5) — column grants are per-role, not per-`staff.role`, so they could
+    never have separated "owner/operator" from "any other authenticated" within the one `authenticated`
+    role; only the row policy can. Restate the invariant this way, not as "every policy has a guard".
 ## 5. Findings needing another session (see `/memory/log.md` S7-01/S7-02 for the ranked lists; proposals in `/memory/boots/proposed/`)
+
+- **High, by design — staging/seed data, not a live breach (D-025): `anon` can read every column
+  of five publicly-readable tables, `menu_items.cost_cents` worst of all.** RLS is row-level, not
+  column-level (rule 8); these five tables have a correct row policy and an **unnarrowed** column
+  grant, so `anon`'s blanket table grant hands it every column of every admitted row —
+  `delivery_zones`, `menu_categories`, `menu_items`, `option_groups`, `options`. Confirmed live
+  against the deployed staging anon key:
+  `GET /rest/v1/menu_items?select=sku,base_price_cents,cost_cents` → `200`, real seed margins
+  (Onigiri Trio 750/**210**, Misosuppe 320/**60**, Wakame-Salat 450/**90**) — plus, beyond what
+  D-025 first measured, `kitchen_note`, `station`, `vat_delivery_pct`, `vat_onsite_pct`,
+  `stock_remaining`, `available`, `stoplist_until` all leak the same way. **Controls, paired with
+  every probe**: a misspelled column → `42703`; a nonexistent table → `PGRST205`/404; `settings`'s
+  already-narrowed `draft` (migration 32) → `42501` — three distinct signatures, so "the request
+  failed" is never ambiguous with "the request leaked." `customers`/`orders` still return `[] 200`
+  (row-level, unaffected, re-confirmed as the control D-025 used). **Scope, stated plainly**:
+  staging with seed data — the leaked numbers are fictional, the mechanism is real, production
+  would ship the same schema. Fix before production; not an incident now.
+
+  **Ruling (S7-04): narrow by column grant, mirroring migration 32's own shape exactly** — per
+  table, the public set is whatever `apps/web/lib/api-supabase.ts` actually names (`ITEM_COLUMNS`,
+  the zones/categories/options selects), on the principle that a column no public consumer names
+  is not public. Verified column-by-column against that file, not guessed:
+
+  ```sql
+  revoke all on table public.delivery_zones from anon;
+  grant select (code, name, areas, min_order_cents, fee_cents, free_delivery_over_cents,
+    promised_minutes, postal_codes) on public.delivery_zones to anon;
+  -- not public: id, active, created_at, updated_at (named by no anon consumer; "active" is already
+  -- redundant for anon, since zones_public_read's row filter already admits only active=true rows)
+
+  revoke all on table public.menu_categories from anon;
+  grant select (id, slug, name_de, name_en, name_ja, sort, schedule) on public.menu_categories to anon;
+  -- not public: active, created_at, updated_at
+
+  revoke all on table public.menu_items from anon;
+  grant select (id, sku, category_id, name_de, name_en, name_ja, transliteration, description_de,
+    description_en, base_price_cents, photos, tags, prep_minutes, allergens, weight_g,
+    kcal_per_100g, sort, recommended_item_ids, max_per_order) on public.menu_items to anon;
+  -- not public: cost_cents, kitchen_note, station, vat_delivery_pct, vat_onsite_pct (see below),
+  -- stock_remaining, available, stoplist_until, created_at, updated_at
+
+  revoke all on table public.option_groups from anon;
+  grant select (id, name_de, name_en, min_select, max_select, required) on public.option_groups to anon;
+  -- not public: shared, created_at, updated_at
+
+  revoke all on table public.options from anon;
+  grant select (id, group_id, name_de, name_en, price_cents, sort, active) on public.options to anon;
+  -- group_id is kept: PostgREST's nested embed (menu_item_option_groups -> option_groups ->
+  -- options) filters the inner subquery on options.group_id, which needs SELECT on that column for
+  -- the embed to resolve at all, independent of whether it appears in the JSON output. Proven live
+  -- below, not assumed.
+  ```
+
+  **A fifth statement is required, or the storefront's own menu goes blank** — found only by
+  proving the fix, not by reading the migration. `apps/web` never queries `menu_items` directly;
+  it queries the view `menu_items_on_sale` (`security_invoker = true`, body `select i.*`). A
+  `security_invoker` view's defining query is ordinary SQL text, evaluated under the *caller's* own
+  column privileges (unlike an RLS `USING` clause, which is evaluated by the executor without that
+  check — confirmed by the proof below) — so `i.*` requires `anon` to hold SELECT on **every**
+  column of `menu_items`, and the column grant above makes that query fail outright, not fall back
+  to the columns `anon` still has:
+
+  ```sql
+  drop view public.menu_items_on_sale;
+  create view public.menu_items_on_sale
+  with (security_invoker = false, security_barrier = true)
+  as
+  select i.id, i.sku, i.category_id, i.name_de, i.name_en, i.name_ja, i.transliteration,
+         i.description_de, i.description_en, i.base_price_cents, i.photos, i.tags, i.prep_minutes,
+         i.allergens, i.weight_g, i.kcal_per_100g, i.sort, i.recommended_item_ids, i.max_per_order
+  from public.menu_items i
+  where public.menu_item_on_sale(i);
+  grant select on public.menu_items_on_sale to anon, authenticated, service_role;
+  ```
+  Same shape as `staff_directory`/`banners_live` (§2.1): the view runs as its owner (full
+  internal access, so `menu_item_on_sale(i)`'s whole-row argument and the on-sale filter keep
+  working), exposes an explicit column list instead of `i.*`, and the grant that matters moves
+  from the base table to the view itself. `menu_items`' own base-table narrowing above still stands
+  — it is what closes the direct `GET /rest/v1/menu_items?select=...cost_cents` route D-025 found,
+  which the view was never the path for.
+
+  **All of this was proved, not reasoned about, against a disposable local sandbox — PG16.2 via
+  the `pgserver` wheel, all 35 migrations plus the committed `seed.sql` applied unmodified, zero
+  writes to staging** (`reference-local-postgres-on-this-mac` memory; `set role anon` /
+  `set role authenticated` + `request.jwt.claims` to simulate each caller, matching what
+  PostgREST itself does). Specifically proved, not assumed:
+  - Pre-fix: `set role anon; select sku, cost_cents from menu_items` reproduces the exact staging
+    leak locally.
+  - Post-fix: the same query now errors `permission denied for table menu_items`; `apps/web`'s own
+    `ITEM_COLUMNS` list still returns full rows through `menu_items_on_sale`; asking the view for
+    `cost_cents`/`kitchen_note` by name now errors `column … does not exist` (stronger than a
+    permission error — the column isn't in the view at all, same shape as `banners_live`'s `draft`
+    exclusion); `select *` on the view returns only the public columns (closes a *future* column
+    added to `menu_items` the same way, not just today's); the on-sale filter still excludes the
+    one off-sale seed item (13 of 14, behavioural, not just "no error"); the exact nested-embed
+    query apps/web issues for option groups/options resolves correctly with `options.group_id`
+    granted; `apps/backoffice/components/orders/PhoneOrderDialog.tsx`'s own `menu_items_on_sale`
+    query (`id, name_de, name_en, base_price_cents`, as a simulated `authenticated` operator)
+    is unaffected.
+  - **Not verified**: the five `revoke`/`grant` statements above were not additionally proved
+    against the *live* staging database (boundary: anon key only, no writes to staging) — the
+    sandbox used the same migrations, the same committed seed, and the same Postgres major
+    behaviour for grants/RLS (16.2 vs staging's 17, stated rather than glossed, per the sandbox's
+    own documented caveat) but is not staging itself. S2 should re-run the two probes above
+    (`cost_cents` refused, `ITEM_COLUMNS` still returns rows) against the deployed project
+    immediately after applying the migration, before calling it closed.
+
+  Filed to S2 for implementation (D-012); this ruling is the full statement, not a pointer to a
+  separate proposal file.
+
+- **This sweep also closes D-024's phase-B blocker — `settings.draft` reachable by any
+  authenticated role, customers included — by narrowing the POLICY, not a column grant.**
+  `settings_public_read` (`for select to anon, authenticated using (key = any
+  (settings_public_keys()))`) is the one `to authenticated` policy with neither an `is_staff(...)`
+  guard nor a self-scoped one (rule 10). Column grants cannot fix this alone, confirmed by reading
+  `apps/backoffice/lib/siteStore.tsx:77` (`supabase.from("settings").select("*")`, run as the
+  logged-in staff member's own `authenticated` session): `authenticated` is one Postgres role
+  shared by owner, operator, kitchen, driver and — once phase B ships — every customer, so revoking
+  `draft` from that role's column grant would 42501 the CMS settings panel for owner/operator too,
+  not just for the role this is meant to stop.
+
+  **Ruling: scope the row policy instead.**
+  ```sql
+  alter policy settings_public_read on public.settings to anon;
+  ```
+  `settings_staff_common_read` (migration 21, `using (auth_role() is not null and key = any
+  (settings_staff_keys()))`) already admits every real staff role — owner, operator, kitchen,
+  driver — to these same rows plus `ops`, so staff read nothing less after this change. A non-staff
+  authenticated caller (a future customer) now matches **no** `to authenticated` policy on
+  `settings` at all: RLS blocks the row before `authenticated`'s column grant (which still, and
+  correctly, includes `draft` for the staff who need it) is ever reached.
+
+  **Proved in the same local sandbox**, simulating a customer-shaped JWT (`authenticated`, `sub`
+  not present in `staff`): before the fix, `select key, value, draft from settings` returns the
+  five public rows including `draft`; after, zero rows. A simulated kitchen session still reads
+  exactly `business`/`opening_hours`/`site`/`payments.enabled`/`kitchen.status`/`ops` — including
+  `draft` where pending, **unchanged** — and a simulated owner session still reads every key
+  including `payments`/`kitchen`. `anon` is untouched (still the public five, `draft` still
+  refused). **Not independently re-verified against live staging** — same caveat as above; also,
+  no real customer JWT exists to test with yet (phase A ships no login), so "customer" here means
+  a role-`authenticated` session with no matching `staff` row, which is the exact shape phase B
+  creates and the shape `settings_staff_common_read`'s own `auth_role() is not null` guard is
+  written to exclude.
+
+  **This does not touch the separate, already-filed Medium finding below** (kitchen/driver reading
+  `draft` on the rows they're staff-admitted to) — that is a different `authenticated` sub-population
+  (real staff, not a future customer) and still needs the `security definer` accessor sketched
+  there; nothing in this ruling widens or narrows that finding.
+
+- **Noted for S2, not acted on (boundary: rule and audit only) — `menu_items.vat_onsite_pct` is
+  exposed by the same mechanism above and is also dead code (D-019/B3: nothing in the backend
+  reads it; VAT follows `vat_delivery_pct` regardless of order type).** Dropping the column is
+  better than narrowing it — that is a schema change, S2's call and S2's migration, not this
+  sweep's.
 
 - **Medium/High — `orders_kitchen_read` (and the matching `order_items`/`order_events` kitchen
   policies) are role-only with no row bound, so a kitchen login can read every order ever placed —
@@ -341,6 +522,20 @@ shared host, TETA+PI's ports, or hellfire's services, per boundary.**
 - No penetration test of the deployed staging site's network/TLS layer was performed beyond reading
   response headers over HTTPS from this machine (§5 web-surface findings) — this is a code/config
   review, not a live external pentest.
+
+**S7-04 (2026-10-29), by contrast, reached both a live instance and a safe sandbox, and the
+difference in confidence is worth stating.** The leak itself (D-025) and its controls were proved
+against the **deployed staging** project with the public anon key (read-only, no writes, no
+credential beyond what the storefront already ships). The *fix* — the five `revoke`/`grant`
+statements, the `menu_items_on_sale` rewrite, and the `settings_public_read` policy narrowing — was
+proved end-to-end against a **disposable local sandbox** (35 migrations + the committed seed,
+unmodified), not against staging, because applying it to staging is S2's migration, not something
+this boot is allowed to write. The sandbox is PG16.2 against staging's configured 17; stated as a
+caveat (§5), not glossed, and irrelevant to the privilege/RLS behaviour being tested. What is
+**not** verified: the exact grant statements re-run against staging itself, and a genuine
+authenticated-customer JWT (none exists — phase A ships no login; simulated with `set role
+authenticated` + a `sub` absent from `staff`, which is the same shape phase B's first real session
+will have).
 
 **S7-02 (2026-10-15) could not reach a live Supabase instance in its environment** — no Docker
 daemon was running, `colima start` needed `qemu-img` (not installed), and building `qemu` from
