@@ -3752,3 +3752,80 @@ comment is load-bearing and now misleads, and the documented "residual gap" is c
 labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
 observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
 one, which restores the distinction at no cost.
+
+## 2026-10-29 — S7 Security — S7-04: D-025 column-grant sweep ruled, D-024 ruled, both proved end-to-end
+
+**Scope: audit and rule only, per D-012 — nothing migrated, no policy or grant written to any live
+system.** Swept all six tables D-025 named, column by column, against what `apps/web` actually selects
+(`lib/api-supabase.ts` and its callers) — a column no public consumer names is not public. Wrote exact
+`revoke`/`grant` statements for S2 for the five tables migration 32 never touched (`settings` already was)
+and the one policy-level fix for D-024. All in `docs/security.md` §5/§4 rule 10 now, not a separate
+proposal file — the ruling is the full statement.
+
+**Reproduced the leak live, with controls, against deployed staging (anon key, read-only).**
+`menu_items?select=sku,cost_cents,...` → `200` with the same real margins D-025 found, plus — beyond
+D-025's own measurement — `kitchen_note`, `station`, `vat_delivery_pct`, `vat_onsite_pct`,
+`stock_remaining`, `available`, `stoplist_until` leak the same way, and so do the non-selected columns on
+the other four tables (`id`/`active`/`created_at`/`updated_at` on zones/categories, `shared` on
+option_groups, `group_id`/timestamps on options). Three distinct, deliberately-paired control signatures:
+a misspelled column → `42703`; a nonexistent table → `PGRST205`/404; `settings.draft` (the one column
+already narrowed) → `42501`. `customers`/`orders` still `[] 200` — re-confirmed, unaffected.
+
+**Then did something this project's security passes have not done before: proved the *fix*, not just the
+leak, end-to-end — in a disposable local sandbox, never against staging.** PG16.2 via the `pgserver` wheel
+(`reference-local-postgres-on-this-mac` memory), all 35 migrations plus the committed `seed.sql` applied
+unmodified, `set role anon` / `set role authenticated` + `request.jwt.claims` to simulate each caller
+exactly as PostgREST does. This caught a real defect in the first-draft fix before it ever reached S2:
+naively narrowing `menu_items`'s anon column grant breaks the **storefront's own menu fetch outright**,
+because `apps/web` never queries `menu_items` directly — it queries the view `menu_items_on_sale`
+(`security_invoker = true`, body `select i.*`), and a security-invoker view's defining query is ordinary
+SQL text, so `i.*` requires the caller to hold SELECT on **every** column of the underlying table. This is
+not true of an RLS `USING` clause — proved, not assumed: the identical whole-row call
+(`menu_item_on_sale(menu_items)`) inside `items_public_read`'s own policy kept working, unchanged, after
+the same column grant was narrowed, because policy expressions are evaluated by the executor without that
+check. The fix: rewrite the view to `security_invoker = false` with an explicit column list, the same
+pattern already used here for `staff_directory`/`banners_live` — and re-proved: `apps/web`'s exact
+`ITEM_COLUMNS` query still returns full rows through the rewritten view, `cost_cents`/`kitchen_note` by
+name now come back `column … does not exist` (stronger than a permission error — matches `banners_live`'s
+own `draft` exclusion), `select *` on the view returns only the public set (closes a *future* added column
+too), the on-sale filter still excludes the one off-sale seed item (13 of 14 — behavioural, not just "no
+error"), the real nested embed (`menu_item_option_groups` → `option_groups` → `options`) still resolves —
+which needed `options.group_id` kept grantable for the embed's own correlated subquery, confirmed live
+rather than assumed — and `apps/backoffice`'s `PhoneOrderDialog` query is unaffected.
+
+**D-024 ruled by narrowing the ROW policy, not a column grant — a column grant structurally cannot do
+this.** `settings_public_read` is the one `to authenticated` policy with neither an `is_staff(...)` guard
+nor a self-scoped one (`staff_self_read`, `customer_addresses_self_read` are the two self-scoped
+exceptions; this is the real one). A column grant can't separate "owner/operator" from "any other
+authenticated" because they are the same Postgres role — confirmed against
+`apps/backoffice/lib/siteStore.tsx:77`'s `select("*")`, which a naive `revoke ... draft` would have 42501'd
+for owner/operator too. `alter policy settings_public_read on public.settings to anon;` closes it instead:
+`settings_staff_common_read` (`auth_role() is not null`) already covers every real staff role for the same
+rows plus `ops`, so staff lose nothing, and a non-staff `authenticated` caller now matches no policy at all
+— RLS blocks the row before the column grant is ever reached. Proved in the sandbox with a simulated
+customer-shaped session (`authenticated`, no matching `staff` row): zero rows before vs. after; a simulated
+kitchen session and a simulated owner session both unchanged. **Explicitly does not touch** the separate,
+already-filed Medium finding (kitchen/driver reading `draft` on the rows they're staff-admitted to) — a
+different `authenticated` sub-population, its own fix sketch, not widened or narrowed here.
+
+**Restated the invariant with its exception named**, per the boot's task 4 — `docs/security.md` §4 rule
+10: every `to authenticated` policy in `public` is staff-guarded, self-scoped, or (one exception)
+`settings_public_read`. "Every policy has a guard" was never quite true; now the file says so.
+
+**`vat_onsite_pct` noted for S2, not acted on** (leaks by the same mechanism, and is dead per D-019/B3 —
+dropping it is S2's call).
+
+**What was not verified:** the five `revoke`/`grant` statements and the view rewrite were not re-run
+against live staging itself — the sandbox used the same migrations and the same committed seed, and
+Postgres 16.2's grant/RLS behaviour is identical to staging's 17 for everything tested here (stated as a
+caveat, not glossed over), but it is not staging. No genuine customer JWT exists to test D-024 against
+(phase A ships no login) — simulated with an `authenticated` session whose `sub` has no `staff` row, which
+is exactly the shape phase B's first real session will have. Recommended S2 re-run both proofs (`cost_cents`
+refused, `ITEM_COLUMNS` still returns rows) against the deployed project right after applying the
+migration, before calling it closed.
+
+**Nothing in the six-table sweep needed zero changes** — every one of the five unnarrowed tables had at
+least one over-exposed column; `menu_item_option_groups` (not one of the six — its own policy and columns
+were already checked for the `options.group_id` question above) needed no change. Filed to S2 for
+implementation per D-012. PR opened for `docs/security.md`/`memory/log.md`/`memory/state.md`; merge left to
+S0 per D-009.
