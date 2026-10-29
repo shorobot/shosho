@@ -6,6 +6,7 @@ Owner of this file: S0. S1 DevOps reads it before any server work. **No secrets 
 ## Server
 - DigitalOcean, Frankfurt (EU). `164.90.235.66`. 1 vCPU / 2 GB RAM / 50 GB.
 - Shared with TETA+PI (tetapi.dev, admin) and hellfire (hellfiresol.com). SH.OS is an isolated co-tenant.
+- **`hellfiresol.com` is the OWNER'S OWN umbrella — confirmed by them 2026-10-28, not a third party.** The line above reads like a third-party co-tenant and misled S0 into framing a blocker that did not exist; it is kept as written because the *hosting* co-tenancy is real, but the **domain** is the owner's and its Cloudflare zone is theirs. Consequence: no third-party dependency on our hostnames, staging can stay on `shos.hellfiresol.com` indefinitely, and any new launch domain is a same-day change the owner can make.
 - Administered by TETA+PI manager. We do NOT administer the host.
 
 ## Our access
@@ -44,6 +45,13 @@ owner enters it per device (kitchen tablet, driver phone) so the other staff nev
 
 ## Infra changes (vhost, ports, limits, cron, packages)
 Only by request to TETA+PI manager: `send_message` → `teta-pi-e0`, or via owner. We never edit nginx / sshd / system-level systemd.
+
+## Before looping requests at the origin from on-box — ASK FIRST
+TETA+PI told us 2026-10-28: fail2ban's `ignoreip` currently lists only the Cloudflare ranges, which
+**overrides** fail2ban's built-in `127.0.0.1/8 ::1`, so **loopback is no longer ignored**. They are fixing
+it in its own task. Until then, if any session wants to loop requests at the origin from on the box, say
+so to `teta-pi-e0` **first** and let them whitelist — otherwise we ban ourselves. External probing from
+our own machines (the re-verify method below) is unaffected.
 
 ## Revocation
 Owner or TETA+PI manager can cut access instantly without notice if isolation is broken or resources harm tetapi.dev.

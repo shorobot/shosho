@@ -3828,3 +3828,153 @@ condition only a human can change.
 **Nothing about this changes what was verified.** `backend (supabase)` passed on `a2c74c21` — which
 contained migration 36, the new test and the generated types — and the one-line fixture repair is
 proven locally with a negative control. The branch's content is finished; only its gate is blocked.
+## 2026-10-28 — S0 Orchestrator — found a live anon data exposure while scoping the D-024 boot; D-025, S7-04 issued
+
+**Corrected the two stale session rows first.** S1 had said `in progress` on `S1-09` since that boot
+merged on 10-17, and S3 `in progress` on the CSP carve-out after #110 merged on 10-24. Both sessions had
+stopped; a row claiming "in progress" over merged work is the same stale-open-item failure that has cost
+time twice before.
+
+**Then, scoping the D-024 boot, I asked whether the same defect shape existed elsewhere — and it did,
+live.** The question was cheap: D-024 is "a public-read policy plus a column that should not be public",
+so how many tables have that shape? Repo-wide, `grant select (…)` appears **exactly once** in 35
+migrations (`settings`, migration 32), while **six** tables carry a public-read policy admitting
+`anon, authenticated` with no `is_staff(…)`. One of them, `menu_items`, has money on it.
+
+**Measured against the deployed site rather than reasoned about.** With the public anon key the guest
+site ships in every page view: `menu_items?select=sku,base_price_cents,cost_cents` → `200`, real values —
+750/**210**, 320/**60**, 450/**90**. The shop's cost structure and margin, to anyone with `curl`.
+Confirmed the JWT carries `role: anon` before claiming it.
+
+**With controls, because a single response is not a measurement.** `settings?select=draft` → **`42501`**
+(the one table ever narrowed — so the technique is proven, it was simply used once); `customers` and
+`orders` → `[] 200` (protected at the row level, not part of this finding). My first control attempt was
+useless — I queried `staff.email`, which does not exist, and got a `400` about the column rather than a
+refusal. A control that fails for the wrong reason proves nothing; I replaced it.
+
+**Scope stated honestly, and this is the part I want on record.** This is **staging with seed data** —
+the leaked numbers are fictional. The mechanism is real and production would ship the same schema, so it
+is **fix before production, not an incident now**. Recorded as CRITICAL-by-design, not as a breach.
+Inflating it would have been easy and wrong.
+
+**Ruled as D-025:** "public-read policy + sensitive column" is a **defect class**, not one bug. **D-024 is
+the same defect from the other side** — there the over-broad grant is `authenticated`'s and the column is
+`settings.draft` — so one sweep closes both rather than two items drifting apart.
+
+**Issued `S7-04-column-grants-sweep.md`** instead of the narrow D-024 boot I was asked for, and said why:
+a boot that fixed `settings.draft` alone would have left `cost_cents` open. S7 rules and audits; the
+migration is S2's (D-012). The boot carries the measurements so S7 does not re-derive them, requires a
+**control** on every probe, and requires the "safe by construction" invariant to be restated **with its
+exception named** — because that claim, repeated from the customer-accounts ROADMAP, is what made this
+class invisible.
+
+**Worth keeping as method:** the finding came from asking "is this one bug or one *shape*?" before
+writing the boot. The sweep cost one grep and two curls.
+
+**Addendum, same day — issued `S2-08-vat-rate-snapshot.md`, and found that D-022 understated itself.**
+Writing the boot meant reading the two VAT call sites properly rather than from the decision's summary.
+`quote_order` (`rpc.sql:237`) accumulates gross-inclusive VAT per line and then, at `:357-359`, applies
+the discount proportionally and adds the fee's VAT as the literal `v_fee * 19.0 / 119.0`. But
+**`update_order_items.sql:119` repeats that formula by joining `menu_items` live** — so an operator
+editing an existing order **today** already recomputes its tax against today's rates. After D9 that would
+silently rewrite the tax on a filed order through an ordinary back-office action. D-022 had framed the
+repricing as a future reporting hazard; it is **already live on a write path**. Amended the decision and
+built the boot's load-bearing test around it: change a rate *between* placing and editing, prove the edit
+reproduces the order's own tax. Also told S2 explicitly **not** to tidy the discount proration or the fee
+literal while in there — a rounding change would move historical totals — and to prove `vat_cents` is
+unchanged for existing orders as integers.
+
+## 2026-10-28 — S0 Orchestrator — TETA+PI applied D13; ran the promised external re-verify
+
+**They applied it on 2026-10-22 and extended it to `CF-Connecting-IP`, for the reason we gave.** Live on
+both our vhosts, `:80` and `:443`: `X-Forwarded-For $remote_addr` **and** `CF-Connecting-IP $remote_addr`,
+overwrite form, no `$proxy_add_x_forwarded_for` left anywhere on the box. Twelve proxying blocks across
+six vhosts, one clean reload. They re-verified independently of the session that made the change, and
+flagged their own six-day handoff delay rather than letting it pass.
+
+**Ran the re-verify we promised. Results, with the exact failure modes rather than "it's fine":**
+
+| probe | curl rc | what it means |
+|---|---|---|
+| our `shos` `:443` at the origin | 0 / **200**, 107 156 B | serves, and the body is **ours** (SHOSHO, Philadelphia) |
+| our `bo-shos` `:443` | 0 / **401**, 172 B | the gate, as expected |
+| **unknown SNI** `:443` | **35** | TLS handshake rejected — no default vhost answers for a name the box does not know |
+| **bare IP** `:443`, no SNI | **35** | same |
+| **invented `Host:`** `:80` | **52** | empty reply — the default block closes without responding |
+
+**Their default-reject blocks pass.** This is the check that caught both cross-tenant findings before, and
+it is worth restating why it is not redundant: a vhost answering correctly **for its own name** tells you
+nothing about what the box does with a name nobody configured. Here, nothing.
+
+**A side result worth recording: `infra-access.md`'s long-standing "known issue" is gone.** It said CF hits
+origin `:443` where the default vhost is hellfire-apex, so `https://shos.hellfiresol.com/` *may serve the
+hellfire site*. It does not — `:443` returns our page, and `:80` and `:443` are byte-identical in length
+(107 156). The bare-IP probe now fails the handshake rather than serving a neighbour's default.
+
+**What this probe did NOT establish, stated plainly because it would be easy to imply otherwise:** it does
+**not** confirm the sanitisation itself. Our only consumer of those headers is
+`apps/backoffice/lib/csp.ts`'s `isSecureContext()`, which sits **behind the basic-auth gate** and reads
+them **presence-only** — so a forged header produces no externally observable difference, and `apps/web`
+reads none of them at all. What we verified is **no regression** and **their default-reject behaviour**.
+Confirming the overwrite itself would need either the gate credential or a reading of their nginx, and
+`/etc/nginx` is do-not-touch. Their own independent re-verify is the evidence for that half.
+
+**They acted on our D-018 correction, and said so.** They had justified the work partly as "a per-IP
+limiter is the likely future consumer"; our correction retired that motive, and rather than let a wrong
+rationale propagate into their deployment docs they rewrote the task's reasoning before handing it to the
+worker. Their standing justification is their own — `app` and `stats` are their vhosts and their API does
+key limiters on the client address.
+
+**Their finding, and the lesson is better than the finding.** `stats.tetapi.dev` (GoatCounter) was **not**
+latent as recorded: it reads `X-Forwarded-For` unconditionally, has no trusted-proxy flag, and keys rate
+limits, visitor hashing and GeoIP on it — so with the append form a forged entry stayed first, and that
+one was **live** until 2026-10-22. Their words, worth keeping verbatim in spirit: *"third-party binary,
+read not confirmed by inspection" is not the same as "does not read it"* — they had let the first stand in
+for the second for five days. **Our own `csp.ts` reading was confirmed by inspection**, so our "presence
+only" claim is of the second kind, not the first.
+
+**Operational caution recorded in `infra-access.md`:** fail2ban's `ignoreip` currently lists only the
+Cloudflare ranges, which **overrides** its built-in `127.0.0.1/8 ::1`, so loopback is no longer ignored.
+Any session wanting to loop requests at the origin **from on the box** must tell `teta-pi-e0` first or we
+ban ourselves. External probing from our own machines is unaffected. **D13 is closed.**
+
+**Addendum — the domain question answered, and S0's own sequencing advice was wrong because of it.**
+Asked the owner rather than assuming whose `hellfiresol.com` is; it is **their own umbrella**, not a third
+party. `infra-access.md` lists "hellfire (hellfiresol.com)" beside TETA+PI in a way that reads like a
+separate company, and that framing led me to call the domain *"the slowest item on the launch path, start
+it first"*. **With the Cloudflare zone already in the owner's hands, registering a launch domain is
+same-day — it is now one of the fastest items, not the slowest.** Corrected in draft D-026 and the
+misleading line clarified in `infra-access.md` rather than deleted, since the *hosting* co-tenancy it
+describes is real.
+
+**Which moves the real long pole into view: `D9` (the Steuerberater) is blocked on `S2-08`, and `S2-08` is
+issued but not launched.** Everything on the host path runs on our clock; D9 runs on an external person's.
+So the highest-leverage action available right now is launching S2-08 — not provisioning anything.
+Asking the question was worth more than the answer: the wrong premise had produced a wrong priority.
+
+**Addendum — TETA+PI closed the half we said was theirs, by measurement, and it had a consequence for us.**
+They stood up a throwaway echo listener on a loopback-only block (ports outside both our ranges, removed
+in the same session) and read what actually arrives at an upstream. Three rows: **before any fix**, a
+forged `CF-Connecting-IP`, `CF-Ray` and `X-Forwarded-For` all arrived **verbatim** — so our
+`isSecureContext()` really was being fed a client-controlled value, harmless for the reasons we gave but
+real, and our inference is now confirmed empirically rather than reasoned. **With `$remote_addr` and an
+untrusted peer**, the forgery is replaced by `127.0.0.1`, not appended. **With a trusted CF peer**, the
+genuine client IP survives, because `real_ip_module` has already lifted it out of the header before
+`proxy_set_header` runs — the overwrite is idempotent for real CF traffic and sanitises only
+direct-to-origin. That third row was the one that could have broken us and they insisted on measuring it.
+
+**So neither probe was sufficient alone and both were needed:** ours proved no-regression plus their
+unknown-name behaviour, theirs proved the sanitisation. Saying so rather than letting the green stand in
+for both is what made the split visible.
+
+**And it changed something in our code that they could not see.** `proxy_set_header` sets a header
+unconditionally, so `cf-connecting-ip` is now present on **every** request reaching the app through their
+nginx, including a plaintext direct-to-origin one. `csp.ts:100`'s comment — *"Arrived through Cloudflare,
+so the public hop was https"* — is therefore **no longer true**: presence now means "arrived through their
+nginx", which is all production traffic, and `isSecureContext()` returns `true` unconditionally there.
+The direction is the safe one by the file's own stated criterion, and practical impact is ~nil. But the
+comment is load-bearing and now misleads, and the documented "residual gap" is closed by accident.
+**Filed to S4 (owner of the file) and S7 (D-012) as `proposed/S4-S7-isSecureContext-premise-retired.md`,
+labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
+observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
+one, which restores the distinction at no cost.
