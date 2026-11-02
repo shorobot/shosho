@@ -70,7 +70,7 @@ not Database, Backups, Auth Config, Storage, Organization Members, nor anything 
 Delivery. If a step ever fails on a permission, the CLI error names the missing one: **add that one**,
 never widen to full access.
 
-**Note this is a tightening, not a like-for-like replacement.** The 2026-09-20 token (the one `D11` exists
+**Note this is a tightening, not a like-for-like replacement.** The 2026-09-20 token (the one `OWN-11` exists
 to revoke) was created before this project scoped anything, i.e. account-wide. The replacement should be
 scoped as above.
 

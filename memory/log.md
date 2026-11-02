@@ -3829,3 +3829,33 @@ it — only a run on `main` exercises the token. Migration 36 cannot reach stagi
 
 **Also done in passing:** resolved #115's `memory/` conflict under D-009 — `state.md` per row (S2 from the
 PR, S1/S3 from `main` with S0's corrections), `log.md` keep-both — which is what unblocked its CI.
+
+## 2026-11-02 — S0 Orchestrator — token narrowed to the real cause; owner actions renamed to `OWN-n`
+
+**The Supabase token took three rounds, and each error moved, which is how we knew it was progressing.**
+`Invalid access token` (the credential itself) → `Your account does not have the necessary privileges to
+access this endpoint` (valid, but out of scope — the owner spotted it: **Resource access** was set to
+their personal account, and the project belongs to an organization) → now `Link project` **passes** and
+the failure moved to `db push --dry-run`:
+```
+IPv6 is not supported on your current network
+Run supabase link --project-ref … to setup IPv4 connection.
+```
+**Not a token-validity problem at all.** `db push` connects straight to Postgres, Supabase's direct
+connection is IPv6-only, GitHub runners have no IPv6, so the CLI must use the IPv4 pooler — which `link`
+is supposed to configure. **The inference, stated as one:** this workflow worked for weeks on the *old*
+token, which was account-wide; the only thing that changed is the token, so the new scoped one is missing
+the permission the CLI needs to read the pooler config — **`Connection Pooling` (Read)**.
+
+**That gap is mine.** I derived the six-permission list from Supabase's own command→permission table,
+which lists `supabase link` as Project Settings + API Keys + API Key Secrets. That table describes a
+normal network; on an IPv4-only runner the pooler is also required, and nothing in the table says so.
+Checking the docs was right and still left a hole, because the docs answered the question I asked rather
+than the one the runner poses. Added to `infra-access.md`'s scope table with the reason.
+
+**Renamed the owner actions `D1`…`D15` → `OWN-1`…`OWN-15`.** They collided visually with decision numbers
+`D-001`…`D-026` — one hyphen and two zeros apart — and I nearly conflated them myself while drafting
+D-026 beside the then-`D13`. 55 occurrences across `plan.md`, `state.md`, `decisions.md` and
+`infra-access.md`. **Verified the decision numbers were untouched** (25 `## D-0NN` headings intact, zero
+`OWN-0` produced) rather than trusting the regex. **`log.md` and shipped boots deliberately not rewritten**
+— they record what was said at the time — so a mapping note now sits at the head of plan.md section D.
