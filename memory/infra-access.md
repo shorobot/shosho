@@ -46,6 +46,34 @@ owner enters it per device (kitchen tablet, driver phone) so the other staff nev
 ## Infra changes (vhost, ports, limits, cron, packages)
 Only by request to TETA+PI manager: `send_message` → `teta-pi-e0`, or via owner. We never edit nginx / sshd / system-level systemd.
 
+## `SUPABASE_ACCESS_TOKEN` — the exact scope to grant when rotating it
+Lives on the GitHub **Environment `staging`** (not repo-level): `shorobot/shosho` → Settings →
+Environments → `staging` → Environment secrets. Partner secrets there: `STAGING_SUPABASE_DB_PASSWORD`
+(secret) and `STAGING_SUPABASE_PROJECT_REF` (variable).
+
+**Supabase personal access tokens are scopable** — to chosen organizations, projects and permissions.
+Derived 2026-11-02 from every `supabase` command `migrate-staging.yml`'s `push` job actually runs, cross-
+checked against Supabase's own permission list, so this is the **minimum**, not a guess:
+
+| What the workflow runs | Permission to grant |
+|---|---|
+| `supabase link --project-ref` | **Project Settings** (Read), **API Keys** (Read), **API Key Secrets** (Read) |
+| `supabase db push --dry-run` / `--include-seed` | **Migrations** (Read-write) |
+| `supabase migration list` | covered by Migrations |
+| `supabase secrets set` | **Edge Function Secrets** (Read-write) |
+| `supabase functions deploy --use-api` | **Edge Functions** (Read-write) |
+| `supabase functions list` | covered by Edge Functions |
+| the payment-worker `install` call | **none** — it uses the anon key, not the token |
+
+**Scope it to the one organization and the one project (`shosho-staging`).** Nothing else is needed —
+not Database, Backups, Auth Config, Storage, Organization Members, nor anything under Infrastructure &
+Delivery. If a step ever fails on a permission, the CLI error names the missing one: **add that one**,
+never widen to full access.
+
+**Note this is a tightening, not a like-for-like replacement.** The 2026-09-20 token (the one `D11` exists
+to revoke) was created before this project scoped anything, i.e. account-wide. The replacement should be
+scoped as above.
+
 ## Before looping requests at the origin from on-box — ASK FIRST
 TETA+PI told us 2026-10-28: fail2ban's `ignoreip` currently lists only the Cloudflare ranges, which
 **overrides** fail2ban's built-in `127.0.0.1/8 ::1`, so **loopback is no longer ignored**. They are fixing
