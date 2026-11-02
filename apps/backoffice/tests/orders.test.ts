@@ -51,6 +51,11 @@ function order(p: Partial<Order> = {}): Order {
     subtotal_cents: 3450,
     discount_cents: 0,
     delivery_fee_cents: 0,
+    // [S2-08] D-022: migration 36 added orders.delivery_fee_vat_pct. null is the correct value for a
+    // fixture — it is what every order filed before that migration carries. Mechanical type repair
+    // only; no behaviour and no screen changed. See proposed/S4-backoffice-effective-vat-pct.md for
+    // the surface question this column actually opens up.
+    delivery_fee_vat_pct: null,
     tip_cents: 0,
     total_cents: 3450,
     vat_cents: 226,

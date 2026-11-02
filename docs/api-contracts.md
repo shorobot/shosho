@@ -38,8 +38,8 @@ Conventions: `id uuid pk default gen_random_uuid()`, `created_at/updated_at time
 ### 1.4 Orders — S2-01
 | Table | Key columns | Notes |
 |---|---|---|
-| `orders` | `number int unique` (sequence, #2418), `channel order_channel`, `type order_type`, `status order_status`, `payment_status payment_status`, `payment_method payment_method`, `payment_ref text` ("Visa ···4417"), `customer_id null`, `contact_name`, `contact_phone`, `address jsonb null` (snapshot: street, floor_apt, postal_code, city), `zone_id null`, `distance_km null`, `courier_comment`, `comment_flags text[]` (leave_at_door/dont_ring/call_on_arrival/no_wasabi), `allergy_note` (snapshot of customer.kitchen_note), `scheduled_for timestamptz null` (null = ASAP), `promised_minutes`, `accepted_at/by`, `preparing_at`, `ready_at`, `driver_id null`, `out_at`, `completed_at`, `cancelled_at`, `cancel_reason`, `subtotal_cents`, `discount_cents`, `delivery_fee_cents`, `tip_cents`, `total_cents`, `vat_cents`, `promo_code text null`, `tracking_token text unique` (16 random bytes hex; guest tracking); **S2-02**: `payment_provider text null` (`stripe`), `payment_intent_id text unique null`, `payment_authorized_cents int null` (the provider's `amount_capturable` — ceiling for operator edits), `payment_captured_at null`, `payment_refunded_cents int default 0` | enums: `order_channel` website/phone/instagram/facebook/lieferando/wolt · `order_type` delivery/pickup · `order_status` new/accepted/preparing/ready/out_for_delivery/delivered/picked_up/cancelled/refunded · `payment_status` pending/authorized/paid/failed/refunded · `payment_method` card/apple_pay/google_pay/paypal/bitcoin/cash |
-| `order_items` | `order_id`, `item_id null`, `name snapshot`, `qty`, `unit_price_cents`, `options jsonb` (snapshot `[{group, option, price_cents}]`), `line_total_cents`, `modified_by_operator bool` | |
+| `orders` | `number int unique` (sequence, #2418), `channel order_channel`, `type order_type`, `status order_status`, `payment_status payment_status`, `payment_method payment_method`, `payment_ref text` ("Visa ···4417"), `customer_id null`, `contact_name`, `contact_phone`, `address jsonb null` (snapshot: street, floor_apt, postal_code, city), `zone_id null`, `distance_km null`, `courier_comment`, `comment_flags text[]` (leave_at_door/dont_ring/call_on_arrival/no_wasabi), `allergy_note` (snapshot of customer.kitchen_note), `scheduled_for timestamptz null` (null = ASAP), `promised_minutes`, `accepted_at/by`, `preparing_at`, `ready_at`, `driver_id null`, `out_at`, `completed_at`, `cancelled_at`, `cancel_reason`, `subtotal_cents`, `discount_cents`, `delivery_fee_cents`, `tip_cents`, `total_cents`, `vat_cents`, **S2-08**: `delivery_fee_vat_pct numeric(4,2) null` (D-022 — the rate the fee's tax was computed with; null = filed before migration 36, see §1.8), `promo_code text null`, `tracking_token text unique` (16 random bytes hex; guest tracking); **S2-02**: `payment_provider text null` (`stripe`), `payment_intent_id text unique null`, `payment_authorized_cents int null` (the provider's `amount_capturable` — ceiling for operator edits), `payment_captured_at null`, `payment_refunded_cents int default 0` | enums: `order_channel` website/phone/instagram/facebook/lieferando/wolt · `order_type` delivery/pickup · `order_status` new/accepted/preparing/ready/out_for_delivery/delivered/picked_up/cancelled/refunded · `payment_status` pending/authorized/paid/failed/refunded · `payment_method` card/apple_pay/google_pay/paypal/bitcoin/cash |
+| `order_items` | `order_id`, `item_id null`, `name snapshot`, `qty`, `unit_price_cents`, `options jsonb` (snapshot `[{group, option, price_cents}]`), `line_total_cents`, `modified_by_operator bool`; **S2-08**: `vat_pct numeric(4,2) null` (D-022 — the rate this line's tax was computed with; null = filed before migration 36) | the rate is the **fourth snapshot** on the line, beside `name` / `unit_price_cents` / `line_total_cents`, and for the same reason: menu values drift. See §1.8 |
 | `order_events` | `order_id`, `at`, `type text` (created/payment_authorized/accepted/preparing/item_changed/ready/handed_to_driver/delivered/picked_up/cancelled/refunded/note), `actor_type` (customer/staff/system), `actor_id null`, `payload jsonb` | the "Verlauf" timeline; written by triggers on status change and by RPC. **Payload per type (S0, 2026-09-26 — matched by the implementation in S2-03):** `created` `{channel, source?}` · `payment_authorized` `{payment_ref, provider, amount_cents}` · `accepted` `{promised_minutes}` · `preparing` `{promised_minutes, station?}` · `item_changed` `{before, after, totals}` · `ready` `{}` · `handed_to_driver` **`{driver_id, driver_name}`** · `delivered` / `picked_up` `{cash_received?}` · `cancelled` **`{reason}`** · `refunded` `{amount_cents}` · `note` **`{text, code?}`**. Every status event also carries `from` / `to` (extra keys, already consumed). `cancelled` carries `cancel_reason` next to `reason` for one release. Consumers must tolerate missing keys on rows written before 2026-09-27 — there is no backfill. |
 | `payment_events` — S2-02 | `order_id null`, `provider` (`stripe`), `event_id text unique`, `type`, `payload jsonb`, `received_at` | every provider webhook event, once — the idempotency log of `stripe-webhook`. Staff read-only |
 | `payment_jobs` — S2-02 | `order_id`, `action` `capture`/`void`/`refund`/`update_amount`, `amount_cents null`, `status` `queued`/`processing`/`done`/`failed`, `attempts`, `last_error`, `result jsonb`, `started_at`, `finished_at` | provider side effects requested by SQL (`set_order_status`, `update_order_items`) and executed by the `payment-worker` Edge Function. Staff read-only; `failed` rows need a human |
@@ -98,6 +98,53 @@ autonomous-transaction mechanism is available (pg_net, pg_cron and pg_notify are
 `hint = 'problems […]; record it with rpc record_order_attempt'` — the client turns the `problems[]`
 it just received into the attempt row with one extra call. **Until S3 does that (S3-03), the table
 stays empty and the funnel's attempt figures read 0** — see §6.10.
+
+### 1.8 VAT rate snapshots on the order line — S2-08, D-022, migration 36
+Two nullable columns, written at order time, that make the VAT an order actually charged
+*attributable to a rate* instead of only an aggregate:
+
+| Column | Written by | Meaning |
+|---|---|---|
+| `order_items.vat_pct numeric(4,2) null` | `place_order`, `update_order_items` | the rate **this line's** VAT was computed with, stored in the same statement that writes the line |
+| `orders.delivery_fee_vat_pct numeric(4,2) null` | `place_order`, `update_order_items` | the rate the **delivery fee's** VAT was computed with |
+
+**Why it exists.** The rate lives on `menu_items.vat_delivery_pct` and was read **live** at
+calculation time. `order_items` already froze `name`, `unit_price_cents` and `line_total_cents`
+off the menu item because menu values drift (`item_id` is even `on delete set null`, so a deleted
+item leaves the line intact) — the rate drifted identically and was the one thing not copied. Owner
+action **D9** sets the real 7 / 19 rates per item with the Steuerberater; every order placed before
+migration 36 loses its true rate the moment it runs, irrecoverably.
+
+**What `null` means, and what consumers must do with it.** `null` means *this row was filed before
+migration 36 and the rate it used is not recorded anywhere* — not "unknown, go and look it up".
+There is **no backfill**, deliberately: joining today's `menu_items` to a past order reprices a
+filed period, which is the exact error D-022 exists to prevent, and it would look like
+completeness. A per-rate report must therefore state the split as **unavailable** for the
+pre-migration window, with that reason, exactly as the Accounting agent already does
+(`available: false`). The per-rate split is derivable **only from migration 36 forward**.
+
+`orders.delivery_fee_vat_pct` is written on every order from migration 36 on, *including orders
+with no fee* (where it contributes nothing), so that `null` means precisely "filed before
+migration 36" and not "this order had no fee".
+
+**An edit no longer reprices a filed order.** `update_order_items` used to recompute VAT by joining
+today's `menu_items` — so after D9, editing one position on a filed order silently rewrote its tax.
+It now resolves each line's rate to the order's **own** snapshot, and joins `menu_items` nowhere. A
+position *added* during an edit has no snapshot to inherit and takes the freshly quoted rate, which
+is the only rate it can have. Editing a **pre-migration** order falls back to the quoted rate — the
+arithmetic the code has always done, so those orders' `vat_cents` do not move — and records the rate
+that fallback used, which is a true statement about that write.
+
+**The rate itself is unchanged by this migration.** `vat_delivery_pct` still defaults to 7 and
+nothing here sets, chooses or suggests a rate: that is D9's, with the Steuerberater.
+**Two things are filed rather than decided**, both tax judgements and neither a session's to make:
+1. The delivery fee's rate is still a **literal 19** in `quote_order` (`v_fee_vat_pct`), readable
+   from no table — so unlike the per-item rates, **D9 cannot change it at all**; it needs a code
+   change. Whether a delivery fee is 19 % is the open question.
+2. Rounding the split **per rate** and summing does not always equal the stored aggregate
+   `vat_cents` — measured at up to **1 ct** apart on 3 of 11 sample orders, because `vat_cents` is
+   rounded once at the end. An invoice that must show tax per rate has to pick one of the two, and
+   that choice is the Steuerberater's.
 
 ## 2. RPC (Postgres functions, `security definer`, exposed via PostgREST) — S2-01
 | Function | Caller | Contract |
@@ -187,9 +234,11 @@ payload: {
   ok: boolean, type, scheduled_for,
   lines: [{ item_id, sku, category_id, name, name_de, name_en, name_ja, qty, unit_price_cents,
             options: [{ group_id, group, group_de, option_id, option, option_de, price_cents }],
-            options_cents, line_total_cents, prep_minutes, allergens }],
+            options_cents, line_total_cents, prep_minutes, allergens,
+            vat_pct }],              // S2-08 / D-022: the rate THIS line's VAT was computed with
   subtotal_cents, pickup_discount_cents, promo_discount_cents, discount_cents,
   delivery_fee_cents, tip_cents, total_cents, vat_cents,
+  delivery_fee_vat_pct,              // S2-08 / D-022: the rate the fee's VAT was computed with
   zone: { id, code, name, min_order_cents, fee_cents, free_delivery_over_cents, promised_minutes } | null,
   promised_minutes: number | null,
   promo: { code, kind: 'percent'|'fixed', value, discount_cents, scope } | null,
@@ -342,7 +391,13 @@ items: [{ item_id: uuid, qty: number, option_ids?: uuid[] }]   // same shape as 
   }
 ```
 The server re-quotes with the order's own type / zone / promo / slot / tip — client totals are never
-trusted. Changed or new rows get `modified_by_operator = true`; `order_events(item_changed)` carries
+trusted. **S2-08 / D-022:** the re-quote now takes each line's VAT rate from the order's **own**
+snapshot (`order_items.vat_pct`, §1.8) rather than from today's `menu_items`, so an edit reproduces
+the order's own tax instead of repricing it at whatever the rate has since become; a position added
+by the edit has no snapshot and takes the freshly quoted rate. The returned `items` shape is
+**unchanged** — `vat_pct` is on the `order_items` rows, not in this response; if the Detail screen
+needs the per-rate split, that is an S4 surface and a separate request.
+Changed or new rows get `modified_by_operator = true`; `order_events(item_changed)` carries
 `{before, after, totals:{subtotal_cents_before, subtotal_cents, discount_cents, delivery_fee_cents,
 total_cents, vat_cents}, promo_dropped}` for the change log in the Detail screen. A promo that was
 valid at checkout keeps applying even if it has since expired or hit its limit; it is dropped (and

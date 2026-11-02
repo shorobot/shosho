@@ -3602,6 +3602,232 @@ assertion about a deployment from this seat, and it needs no credential anyone h
 any such probe with a **control** (here, the invented function); without one, a single error response
 cannot tell "deployed and refusing" from "not deployed at all".
 
+## 2026-10-28 — S2 Backend — S2-08 (VAT snapshot): D-022 shipped, D9 unblocked (PR #115)
+
+**Branch `s2-08-vat-snapshot`, not `s2-08`.** `origin/s2-08` already exists and is **merged** — it was
+the agent-runtime task, which this repo also calls S2-08. The boot said `checkout -f -B s2-08`; doing
+that would have force-pushed over a merged branch. The same collision is live in `state.md`'s S2 row,
+where "S2-08" already means the agent runtime. Worth renaming one of them, S0's call.
+
+**Migration 36.** `order_items.vat_pct numeric(4,2) null` and `orders.delivery_fee_vat_pct
+numeric(4,2) null`, both commented. `quote_order` emits the per-line rate **in the same
+`jsonb_build_object` as the line, in the same loop iteration that accumulates it into
+`v_vat_lines`** — so the rate used and the rate recorded are one read. `place_order` writes it in the
+same statement as the line. `update_order_items` resolves each line's rate from the order's own
+snapshot and **joins `menu_items` nowhere**.
+
+### What contradicts the boot — one thing, and it is small
+The boot's task 3 says "read the snapshot instead of joining `menu_items`". Taken literally that is
+impossible for a position **added** during an edit: it has no snapshot. The resolution shipped is
+`coalesce(order's snapshot, the freshly quoted rate)`, which satisfies the letter anyway — the live
+rate arrives **via the quote that priced the line**, so `update_order_items` genuinely joins
+`menu_items` nowhere. Everything else in the boot's reading of the two call sites was accurate,
+including the claim that `update_order_items` is the sharper half. **S0's measurements all held**:
+35 migrations, no vat column on `order_items`, the rate only on `menu_items.vat_delivery_pct`, the
+fee literal at `rpc.sql:359`, `orders` carrying only the aggregate.
+
+### Measured, not asserted
+No container runtime on this host, so the harness was rebuilt per
+`reference-local-postgres-on-this-mac`: **PostgreSQL 16.2** via the `pgserver` wheel, all 36
+migrations + the committed seed, applied **both incrementally and from scratch**. Fixture
+deliberately set to **mixed 7 / 19 rates** so the proration arithmetic is actually exercised — with
+everything at the seeded 7 the test would barely discriminate.
+
+- **The test this boot exists for:** order placed at 7 %, menu item moved to 19 %, edited with the
+  same positions → `vat_cents` **223 unchanged**, snapshot still `7.00`. **The live-join answer the
+  old code gave is 477.** The committed test asserts that 477 ≠ 223, so a regression cannot pass it
+  by accident — `tests/vat_snapshot.test.ts`.
+- A position **added** during that edit takes today's rate (19) while the existing line keeps its
+  own (7).
+- **`vat_cents` byte-identical**: 11 sample quotes (mixed rates, percent promo, pickup discount,
+  three zones, free-delivery threshold, options, a 7× odd-cents line) match the pre-change baseline
+  **exactly** on both databases; all **11 pre-migration orders re-edit with `vat_cents` unmoved**
+  (0 moved, 0 errors). Proration and rounding untouched.
+- The fee literal `19.0 / 119.0` → `v_fee_vat_pct / (100 + v_fee_vat_pct)`: verified **equal as
+  numerics**, not merely after rounding, across 0–2000 cents.
+- The stored `vat_cents` is **re-derivable from the snapshot alone**, no `menu_items` read.
+- **The `agent` role reads both new columns with no new grant** — migration 34's grants are
+  table-level, so new columns are included — while `menu_items` stays `42501`. So D-022's premise is
+  unchanged **and S5-01 needs no grant work**; that is the thing this unlocks for them.
+
+### Not verified, stated as such
+The **vitest suite, `supabase db push`, `db lint` and `gen types` could not run here** — all four
+shell out to Docker. CI's `backend (supabase)` job is the authority. `types/database.ts` is
+**hand-edited**; expect to replace it from the `backend-types` artefact if the generator wraps
+differently. I also have **no measurement against the live database** — S0's PostgREST probe is the
+only thing that can make that claim.
+
+### Two defects of my own, caught before commit
+1. **`jsonb_agg` without an explicit `ORDER BY`** does not guarantee line order, and line order
+   drives the inserted rows' `created_at`, the returned `items` array and the Detail screen's
+   before/after diff. Fixed with `with ordinality` + `order by ord`, proven preserved through a
+   reordering edit. It was *incidentally* right in testing, which is exactly why it needed fixing.
+2. A null resolved line rate would have been **silent and monetary**: SQL `sum()` skips nulls, so one
+   unrated line would quietly contribute **0 VAT** to a filed order. Added a `vat_rate_unresolved`
+   raise — unreachable by construction, asserted because the failure mode is money.
+
+**And a method failure worth recording, because it is [[feedback-measure-dont-grep]] again, verbatim.**
+I ran `npx tsc` and reported "typecheck exit=0". It was not: `npx` had fetched the **decoy `tsc`
+package** ("This is not the tsc command you are looking for"), `head -20` swallowed the banner, and
+`$?` captured **`head`'s** exit status, not the compiler's. The real `./node_modules/.bin/tsc` does
+pass — but I had claimed it on evidence that could not have shown a failure. Later in the same
+session I filtered a proof run with `grep -E "^NOTICE"` and got **nothing**, because psql prefixes
+every notice with `psql:/path:line:`. Reading the raw output showed all 11 cases passing. Second
+instance in one session: **a filter written from the expected output cannot see the unexpected one.**
+`$?` after a pipeline is the *last* command's, so `cmd | head; echo $?` can never report cmd failing.
+
+### Filed, not decided — both tax judgements, for the Steuerberater already in the loop for D9
+1. **The fee's rate is still a literal 19** in `quote_order`, readable from no table. Unlike the
+   per-item rates **D9 cannot change it at all** — it needs a code change. Snapshotted so the fee's
+   tax component is at least derivable; whether 19 % is right for a delivery fee is not mine.
+2. **Rounding the split per rate does not always sum to the stored `vat_cents`** — measured **1 ct**
+   apart on **3 of 11** samples, because `vat_cents` is rounded once at the end. An invoice showing
+   tax per rate must pick one of the two. Not fixed: it would move historical totals, which the boot
+   forbids and which is the right call.
+
+### What the split now makes possible, and what it still cannot answer
+From migration 36 forward: the per-rate net/tax split per order, derivable from `order_items` alone,
+readable by the `agent` role today. **For the pre-migration window it answers nothing** — and that is
+the honest state, not a gap to close. There is **no backfill** and must not be: joining today's
+`menu_items` reprices a filed period, which is the exact error D-022 exists to prevent, and it would
+look like completeness. S5-01's `available: false` with its reason stays correct for that window.
+
+**Next:** D9 unblocks the moment this merges — the owner can set the real rates without destroying
+history. S4 (Berichte) and S5-01 (Accounting) can both revisit their interim behaviour. **Migration
+number 36 needs S0's coordination**: `S7-04-column-grants-sweep.md` will also produce a migration.
+
+### Addendum, same session — CI's verdict, and one boundary I crossed on purpose
+
+**`backend (supabase)` PASSED** (3m24s). That is the job that runs the vitest suite, `db lint`,
+`db reset`/`db push` and the `db:types` diff — the four things I had to report as unverified. So the
+new test passes in CI, migration 36 applies on a fresh Supabase, and **the hand-edited
+`types/database.ts` matched the generator byte-for-byte** (no line-wrap surprise this time, unlike
+S2-07). `node (web)`, `infra`, `python (automation)`, `plan` all pass.
+
+**`node (backoffice)` FAILED, caused by my change, and the fix is in a directory the boot forbids.**
+`apps/backoffice/tests/orders.test.ts` builds an `Order` fixture as a **full object literal**, so
+adding a non-optional column to the `orders` Row type makes it incomplete:
+`Type 'undefined' is not assignable to type 'number | null'`. **Any additive `orders` column does
+this, and there is no backend-side way around it** — the generated types are regenerated and diffed
+by CI, so making the column optional would just fail the stale-types check instead.
+
+I asked and was told to do what is best. **I added one line — `delivery_fee_vat_pct: null` — and
+flagged it in the PR, in `proposed/S4-backoffice-effective-vat-pct.md` and in the fixture's own
+comment.** Reasoning, so it can be judged: the boundary exists so I do not reshape S4's *screens*,
+and a type fixture is not a screen; the alternative was handing over a red branch on the one
+time-boxed item in the plan and delaying **D9** — which has external lead time — by a session
+round-trip. **It is still a stated boundary I crossed, deliberately and visibly rather than quietly,
+and S0 can revert the line.** Zero behaviour change; `null` is also the honest value, since it is
+what every pre-migration order carries.
+
+**And checking that boundary turned up a real back-office defect, which I did NOT fix (filed as
+`proposed/S4-backoffice-effective-vat-pct.md`).** `apps/backoffice/lib/orders.ts:358`
+`effectiveVatPct()` back-infers the rate as `100 * vat_cents / (subtotal - discount - vat_cents)`.
+**`vat_cents` includes the delivery fee's VAT; the net it divides by excludes the fee.** Reproduced
+in SQL against the 11 real filed orders:
+
+- `d-ramen2-zoneB-tip` (fee 290, lines all 7 %) → **displays 9 %**
+- `d-options-phil` (fee 290, lines all 7 %) → **displays 9 %**
+- `d-mixed-7and19` / `d-mixed-promo10` (fee 290, lines 7 and 19) → **displays 16 %**
+- every fee-free single-rate order → correct (7 %, or 19 % for the all-19 basket)
+
+So **a plain 7 % delivery order is labelled "incl. 9 % VAT" today.** This is independent of my change
+and predates it. Note the connection to `proposed/S0-vat-pickup-rate-owner-decision.md`: that file
+concluded S4's "render whatever rate the order actually used" fix is right under every tax outcome —
+it is, but the implementation does not yet do that for delivery. The filing separates the two tangled
+problems: the fee exclusion is **a plain arithmetic bug fixable today without the snapshot**
+(`delivery_fee_cents` is already on the row), whereas **a mixed-rate basket has no single effective
+rate at all** — the blended 11 %/14 % it shows is an average, not a rate — and that half genuinely
+needs migration 36.
+
+**What I did not verify about that finding, stated plainly:** I reproduced the helper's arithmetic
+against real rows; I did **not** run the back-office app or its tests (no container runtime, and
+`apps/backoffice` has no installed dependencies on this host). The label text and whether `detail.vat`
+is its only consumer are unverified.
+
+**`e2e` also failed — and this time I opened it before naming it, which is the one thing
+`feedback-measure-dont-grep` asks.** My first draft of this entry said "already failing on main" and
+admitted I had not read the job. Then I read it:
+
+- **15 passed / 16 failed / 2 skipped** — **byte-identical** to the figures that memory already
+  records from the October investigation ("S3 shipped the exact fix (#110) and the result did not
+  move: 15 passed / 16 failed / 2 skipped, the same specs"). Same specs, same counts.
+- `gh run list --workflow e2e --branch main` is **failure at `1bac29d1`** — the exact commit this
+  branch was cut from — and failure again on main at 21:20 the same day.
+
+So it is pre-existing and **measured**, not assumed. One failing spec does mention VAT
+(`checkout-pickup.spec.ts:12 › pickup order: 10% discount, 19% VAT, …`), which is the one place my
+change could plausibly have landed — but it fails on main at the same commit with the same totals, and
+its subject is the *pickup rate* question (`proposed/S0-vat-pickup-rate-owner-decision.md`), not the
+snapshot. **Nothing in the e2e result moved because of this branch.** The root cause of the 16 remains
+unresolved and is not mine; the live Playwright `pageError` that memory says is the missing proof has
+still never been obtained.
+
+### Addendum 2 — GitHub Actions stopped creating runs repo-wide; what is and is not verified
+
+**All four commits are pushed** (`local == origin == PR head == 789b670`, 0 ahead / 0 behind). But
+**no workflow run exists for the last three shas** (`c9fa511`, `9d48661`, `789b670` — 0 runs each),
+and `gh pr checks 115` says *"no checks reported on the branch"*. **Repo-wide, the newest run of any
+workflow is 21:25 on `main`** — nothing since, from any branch or session. Actions is `enabled: true`
+with every workflow `active`.
+
+**I do not know the cause and am not going to name one.** The obvious candidate is an Actions
+spending limit, but **both billing endpoints are unreachable with this token** (org endpoint `410
+moved`, user endpoint needs the `user` scope), so that is a hypothesis with no measurement behind it —
+exactly the thing [[feedback-measure-dont-grep]] is about. It is also not mine: Actions health is
+S1's. **S0/S1 should check the repo's Actions billing**, because if it is a spending limit then **no
+session's PR can be verified or merged** until it is lifted, which is a queue-wide stop and not a
+property of this branch.
+
+**What IS verified, precisely.** The passing `backend (supabase)` job ran on **`a2c74c21`**, which
+already contained migration 36, `tests/vat_snapshot.test.ts` and the hand-edited `types/database.ts`.
+So the substantive work — vitest, `db lint`, `db reset`/`db push`, and the `db:types` diff — **is
+confirmed by CI**. That claim does not depend on the runs that never happened.
+
+**What is NOT verified by CI: the fixture repair** (`c9fa511`), because no run was ever created for
+it. Rather than leave it on reasoning, I measured it locally with a harness and **a negative
+control**:
+
+- Replicated `apps/backoffice/lib/types.ts`'s `Order` (`OrderRow & {order_items, order_events}`)
+  against the **real generated `database.ts`**, and fed it the **real fixture literal extracted from
+  the repo file** — not a retyped copy.
+- **With my line: `tsc` exit 0, zero output.**
+- **Negative control, my line deleted: exit 2, reproducing CI's error exactly** — `TS2322`,
+  `delivery_fee_vat_pct`, `'undefined' is not assignable`.
+
+So the harness **discriminates**, which is the half that makes it evidence rather than decoration.
+What it still does not cover: the rest of `apps/backoffice`'s typecheck (its own deps are not
+installed on this host) and its vitest suite. If anything else in that app reads the `orders` Row as a
+literal, CI will find it and I have not.
+
+**State of the PR:** mergeable content, unverifiable gate. Not something I should work around by
+retriggering tricks; S0 decides whether to wait for Actions or merge on the `a2c74c21` evidence plus
+the local proof above.
+
+### Addendum 3 — the Actions stall is NOT a GitHub outage; it is repo/org-level
+
+Still **zero runs** for the PR head ~55 min later, and nothing repo-wide since 21:25. One measurement
+that actually discriminates, rather than another guess:
+
+- `githubstatus.com/api/v2/components.json` — **Actions: operational**, as are API Requests, Webhooks,
+  Git Operations and Pages.
+- `incidents/unresolved.json` — **none**.
+
+**So a GitHub-side outage is ruled out, by measurement.** That leaves causes local to this
+repo/organisation — an **Actions spending limit** being the obvious one, or billing detached, or an
+org policy change. **I still cannot confirm which**: both billing endpoints are closed to this token
+(org `410 moved`, user needs the `user` scope). Per the standing lesson, **ruling out one candidate
+does not establish another** — so the honest statement is "external outage excluded; repo/org-level
+cause, not identified", not "the minutes ran out".
+
+**This needs the owner or S1, and it is not a thing a session can fix.** It is also **queue-wide**: if
+it is a spending limit, every session's PR is unverifiable and unmergeable until it is lifted, which
+makes it more urgent than any single branch. I stopped re-arming the watch rather than poll a
+condition only a human can change.
+
+**Nothing about this changes what was verified.** `backend (supabase)` passed on `a2c74c21` — which
+contained migration 36, the new test and the generated types — and the one-line fixture repair is
+proven locally with a negative control. The branch's content is finished; only its gate is blocked.
 ## 2026-10-28 — S0 Orchestrator — found a live anon data exposure while scoping the D-024 boot; D-025, S7-04 issued
 
 **Corrected the two stale session rows first.** S1 had said `in progress` on `S1-09` since that boot
