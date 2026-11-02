@@ -342,6 +342,36 @@ that page, not a one-time check.
   ```sql
   alter policy settings_public_read on public.settings to anon;
   ```
+
+  > **S0 REVIEW, 2026-11-02 — this statement is correct against the leak and WRONG against the
+  > storefront. Do not apply it as written.** S7-04 proved the fix *blocks* a customer-shaped JWT;
+  > it did not ask whether it blocks **too much**, and their own caveat ("no genuine customer JWT
+  > exists to test D-024 against") is exactly where the gap sits.
+  >
+  > `apps/web/lib/api-supabase.ts:99` reads
+  > `settings.select("key, value").in("key", ["business","opening_hours","site","payments.enabled","kitchen.status"])`.
+  > Today that call runs as `anon` and is unaffected. **Once phase B ships a login, a signed-in
+  > customer's client sends their JWT, the role becomes `authenticated`, `settings_public_read` no
+  > longer matches, and those five keys return nothing** — opening hours, business block, the
+  > payments flag and kitchen status go blank **for logged-in customers only**. The failure arrives
+  > precisely when the thing this ruling defends against arrives, which is the worst shape a latent
+  > defect can take: green until phase B, then broken for exactly the new users.
+  >
+  > S7-04's structural point stands and is why this is not a one-line edit: `authenticated` is a
+  > single Postgres role, so a **column** grant can never separate staff from customers. The row
+  > policy is the only lever — but scoping it to `anon` removes a legitimate reader along with the
+  > illegitimate one. Two ways out, neither decided here:
+  > - **Move `draft` off the public rows** into its own staff-only table. Then no column on those
+  >   rows is sensitive, `settings_public_read` stays `to anon, authenticated` untouched, and the
+  >   problem stops existing rather than being fenced.
+  > - **A `settings_public` view** with an explicit column list and `security_invoker = false`,
+  >   granted to `anon, authenticated`, with direct table access removed for both — the *same
+  >   pattern S7-04 itself ruled for `menu_items_on_sale` in this document*, so it is consistent
+  >   rather than novel. Costs an `apps/web` query change (S3's boundary).
+  >
+  > **Routing:** S7 re-rules between the two (D-012); S2 implements whichever wins. **D-024 stays
+  > open and stays a phase-B blocker** — it is not closed by this sweep. The other five tables'
+  > `revoke`/`grant` statements in this section are unaffected by this note and remain ruled.
   `settings_staff_common_read` (migration 21, `using (auth_role() is not null and key = any
   (settings_staff_keys()))`) already admits every real staff role — owner, operator, kitchen,
   driver — to these same rows plus `ops`, so staff read nothing less after this change. A non-staff
