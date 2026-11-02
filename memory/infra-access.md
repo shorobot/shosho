@@ -64,6 +64,20 @@ checked against Supabase's own permission list, so this is the **minimum**, not 
 | `supabase functions deploy --use-api` | **Edge Functions** (Read-write) |
 | `supabase functions list` | covered by Edge Functions |
 | the payment-worker `install` call | **none** — it uses the anon key, not the token |
+| **`db push` from a GitHub runner** | **Connection Pooling** (Read) — **not in Supabase's own command→permission table** |
+
+**Two things that cost three rounds on 2026-11-02 — get them right the first time.**
+1. **Supabase tokens cannot be edited after creation.** Every missing permission means creating a whole
+   new token and re-entering the secret. So grant the full list below in one go.
+2. **`Connection Pooling` (Read) is required and the docs do not say so.** `supabase db push` connects
+   straight to Postgres; Supabase's direct connection is **IPv6-only** and GitHub runners have no IPv6,
+   so the CLI must use the **IPv4 pooler** — which `supabase link` configures only if it can read the
+   pooler config. Supabase's command→permission table describes a normal network and omits this.
+   Symptom when missing: `link` succeeds, then `db push` fails with
+   *"IPv6 is not supported on your current network / Run supabase link … to setup IPv4 connection."*
+3. **`Resource access` must be the ORGANISATION that owns the project, not your personal account.**
+   Symptom when wrong: `Your account does not have the necessary privileges to access this endpoint` —
+   the token authenticates fine, so the permissions all look correct while nothing works.
 
 **Scope it to the one organization and the one project (`shosho-staging`).** Nothing else is needed —
 not Database, Backups, Auth Config, Storage, Organization Members, nor anything under Infrastructure &

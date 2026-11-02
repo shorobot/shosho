@@ -3859,3 +3859,17 @@ D-026 beside the then-`D13`. 55 occurrences across `plan.md`, `state.md`, `decis
 `infra-access.md`. **Verified the decision numbers were untouched** (25 `## D-0NN` headings intact, zero
 `OWN-0` produced) rather than trusting the regex. **`log.md` and shipped boots deliberately not rewritten**
 — they record what was said at the time — so a mapping note now sits at the head of plan.md section D.
+
+**Token resolved, deploy chain restored — and verified at the database, not at the job.** `Migrate
+staging` on `main`: `push (main → shosho-staging): success`. A green job is a claim about the workflow,
+so I read the run's own `Remote migration list`: it ends at **`20261023000035`**, which is exactly right —
+35 is customer accounts, and 36 is still in the unmerged #115. The chain is healthy and the database is
+in the expected state.
+
+**It took three token rotations, and two of the three causes are undocumented.** Recorded in
+`infra-access.md` so the next one costs one: **(a)** Supabase tokens **cannot be edited** — every missing
+permission means a whole new token, so the list must be right in one go; **(b)** `Connection Pooling`
+(Read) is **required and absent from Supabase's own command→permission table**, because `db push` needs
+the IPv4 pooler on a runner with no IPv6; **(c)** `Resource access` must be the **organisation**, not the
+personal account — and when it is wrong the token authenticates perfectly, so every permission looks
+correct while nothing works, which is why that round cost the most.
