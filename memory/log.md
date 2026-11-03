@@ -3978,3 +3978,36 @@ comment is load-bearing and now misleads, and the documented "residual gap" is c
 labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
 observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
 one, which restores the distinction at no cost.
+
+## 2026-11-03 — S0 Orchestrator — the CSP theory is falsified; S6-03 issued; the La Machine programme appears
+
+**Measured before writing the boot, and it killed the premise I was given.** B9 said "re-point S6's
+inverted specs", and a draft S3-04 boot had asserted *"It is your CSP"*, predicting the dev-CSP carve-out
+would fix **most of the sixteen**. The carve-out shipped (#110, 2026-10-24). Compared the failing sets:
+`39640593470` (2026-10-21, before) and `41443441607` (2026-11-02, after) — **15/16/2 both times, and
+`diff` of the sorted failing names is empty.** The fix was still correct on its own terms and fixed
+**nothing** in this suite.
+
+**B9's framing was also too narrow, and the titles say so.** Of the 16, exactly **one** is inverted by its
+own title (`realtime-and-tracking.spec.ts:50`, "apps/web never subscribes to that broadcast", which S3-03
+made false). The other fifteen assert real behaviour — checkout, money consistency, cancellation,
+rejections, the board. Re-pointing inverted specs alone would have left fifteen failures untouched and
+called the item done. Issued **`S6-03-e2e-diagnosis.md`**: classify all 16 from the **artifact**, not from
+reading the spec, into inverted / real defect / broken test / environmental — with the explicit warning
+that calling a product bug "environmental" is the most expensive mistake this project has made.
+
+**Also asked S6 the question nobody has answered:** has this suite **ever** passed against the current
+product? "0 successes since 2026-10-15" is recorded, but not whether it was once correct and drifted or
+was **born red**. That answer decides who owns every broken-test finding.
+
+**The La Machine programme surfaced today, and it reframes what this suite is for.** SH.OS is the *core*;
+La Machine is the programme that will clone it per client, SHOSHO being client one. LM-GM-00 sent a
+handover request (LM-CORE-00). **Measured for the assessment rather than estimated:** ~52.5k tracked lines
+across six apps (backoffice 23.1k, backend 17.3k, web 6.5k, automation 3.0k, e2e 1.4k, infra 1.2k), 430
+commits of real history. **And the finding that matters most: there is no tenant key anywhere** — zero
+occurrences of `tenant_id`/`org_id`/`client_id`/`shop_id`/`restaurant_id` across all 36 migrations, and
+`Europe/Berlin` is hardwired in 7 of them. One deployment cannot serve two clients; the product model
+("one machine per client") does not require that, but nobody has written down which of the two it is.
+Full assessment and the clone-timing recommendation went to the owner; **no reply sent to LM-GM-00 — the
+owner asked to coordinate first, and a handover statement about secrets and completeness is exactly the
+kind of outward message that gets checked before it is sent.**

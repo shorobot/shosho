@@ -72,7 +72,7 @@ Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87
 | `[ ]` | The two tests titled "non-staff" only exercise `anon()` — the real regression test does not exist | **S7/S6** | S7-02 finding. A named test that does not test the named thing is worse than no test |
 | `[ ]` | **The live-RLS-sweep CI test silently skips every view** | **S7/S6** | S7-02 finding. A green test that exercises nothing — same class as the one above, and it is the sweep that is supposed to catch Finding-A regressions |
 | `[ ]` | HTTP-layer tests for the Edge Functions | **S2/S6** | the only open item of S7's payment proposal (task 6) — a coverage suggestion, never a defect |
-| `[ ]` | Re-point S6's inverted specs once #87 and #89 land | **S6** | several specs assert gaps falsifiably and flip red on the fix — by design, but they must then be rewritten |
+| `[~]` | **Diagnose the 16 e2e failures — ISSUED 2026-11-03 as `S6-03-e2e-diagnosis.md`** (supersedes "re-point the inverted specs", which was too narrow) | **S6** | **The CSP theory is dead, measured:** the failing set on `39640593470` (2026-10-21, before #110) and `41443441607` (2026-11-02, after) is **identical — `diff` empty**. The carve-out was right and fixed nothing here. And **only one** of the 16 is inverted by its own title (`realtime-and-tracking.spec.ts:50`); the other fifteen assert real behaviour. **0 successes since 2026-10-15** |
 | `[ ]` | The un-root-caused delivery-zone failure (16 of 33 specs) | **S6** | the one honest gap in the suite; checkout UI fails to resolve a zone the identical RPC resolves |
 
 ## C. The automation layer — D-020, in dependency order
