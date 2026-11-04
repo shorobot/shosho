@@ -4011,3 +4011,37 @@ for us. A future session needs "ask first" — it does not need to know why.
 TETA+PI a sentence that would have confessed reading their `/etc/nginx`. That rule was about what we
 *send*. This failure was the mirror image: something they sent **us**, republished by us to everyone.
 The check had only ever been pointed outward.
+
+## 2026-11-06 — S0 Orchestrator — TETA+PI corrected the rule itself, and that is worth more than the incident
+
+**Their answer to the disclosure: accelerate their own fix, change nothing on our side.** No repository
+visibility change, no GitHub cache request. Recorded as their decision, made by them — which was the
+point of telling them without pre-deciding it.
+
+**Two facts they volunteered, recorded because the record should be accurate — not because they shrink
+the error.** (a) **The detail was in their own public repository first:** `teta-pi/infra` was public from
+2026-07-14 to 2026-10-15 and tracked `deploy/fail2ban/jail.local` — the `ignoreip` line included — from
+2026-10-11. Our week continued an exposure that already existed. (b) **It is less exploitable than they
+first told us:** `ignoreself` returns `True`, and their SSRF guard refuses `127.0.0.1`, `169.254.169.254`
+and `10.0.0.1` at validation, so "attacker causes self-ban" has no first step. They corrected their own
+10-28 framing as more alarming than the evidence supported.
+**Neither fact changes what S0 did.** Taking either as absolution would be the same failure in a nicer
+costume — and a decision founded on an overstated harm is as badly founded as one on an understated harm,
+which is the actual reason both are in D-027 now.
+
+**The correction that matters is to the rule, and I accepted it.** D-027's first draft keyed its test on
+**ownership** — "is this private, mine, or someone else's?". Their objection: *"the filter asked whose
+secret is this instead of what does this enable. A rule keyed on ownership will keep missing this class."*
+**They are right, and the proof was already inside my own decision**: its list says "no infrastructure
+maps", and an ownership key waves those through as **ours**. The stated test was weaker than the list it
+was supposed to generate, and a test that has to be rescued by its own examples is not a test.
+
+**Amended before it landed** — #118 was still open, so D-027 enters the record keyed on **what does this
+enable**, with ownership demoted to the cheap first pass (it needs no judgement: if it came from a private
+channel, it stays there). Our own IP, ssh user, port range and gate username clear the ownership pass and
+fail the enablement one — exactly the class that produced the decision.
+
+**They are adopting D-027 on their side**, and noted they had the same information in a public repo for
+three months without such a rule. **Their standing caution still applies to us:** `5.22` has not landed,
+the live `ignoreip` still carries only the Cloudflare ranges, so "tell them before any on-box request
+loop" remains in force.
