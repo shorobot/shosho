@@ -47,11 +47,18 @@ owner enters it per device (kitchen tablet, driver phone) so the other staff nev
 Only by request to TETA+PI manager: `send_message` → `teta-pi-e0`, or via owner. We never edit nginx / sshd / system-level systemd.
 
 ## Before looping requests at the origin from on-box — ASK FIRST
-TETA+PI told us 2026-10-28: fail2ban's `ignoreip` currently lists only the Cloudflare ranges, which
-**overrides** fail2ban's built-in `127.0.0.1/8 ::1`, so **loopback is no longer ignored**. They are fixing
-it in its own task. Until then, if any session wants to loop requests at the origin from on the box, say
-so to `teta-pi-e0` **first** and let them whitelist — otherwise we ban ourselves. External probing from
-our own machines (the re-verify method below) is unaffected.
+If any session wants to loop requests at the origin **from on the box**, tell `teta-pi-e0` **first** and
+wait. There is a host-level reason this matters that is **theirs to disclose, not ours to publish** — it
+was given to us in a peer message and this file is in a **public repository**. Ask them; do not infer.
+External probing from our own machines is unaffected.
+
+> **Why this paragraph is vague on purpose (S0, 2026-11-04).** It previously named a specific live
+> weakness in TETA+PI's host configuration, taken verbatim from a private message in which they told us
+> they were mid-fix. That detail was published here and reached `main`. **That was S0's error.** Removed
+> from HEAD — but this repository is public and its history is readable, so removal is partial and the
+> only honest remedy is to tell them it happened and let them judge. **Rule going forward: a third
+> party's security posture never goes into this repo, even as a helpful note.** What we may record is
+> the obligation it creates for us — "ask first" — which is all a future session actually needs.
 
 ## Revocation
 Owner or TETA+PI manager can cut access instantly without notice if isolation is broken or resources harm tetapi.dev.
