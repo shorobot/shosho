@@ -3978,3 +3978,36 @@ comment is load-bearing and now misleads, and the documented "residual gap" is c
 labelled an inference rather than a measurement** — our consumer sits behind the gate, so S0 cannot
 observe it from outside. Recommended there: read `cf-ray` only, since their nginx does **not** set that
 one, which restores the distinction at no cost.
+
+## 2026-11-04 — S0 Orchestrator — I published a third party's live security defect in a public repo
+
+**The owner asked what is actually wrong with the repository being public. Sweeping to answer it found my
+own error, two days old and already on `main`.**
+
+**First, the good news, because the answer has to be calibrated rather than alarmed.** There are **no
+secrets in this repository or its history**: the only `.env`-shaped files ever added are `.env.example`
+templates, and there is **zero** match for a `service_role` key or a private key across the history.
+Better than that — the project already knew it was public and acted on it: `S2-05`'s boot opens with
+*"stop this public repository from shipping a working password for four staff accounts"*, and the seed
+has set a random password ever since. Public was not an unexamined accident on the credential axis.
+
+**Now the error.** On 2026-10-28 TETA+PI told us, in a peer message, that their `fail2ban` `ignoreip`
+currently lists only the Cloudflare ranges and therefore overrides the built-in loopback entry — a live
+weakness in **their** host, disclosed to us so we would not trip it, with "being fixed in its own task"
+attached. **I wrote the specific detail into `infra-access.md`, and it reached `main`** — a public
+repository. I measured it today only because the owner's question made me look.
+
+**What I did:** removed the detail from HEAD, replaced it with the obligation it actually creates for us
+("ask `teta-pi-e0` first before any on-box request loop") and a note saying the reason is theirs to
+disclose. **Removal is partial and I will not pretend otherwise** — the repository is public and its
+history is readable, so the only honest remedy is to **tell them it happened** and let them judge whether
+it changes their own timeline. That message needs the owner; it is not mine to send.
+
+**The rule this establishes, which did not exist before:** a third party's security posture never goes
+into this repo, not even as a helpful operational note. What may be recorded is the obligation it creates
+for us. A future session needs "ask first" — it does not need to know why.
+
+**The irony is worth keeping.** `feedback-review-outward-messages` exists because S0 once nearly sent
+TETA+PI a sentence that would have confessed reading their `/etc/nginx`. That rule was about what we
+*send*. This failure was the mirror image: something they sent **us**, republished by us to everyone.
+The check had only ever been pointed outward.
