@@ -55,6 +55,15 @@ Zero open PRs at that point. `main` was at `acddb39`. Merged in this pass: **#87
 |---|---|---|---|
 | `[ ]` | **`anon` reads `menu_items.cost_cents` on the live site** — cost price and margin, to anyone with `curl` and the public anon key | **S7** rules, **S2** implements | **D-025.** `items_public_read` is correct at the row level; RLS does not filter columns, and `grant select (…)` appears **exactly once** in 35 migrations (`settings`, migration 32) — every other public-read table was never narrowed. Six tables carry an un-staffed public-read policy; `menu_items` is the one with money on it. **Measured live, with controls** (`settings?select=draft` → `42501`; `customers`/`orders` → `[] 200`). **Scope stated honestly: staging, seed data — the numbers are fictional, the mechanism is not.** Fix before production; **D-024 is the same defect class from the other side** and one sweep closes both |
 
+## A-quater. Going private — ordered, 2026-11-09
+
+| | What | Who | Why |
+|---|---|---|---|
+| `[~]` | **`e2e` off auto-triggers** (`workflow_dispatch` only) | **S0** | **Measured:** `e2e` was **73 %** of all Actions minutes (60-run sample: 21 runs / 279 min vs CI's 21 / 69) at ~13 min a run, and has **never passed** since 2026-10-15. Private repos get **2 000 min/month** free where public are unlimited; we run **~2 600**. Without `e2e`: **~700**. Verified safe: the live ruleset `main-protection` requires only `CI`, so nothing becomes unmergeable. **Restore when `S6-03` has classified the sixteen** |
+| `[ ]` | **Repository → private** | **owner only** | D-027. Closes the history that removal-from-HEAD cannot. **S0 proposes, never executes.** Must follow the row above, or Actions stops dead mid-month on the default **$0** spending limit |
+| `[ ]` | **`memory/` out of the repo, kept locally** | owner + S0 | Agreed 2026-11-08. **Deferred until after the Mac migration** — it changes the local layout currently being archived |
+| `[ ]` | **Licence** | owner | **Deliberately deferred.** The risk was *public + unlicensed*; going private removes it. The licence becomes a La Machine **commercial** decision — what a client actually buys — not a checkbox |
+
 ## B. Small, named, unblocked — all but the first are one file
 
 | | What | Who | Why it exists |
