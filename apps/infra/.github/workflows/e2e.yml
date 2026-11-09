@@ -1,9 +1,26 @@
 name: e2e
 
+# S0 2026-11-09 — AUTO-TRIGGERS REMOVED, deliberately and reversibly. Measured, not guessed:
+# `e2e` was **73 % of this repository's entire Actions consumption** (60-run sample over 30 days:
+# e2e 21 runs / 279 min, CI 21 / 69, Deploy staging 7 / 23, Migrate staging 11 / 5) at ~13 min a run —
+# and it has **never passed once** since 2026-10-15 (0 successes, a constant 15 passed / 16 failed / 2
+# skipped). It was spending the largest share of the budget to re-report the same sixteen failures.
+#
+# Why that suddenly mattered: the repository is going **private** (D-027), and private repos on the Free
+# plan get **2 000 Actions minutes/month** where public ones are unlimited. At ~401 runs × 6.5 min we
+# were at **~2 600 min/month** — over the allowance, and the default spending limit is **$0**, so Actions
+# would have stopped dead mid-month. That is precisely the "Actions is down" scare of 2026-10-29, which
+# turned out to be a conflicted PR — only this time it would have been real. Without `e2e`: ~700 min.
+#
+# Safe because `e2e` is **not a required check** — verified against the live ruleset `main-protection`,
+# whose only required context is `CI`. No PR becomes unmergeable by this change.
+#
+# RESTORE IT when `S6-03-e2e-diagnosis.md` has classified the sixteen and the suite can tell a real
+# regression from its own backlog. A suite that always fails teaches everyone to ignore failures — that
+# habit is what let a broken `Migrate staging` sit unnoticed for five days in late October.
+# Until then it still runs on demand, on any branch, and S6-03 is expected to use it that way.
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: e2e-${{ github.ref }}
